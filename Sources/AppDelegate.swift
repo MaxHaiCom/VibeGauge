@@ -86,7 +86,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     
-    // MARK: - 定版芯片框架图标绘制 (数字内嵌居中)
+    // MARK: - 芯片框架图标 (内嵌居中数字)
     private func renderChipFrameImage(percentage: Int) -> NSImage {
         let width: CGFloat = 25.0
         let height: CGFloat = 22.0
@@ -111,13 +111,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let startX: CGFloat = bodyX + 3.4
             for i in 0..<3 {
                 let px = startX + CGFloat(i) * pinSpacing
-                // 顶部引脚
                 NSBezierPath(roundedRect: NSRect(x: px, y: bodyY + bodyHeight, width: pinW, height: pinH), xRadius: 0.5, yRadius: 0.5).fill()
-                // 底部引脚
                 NSBezierPath(roundedRect: NSRect(x: px, y: bodyY - pinH, width: pinW, height: pinH), xRadius: 0.5, yRadius: 0.5).fill()
             }
             
-            // 3. 内部进度轻量填充 (根据可用状态)
+            // 3. 内部进度轻量填充
             let pad: CGFloat = 1.6
             let maxW = bodyWidth - (pad * 2)
             let fillW = maxW * CGFloat(percentage) / 100.0
@@ -158,12 +156,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.attributedTitle = NSAttributedString(string: "")
     }
     
-    // MARK: - NSMenuDelegate
+    // MARK: - NSMenuDelegate (结构化分层)
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let report = currentReport
         
-        // 1. 内存压力与健康状态
+        // 1. 内存与虚拟内存概览
         let healthLabel: String
         if report.freePercentage >= 60 {
             healthLabel = "正常"
@@ -206,7 +204,64 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        // 2. 核心操作：清理已断链的 AI 工具与孤儿进程
+        // 2. 算力与硬件负载 (CPU/发热/磁盘)
+        let hwTitleItem = NSMenuItem(
+            title: "硬件状态：发热 \(report.thermalStateString) · CPU 负载 \(String(format: "%.2f", report.loadAvg1m))",
+            action: nil,
+            keyEquivalent: ""
+        )
+        hwTitleItem.isEnabled = false
+        menu.addItem(hwTitleItem)
+        
+        let diskItem = NSMenuItem(
+            title: "系统主磁盘：剩余 \(String(format: "%.1f", report.diskFreeGB)) GB / \(String(format: "%.1f", report.diskTotalGB)) GB (可用 \(Int(report.diskFreePct))%)",
+            action: nil,
+            keyEquivalent: ""
+        )
+        diskItem.isEnabled = false
+        menu.addItem(diskItem)
+        
+        menu.addItem(NSMenuItem.separator())
+        
+        // 3. Vibe Coding 专属环境状态
+        var cliParts: [String] = []
+        if report.activeClaudeCount > 0 { cliParts.append("Claude (\(report.activeClaudeCount))") }
+        if report.activeAgyCount > 0 { cliParts.append("Agy (\(report.activeAgyCount))") }
+        let cliText = cliParts.isEmpty ? "无" : cliParts.joined(separator: " · ")
+        
+        let cliItem = NSMenuItem(
+            title: "活动 AI 会话：\(cliText)",
+            action: nil,
+            keyEquivalent: ""
+        )
+        cliItem.isEnabled = false
+        menu.addItem(cliItem)
+        
+        let mcpMemStr = report.activeMCPTotalMemMB > 1024
+            ? String(format: "%.2f GB", report.activeMCPTotalMemMB / 1024.0)
+            : "\(Int(report.activeMCPTotalMemMB)) MB"
+        let mcpItem = NSMenuItem(
+            title: "挂载 MCP 插件：\(report.activeMCPProcessCount) 个进程 (占用 \(mcpMemStr))",
+            action: nil,
+            keyEquivalent: ""
+        )
+        mcpItem.isEnabled = false
+        menu.addItem(mcpItem)
+        
+        let npxStr = report.npxCacheMB > 1024
+            ? String(format: "%.2f GB", report.npxCacheMB / 1024.0)
+            : "\(Int(report.npxCacheMB)) MB"
+        let npxItem = NSMenuItem(
+            title: "NPX 临时工具缓存：\(npxStr)",
+            action: nil,
+            keyEquivalent: ""
+        )
+        npxItem.isEnabled = false
+        menu.addItem(npxItem)
+        
+        menu.addItem(NSMenuItem.separator())
+        
+        // 4. 清理动作区 (孤儿进程与 NPX 缓存)
         if !report.orphanedGroups.isEmpty {
             let memFormatted = report.totalOrphanMemMB > 1024
                 ? String(format: "%.2f GB", report.totalOrphanMemMB / 1024.0)
@@ -225,7 +280,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             summaryItem.isEnabled = false
             menu.addItem(summaryItem)
             
-            // 明细子菜单
             let detailSubmenu = NSMenu()
             for group in report.orphanedGroups {
                 let groupMem = group.totalMemMB > 1024
@@ -237,18 +291,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 detailSubmenu.addItem(subItem)
             }
             
-            let detailMenuItem = NSMenuItem(title: "   查看服务明细...", action: nil, keyEquivalent: "")
+            let detailMenuItem = NSMenuItem(title: "   查看断链服务明细...", action: nil, keyEquivalent: "")
             detailMenuItem.submenu = detailSubmenu
             menu.addItem(detailMenuItem)
         } else {
-            let cleanItem = NSMenuItem(title: "运行环境干净，暂无残留后台服务", action: nil, keyEquivalent: "")
+            let cleanItem = NSMenuItem(title: "运行环境干净，暂无断链残留", action: nil, keyEquivalent: "")
             cleanItem.isEnabled = false
             menu.addItem(cleanItem)
         }
         
+        // 清理 NPX 缓存选项 (当缓存大于 100MB 时激活)
+        if report.npxCacheMB > 100.0 {
+            let npxCleanTitle = "清理 NPX 临时缓存 (释放 \(npxStr))"
+            let npxCleanItem = NSMenuItem(title: npxCleanTitle, action: #selector(cleanNPXAction), keyEquivalent: "")
+            npxCleanItem.target = self
+            menu.addItem(npxCleanItem)
+        }
+        
         menu.addItem(NSMenuItem.separator())
         
-        // 3. 选项偏好
+        // 5. 选项偏好
         let autoCleanItem = NSMenuItem(title: "定时自动清理 (每 30 分钟)", action: #selector(toggleAutoClean), keyEquivalent: "")
         autoCleanItem.target = self
         autoCleanItem.state = isAutoCleanEnabled ? .on : .off
@@ -261,7 +323,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        // 4. 控制操作
+        // 6. 控制操作
         let refreshItem = NSMenuItem(title: "重新扫描", action: #selector(refreshAction), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
@@ -280,6 +342,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sendNotification(
             title: "清理完成",
             body: "已释放 \(result.killedCount) 个残留 AI 进程，回收 \(String(format: "%.1f", result.freedMB)) MB 内存。"
+        )
+        updateStatus()
+    }
+    
+    @objc func cleanNPXAction() {
+        let freedMB = ProcessScanner.shared.cleanNPXCache()
+        sendNotification(
+            title: "NPX 缓存已清理",
+            body: "已清空 ~/.npm/_npx 目录，释放约 \(String(format: "%.1f", freedMB)) MB 磁盘空间。"
         )
         updateStatus()
     }
