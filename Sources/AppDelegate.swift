@@ -24,7 +24,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     
     var isShowPercentageEnabled: Bool {
         get {
-            // Default to true
             UserDefaults.standard.object(forKey: showPercentageKey) == nil
                 ? true
                 : UserDefaults.standard.bool(forKey: showPercentageKey)
@@ -39,16 +38,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        
-        // Setup SF Symbol icon
-        if let button = statusItem.button {
-            let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
-            if let img = NSImage(systemSymbolName: "memorychip", accessibilityDescription: "VibeClean")?.withSymbolConfiguration(symbolConfig) {
-                img.isTemplate = true
-                button.image = img
-                button.imagePosition = .imageLeading
-            }
-        }
         
         menu = NSMenu()
         menu.delegate = self
@@ -110,24 +99,65 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     
+    // MARK: - Vertical Stacked Menu Bar Icon & Text
+    private func createVerticalStatusImage(percentage: Int, showPercentage: Bool) -> NSImage {
+        let width: CGFloat = 21.0
+        let height: CGFloat = 22.0
+        
+        let img = NSImage(size: NSSize(width: width, height: height), flipped: false) { rect in
+            if showPercentage {
+                // 1. Draw SF Symbol at the top
+                let symbolConfig = NSImage.SymbolConfiguration(pointSize: 9.5, weight: .medium)
+                if let symbol = NSImage(systemSymbolName: "memorychip", accessibilityDescription: nil)?.withSymbolConfiguration(symbolConfig) {
+                    let iconSize: CGFloat = 10.5
+                    let iconX = (width - iconSize) / 2.0
+                    let iconY: CGFloat = 10.5
+                    symbol.draw(in: NSRect(x: iconX, y: iconY, width: iconSize, height: iconSize))
+                }
+                
+                // 2. Draw percentage text directly below the icon
+                let text = "\(percentage)%"
+                let font = NSFont.monospacedDigitSystemFont(ofSize: 7.2, weight: .bold)
+                let paragraphStyle = NSMutableParagraphStyle()
+                paragraphStyle.alignment = .center
+                
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: font,
+                    .foregroundColor: NSColor.black,
+                    .paragraphStyle: paragraphStyle
+                ]
+                
+                let textRect = NSRect(x: 0, y: 0.5, width: width, height: 9.0)
+                text.draw(in: textRect, withAttributes: attrs)
+            } else {
+                // Icon only (centered vertically & horizontally)
+                let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+                if let symbol = NSImage(systemSymbolName: "memorychip", accessibilityDescription: nil)?.withSymbolConfiguration(symbolConfig) {
+                    let iconSize: CGFloat = 14.0
+                    let iconX = (width - iconSize) / 2.0
+                    let iconY = (height - iconSize) / 2.0
+                    symbol.draw(in: NSRect(x: iconX, y: iconY, width: iconSize, height: iconSize))
+                }
+            }
+            return true
+        }
+        
+        img.isTemplate = true
+        return img
+    }
+    
     private func renderStatusButton(report: ScanReport) {
         guard let button = statusItem.button else { return }
         
-        if isShowPercentageEnabled {
-            let freePct = report.freePercentage
-            let text = " \(freePct)%"
-            let attrTitle = NSMutableAttributedString(
-                string: text,
-                attributes: [
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
-                    .foregroundColor: NSColor.labelColor
-                ]
-            )
-            button.attributedTitle = attrTitle
-        } else {
-            button.title = ""
-            button.attributedTitle = NSAttributedString(string: "")
-        }
+        let img = createVerticalStatusImage(
+            percentage: report.freePercentage,
+            showPercentage: isShowPercentageEnabled
+        )
+        
+        button.image = img
+        button.imagePosition = .imageOnly
+        button.title = ""
+        button.attributedTitle = NSAttributedString(string: "")
     }
     
     // MARK: - NSMenuDelegate
@@ -197,7 +227,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             summaryItem.isEnabled = false
             menu.addItem(summaryItem)
             
-            // 明细子菜单 (清晰可读的名字，无哈希无乱码)
+            // 明细子菜单
             let detailSubmenu = NSMenu()
             for group in report.orphanedGroups {
                 let groupMem = group.totalMemMB > 1024
@@ -226,7 +256,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         autoCleanItem.state = isAutoCleanEnabled ? .on : .off
         menu.addItem(autoCleanItem)
         
-        let showPctItem = NSMenuItem(title: "在菜单栏显示可用百分比", action: #selector(toggleShowPercentage), keyEquivalent: "")
+        let showPctItem = NSMenuItem(title: "在图标下方显示百分比", action: #selector(toggleShowPercentage), keyEquivalent: "")
         showPctItem.target = self
         showPctItem.state = isShowPercentageEnabled ? .on : .off
         menu.addItem(showPctItem)
