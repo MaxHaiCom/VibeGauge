@@ -3,7 +3,6 @@ import ServiceManagement
 import UserNotifications
 
 enum DisplayStyle: String, CaseIterable {
-    case capsuleBattery = "胶囊能量条 (数字居中，参考图同款)"
     case chipFrame = "芯片框架 (数字居中)"
     case circleRing = "微型环形进度圈"
     case textOnly = "清晰纯数字 (如 58%)"
@@ -37,8 +36,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                let style = DisplayStyle(rawValue: raw) {
                 return style
             }
-            // 默认采用用户参考图同款：胶囊外框 + 居中数字
-            return .capsuleBattery
+            // 默认采用芯片框架（数字居中）
+            return .chipFrame
         }
         set {
             UserDefaults.standard.set(newValue.rawValue, forKey: displayStyleKey)
@@ -54,6 +53,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        
+        // 强制确保当前样式为芯片框架
+        UserDefaults.standard.set(DisplayStyle.chipFrame.rawValue, forKey: displayStyleKey)
         
         updateStatus()
         
@@ -114,91 +116,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Multi-Style Rendering
     private func renderImage(for style: DisplayStyle, percentage: Int) -> NSImage {
         switch style {
-        case .capsuleBattery:
-            // 方案 1: 胶囊能量框 (参考图同款: 外框 + 内部进度 + 居中数字)
-            let width: CGFloat = 26.0
-            let height: CGFloat = 22.0
-            let img = NSImage(size: NSSize(width: width, height: height), flipped: false) { rect in
-                // 外框主体
-                let bodyWidth: CGFloat = 20.0
-                let bodyHeight: CGFloat = 12.5
-                let bodyX: CGFloat = 1.5
-                let bodyY: CGFloat = (height - bodyHeight) / 2.0
-                
-                let bodyRect = NSRect(x: bodyX, y: bodyY, width: bodyWidth, height: bodyHeight)
-                let bodyPath = NSBezierPath(roundedRect: bodyRect, xRadius: 3.2, yRadius: 3.2)
-                bodyPath.lineWidth = 1.2
-                NSColor.black.setStroke()
-                bodyPath.stroke()
-                
-                // 右侧微型电极帽
-                let capWidth: CGFloat = 1.5
-                let capHeight: CGFloat = 4.6
-                let capX: CGFloat = bodyX + bodyWidth + 0.8
-                let capY: CGFloat = bodyY + (bodyHeight - capHeight) / 2.0
-                let capPath = NSBezierPath(roundedRect: NSRect(x: capX, y: capY, width: capWidth, height: capHeight), xRadius: 0.75, yRadius: 0.75)
-                NSColor.black.withAlphaComponent(0.65).setFill()
-                capPath.fill()
-                
-                // 内部进度条 (半透明填充)
-                let pad: CGFloat = 1.6
-                let maxW = bodyWidth - (pad * 2)
-                let fillW = maxW * CGFloat(percentage) / 100.0
-                if fillW > 1.0 {
-                    let fillRect = NSRect(x: bodyX + pad, y: bodyY + pad, width: fillW, height: bodyHeight - (pad * 2))
-                    let fillPath = NSBezierPath(roundedRect: fillRect, xRadius: 1.8, yRadius: 1.8)
-                    NSColor.black.withAlphaComponent(0.22).setFill()
-                    fillPath.fill()
-                }
-                
-                // 内部正中心数字
-                let text = "\(percentage)"
-                let fontSize: CGFloat = (percentage >= 100) ? 7.2 : 8.5
-                let font = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .bold)
-                let pStyle = NSMutableParagraphStyle()
-                pStyle.alignment = .center
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: font,
-                    .foregroundColor: NSColor.black,
-                    .paragraphStyle: pStyle
-                ]
-                let textSize = (text as NSString).size(withAttributes: attrs)
-                let textY = bodyY + (bodyHeight - textSize.height) / 2.0
-                let textRect = NSRect(x: bodyX, y: textY, width: bodyWidth, height: textSize.height)
-                text.draw(in: textRect, withAttributes: attrs)
-                return true
-            }
-            img.isTemplate = true
-            return img
-
         case .chipFrame:
-            // 方案 2: 芯片框架 (带顶部/底部芯片引脚，数字居中)
+            // 核心推荐：芯片框架 (带引脚，数字居中)
             let width: CGFloat = 25.0
             let height: CGFloat = 22.0
             let img = NSImage(size: NSSize(width: width, height: height), flipped: false) { rect in
-                let bodyWidth: CGFloat = 19.0
+                let bodyWidth: CGFloat = 19.5
                 let bodyHeight: CGFloat = 13.0
                 let bodyX: CGFloat = (width - bodyWidth) / 2.0
                 let bodyY: CGFloat = (height - bodyHeight) / 2.0
                 
+                // 芯片主体轮廓
                 let bodyRect = NSRect(x: bodyX, y: bodyY, width: bodyWidth, height: bodyHeight)
                 let bodyPath = NSBezierPath(roundedRect: bodyRect, xRadius: 2.8, yRadius: 2.8)
                 bodyPath.lineWidth = 1.2
                 NSColor.black.setStroke()
                 bodyPath.stroke()
                 
-                // 芯片引脚 (上下各 3 个)
+                // 芯片四周引脚 (上下各 3 个金属引脚)
                 let pinW: CGFloat = 1.5
                 let pinH: CGFloat = 1.8
-                let pinSpacing: CGFloat = 4.2
-                let startX: CGFloat = bodyX + 3.2
+                let pinSpacing: CGFloat = 4.3
+                let startX: CGFloat = bodyX + 3.4
                 for i in 0..<3 {
                     let px = startX + CGFloat(i) * pinSpacing
+                    // 顶部引脚
                     NSBezierPath(roundedRect: NSRect(x: px, y: bodyY + bodyHeight, width: pinW, height: pinH), xRadius: 0.5, yRadius: 0.5).fill()
+                    // 底部引脚
                     NSBezierPath(roundedRect: NSRect(x: px, y: bodyY - pinH, width: pinW, height: pinH), xRadius: 0.5, yRadius: 0.5).fill()
                 }
                 
-                // 内部进度填充
+                // 内部进度轻量填充 (根据可用或使用率)
                 let pad: CGFloat = 1.6
                 let maxW = bodyWidth - (pad * 2)
                 let fillW = maxW * CGFloat(percentage) / 100.0
@@ -230,7 +178,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return img
 
         case .textOnly:
-            // 方案 3: 纯大号数字 (字号 11.5pt，横向仅 28pt)
+            // 方案 2: 纯大号数字 (字号 11.5pt，横向仅 28pt)
             let width: CGFloat = 28.0
             let img = NSImage(size: NSSize(width: width, height: 22.0), flipped: false) { rect in
                 let text = "\(percentage)%"
@@ -249,7 +197,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return img
             
         case .circleRing:
-            // 方案 4: Apple Watch 风格微型圆环 (宽度仅 18pt)
+            // 方案 3: Apple Watch 风格微型圆环 (宽度仅 18pt)
             let size: CGFloat = 18.0
             let img = NSImage(size: NSSize(width: size, height: 22.0), flipped: false) { rect in
                 let center = NSPoint(x: size / 2.0, y: 11.0)
@@ -279,7 +227,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return img
             
         case .horizontalCompact:
-            // 方案 5: 小图标 + 适中数字 (横向 36pt)
+            // 方案 4: 小图标 + 适中数字 (横向 36pt)
             let width: CGFloat = 36.0
             let img = NSImage(size: NSSize(width: width, height: 22.0), flipped: false) { rect in
                 let symbolConfig = NSImage.SymbolConfiguration(pointSize: 10.0, weight: .medium)
@@ -303,7 +251,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return img
             
         case .iconOnly:
-            // 方案 6: 纯芯片图标
+            // 方案 5: 纯芯片图标
             let width: CGFloat = 20.0
             let img = NSImage(size: NSSize(width: width, height: 22.0), flipped: false) { rect in
                 let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
@@ -397,6 +345,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             summaryItem.isEnabled = false
             menu.addItem(summaryItem)
             
+            // 明细子菜单
             let detailSubmenu = NSMenu()
             for group in report.orphanedGroups {
                 let groupMem = group.totalMemMB > 1024
