@@ -27,6 +27,10 @@ public struct TokenStats {
     public var todayCacheHitRate: Double {
         todayContext > 0 ? (Double(todayCacheRead) / Double(todayContext)) * 100.0 : 0.0
     }
+    
+    // 服务端真实下发的订阅配额百分比 (Claude Max/Pro 独有)
+    public var fiveHourPct: Int? = nil
+    public var sevenDayPct: Int? = nil
 }
 
 public struct DetectedLLMRuntime: Identifiable {
@@ -34,6 +38,7 @@ public struct DetectedLLMRuntime: Identifiable {
     public let name: String
     public let provider: String
     public let isRunning: Bool
+    public let authType: String
     public let detail: String
 }
 
@@ -356,6 +361,61 @@ public class ProcessScanner {
         return report
     }
     
+    // 订阅与 API Key 鉴权特征判别
+    private func getClaudeAuthType() -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let claudeJson = "\(home)/.claude.json"
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: claudeJson)),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let oa = json["oauthAccount"] as? [String: Any] {
+            let billing = oa["billingType"] as? String ?? ""
+            let rateTier = oa["organizationRateLimitTier"] as? String ?? ""
+            if rateTier.contains("max") {
+                return "订阅 Max"
+            } else if rateTier.contains("team") {
+                return "订阅 Team"
+            }
+            if billing.contains("subscription") {
+                return "订阅 Pro"
+            }
+            return "账号"
+        }
+        if ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] != nil {
+            return "API Key"
+        }
+        return "订阅"
+    }
+    
+    private func getCodexAuthType() -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let authPath = "\(home)/.codex/auth.json"
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: authPath)),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let mode = json["auth_mode"] as? String ?? ""
+            if mode == "chatgpt" {
+                return "订阅"
+            } else if mode == "api_key" {
+                return "API Key"
+            }
+        }
+        if ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil {
+            return "API Key"
+        }
+        return "订阅"
+    }
+    
+    private func getGeminiAuthType() -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let tokenPath = "\(home)/.gemini/antigravity-cli/antigravity-oauth-token"
+        if FileManager.default.fileExists(atPath: tokenPath) {
+            return "账号"
+        }
+        if ProcessInfo.processInfo.environment["GEMINI_API_KEY"] != nil {
+            return "API Key"
+        }
+        return "账号"
+    }
+
     // 多模型自动探针
     private func detectAllLLMRuntimes(claudeCount: Int, agyCount: Int, hasCodex: Bool, hasOllama: Bool, hasCursor: Bool, hasLMStudio: Bool) -> [DetectedLLMRuntime] {
         var list: [DetectedLLMRuntime] = []
@@ -366,6 +426,7 @@ public class ProcessScanner {
                 name: "Claude",
                 provider: "",
                 isRunning: true,
+                authType: getClaudeAuthType(),
                 detail: "\(claudeCount) 会话"
             ))
         }
@@ -376,6 +437,7 @@ public class ProcessScanner {
                 name: "Gemini",
                 provider: "",
                 isRunning: true,
+                authType: getGeminiAuthType(),
                 detail: "\(agyCount) 会话"
             ))
         }
@@ -386,6 +448,7 @@ public class ProcessScanner {
                 name: "Codex",
                 provider: "",
                 isRunning: true,
+                authType: getCodexAuthType(),
                 detail: "活跃"
             ))
         }
@@ -412,6 +475,7 @@ public class ProcessScanner {
                 name: "Ollama",
                 provider: "",
                 isRunning: true,
+                authType: "本地",
                 detail: ollamaDetail
             ))
         }
@@ -422,6 +486,7 @@ public class ProcessScanner {
                 name: "Cursor",
                 provider: "",
                 isRunning: true,
+                authType: "订阅",
                 detail: "运行中"
             ))
         }
@@ -432,6 +497,7 @@ public class ProcessScanner {
                 name: "LM Studio",
                 provider: "",
                 isRunning: true,
+                authType: "本地",
                 detail: "运行中"
             ))
         }
@@ -550,6 +616,20 @@ public class ProcessScanner {
             stats.todayCacheRead = cachedTokenStats.todayCacheRead
             stats.todayOutput = cachedTokenStats.todayOutput
             stats.todayThinking = cachedTokenStats.todayThinking
+        }
+        
+        // C. 读取服务端下发的真实订阅配额 (Claude Max/Pro 5h与7d配额)
+        let usagePath = "\(home)/.claude/claude-usage.json"
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: usagePath)),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let fh = json["five_hour"] as? [String: Any],
+               let pct = fh["used_percentage"] as? Int {
+                stats.fiveHourPct = pct
+            }
+            if let sd = json["seven_day"] as? [String: Any],
+               let pct = sd["used_percentage"] as? Int {
+                stats.sevenDayPct = pct
+            }
         }
         
         return stats

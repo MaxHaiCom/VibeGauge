@@ -151,14 +151,14 @@ public struct DashboardView: View {
                     }
                 }
                 
-                // 2.1 主流大模型运行状态矩阵 (双列紧凑卡片，去除冗余公司名)
+                // 2.1 主流大模型运行状态矩阵 (双列紧凑卡片，带订阅/API Key 标识)
                 let columns = [
                     GridItem(.flexible(), spacing: 6),
                     GridItem(.flexible(), spacing: 6)
                 ]
                 LazyVGrid(columns: columns, spacing: 5) {
                     ForEach(report.detectedLLMs) { llm in
-                        HStack(spacing: 5) {
+                        HStack(spacing: 4) {
                             Circle()
                                 .fill(llm.isRunning ? Color.green : Color.secondary.opacity(0.3))
                                 .frame(width: 5, height: 5)
@@ -168,6 +168,16 @@ public struct DashboardView: View {
                                 .foregroundColor(llm.isRunning ? .primary : .secondary)
                                 .lineLimit(1)
                             
+                            if !llm.authType.isEmpty {
+                                Text(llm.authType)
+                                    .font(.system(size: 7.5, weight: .semibold))
+                                    .padding(.horizontal, 3)
+                                    .padding(.vertical, 1)
+                                    .background(llm.authType.contains("API") ? Color.blue.opacity(0.18) : (llm.authType == "本地" ? Color.purple.opacity(0.18) : Color.green.opacity(0.18)))
+                                    .foregroundColor(llm.authType.contains("API") ? .blue : (llm.authType == "本地" ? .purple : .green))
+                                    .cornerRadius(2.5)
+                            }
+                            
                             Spacer(minLength: 2)
                             
                             Text(llm.detail)
@@ -175,7 +185,7 @@ public struct DashboardView: View {
                                 .foregroundColor(llm.isRunning ? .secondary : .secondary.opacity(0.5))
                                 .lineLimit(1)
                         }
-                        .padding(.horizontal, 7)
+                        .padding(.horizontal, 6)
                         .padding(.vertical, 4.5)
                         .background(llm.isRunning ? Color.secondary.opacity(0.08) : Color.secondary.opacity(0.03))
                         .cornerRadius(5)
@@ -222,9 +232,16 @@ public struct DashboardView: View {
                             .font(.system(size: 8.5))
                             .foregroundColor(.secondary)
                         Spacer()
-                        Text("5h限额: \(report.tokens.turns5h)轮 · \(formatTokens(report.tokens.context5h))")
-                            .font(.system(size: 8.5, weight: .medium))
-                            .foregroundColor(.secondary)
+                        if let fh = report.tokens.fiveHourPct {
+                            let sdStr = report.tokens.sevenDayPct != nil ? " · 周已用\(report.tokens.sevenDayPct!)%" : ""
+                            Text("5h限额: \(fh)% (\(report.tokens.turns5h)轮)\(sdStr)")
+                                .font(.system(size: 8.5, weight: .semibold))
+                                .foregroundColor(fh > 80 ? .orange : .secondary)
+                        } else {
+                            Text("5h限额: \(report.tokens.turns5h)轮 · \(formatTokens(report.tokens.context5h))")
+                                .font(.system(size: 8.5, weight: .medium))
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
                 
