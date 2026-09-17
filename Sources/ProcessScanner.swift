@@ -73,6 +73,7 @@ public struct ScanReport {
     
     // Vibe Coding 专属环境状态
     public var activeClaudeCount: Int = 0
+    public var activeCodexCount: Int = 0
     public var activeAgyCount: Int = 0
     public var activeGrokCount: Int = 0
     public var activeMCPProcessCount: Int = 0
@@ -118,6 +119,56 @@ public class ProcessScanner {
         ("meigen", "Meigen 图像服务"),
         ("context7", "Context7 检索服务")
     ]
+    
+    // MARK: - 实时会话判定探针 (精准区分用户 CLI 交互终端 vs 子脚本/MCP/插件)
+    public static func isClaudeCLISession(cmd: String) -> Bool {
+        let trimmed = cmd.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("/bin/zsh") || trimmed.hasPrefix("/bin/bash") || trimmed.hasPrefix("zsh") || trimmed.hasPrefix("bash") || trimmed.hasPrefix("sh ") { return false }
+        if trimmed.contains("mcp-server") || trimmed.contains("grep") { return false }
+        let parts = trimmed.split(separator: " ")
+        guard let first = parts.first else { return false }
+        let bin = String(first.split(separator: "/").last ?? "")
+        return bin == "claude"
+    }
+
+    public static func isCodexCLISession(cmd: String) -> Bool {
+        let trimmed = cmd.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("/bin/zsh") || trimmed.hasPrefix("/bin/bash") || trimmed.hasPrefix("zsh") || trimmed.hasPrefix("bash") || trimmed.hasPrefix("sh ") { return false }
+        if trimmed.contains("mcp-server") || trimmed.contains("ChatGPT for Chrome") || trimmed.contains("chrome-extension") || trimmed.contains("ssh") || trimmed.contains("grep") { return false }
+        let parts = trimmed.split(separator: " ")
+        guard let first = parts.first else { return false }
+        let bin = String(first.split(separator: "/").last ?? "")
+        if bin == "codex" || bin == "codex.js" {
+            return true
+        }
+        if bin.contains("node") && parts.count > 1 {
+            let arg1 = String(parts[1])
+            if arg1.contains("codex") && !arg1.contains("mcp-server") {
+                return true
+            }
+        }
+        return false
+    }
+
+    public static func isAgyCLISession(cmd: String) -> Bool {
+        let trimmed = cmd.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("/bin/zsh") || trimmed.hasPrefix("/bin/bash") || trimmed.hasPrefix("zsh") || trimmed.hasPrefix("bash") || trimmed.hasPrefix("sh ") { return false }
+        if trimmed.contains("agy-routed") || trimmed.contains("agy-batch") || trimmed.contains("agy-review") || trimmed.contains("agy-video") || trimmed.contains("grep") { return false }
+        let parts = trimmed.split(separator: " ")
+        guard let first = parts.first else { return false }
+        let bin = String(first.split(separator: "/").last ?? "")
+        return bin == "agy"
+    }
+
+    public static func isGrokCLISession(cmd: String) -> Bool {
+        let trimmed = cmd.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("/bin/zsh") || trimmed.hasPrefix("/bin/bash") || trimmed.hasPrefix("zsh") || trimmed.hasPrefix("bash") || trimmed.hasPrefix("sh ") { return false }
+        if trimmed.contains("mcp-server") || trimmed.contains("grep") { return false }
+        let parts = trimmed.split(separator: " ")
+        guard let first = parts.first else { return false }
+        let bin = String(first.split(separator: "/").last ?? "")
+        return bin == "grok"
+    }
     
     private func execute(_ cmd: String) -> String {
         let process = Process()
@@ -233,8 +284,6 @@ public class ProcessScanner {
         
         var allProcs: [Int: RawProc] = [:]
         let allKeywords = serviceDefinitions.map { $0.key } + ["_npx", "mcp"]
-        var hasCodex = false
-        var hasGrok = false
         var hasCursor = false
         var hasOllama = false
         var hasLMStudio = false
@@ -254,12 +303,6 @@ public class ProcessScanner {
                 let lowerCmd = cmd.lowercased()
                 
                 // 检查主流模型与工具进程
-                if lowerCmd.contains("codex") || lowerCmd.contains("chatgpt") {
-                    hasCodex = true
-                }
-                if lowerCmd.contains("grok") && !lowerCmd.contains("grep") {
-                    hasGrok = true
-                }
                 if lowerCmd.contains("cursor.app") || (lowerCmd.contains("/cursor") && !lowerCmd.contains("cursoruiviewservice")) {
                     hasCursor = true
                 }
@@ -272,11 +315,13 @@ public class ProcessScanner {
                 
                 // 统计正在活跃的 AI 会话
                 if ppid != 1 {
-                    if cmd.contains("claude --") || (cmd.contains("claude") && cmd.contains("--resume")) {
+                    if ProcessScanner.isClaudeCLISession(cmd: cmd) {
                         report.activeClaudeCount += 1
-                    } else if cmd.contains("agy --") || cmd.hasSuffix("/agy") {
+                    } else if ProcessScanner.isCodexCLISession(cmd: cmd) {
+                        report.activeCodexCount += 1
+                    } else if ProcessScanner.isAgyCLISession(cmd: cmd) {
                         report.activeAgyCount += 1
-                    } else if cmd.contains("grok --") || (cmd.contains("grok") && cmd.contains("bypassPermissions")) || cmd.hasSuffix("/grok") {
+                    } else if ProcessScanner.isGrokCLISession(cmd: cmd) {
                         report.activeGrokCount += 1
                     } else {
                         // 统计活跃挂载的 MCP 进程
@@ -302,9 +347,6 @@ public class ProcessScanner {
                     }
                 }
             }
-        }
-        if report.activeGrokCount > 0 {
-            hasGrok = true
         }
         
         // 9. 甄别断链孤儿进程
@@ -384,9 +426,8 @@ public class ProcessScanner {
         // 11. 多模型全景感知与各模型专属额度汇聚
         report.detectedLLMs = detectAllLLMRuntimes(
             claudeCount: report.activeClaudeCount,
+            codexCount: report.activeCodexCount,
             agyCount: report.activeAgyCount,
-            hasCodex: hasCodex,
-            hasGrok: hasGrok,
             grokCount: report.activeGrokCount,
             hasOllama: hasOllama,
             hasCursor: hasCursor,
@@ -558,9 +599,8 @@ public class ProcessScanner {
     // 多模型自动探针
     private func detectAllLLMRuntimes(
         claudeCount: Int,
+        codexCount: Int,
         agyCount: Int,
-        hasCodex: Bool,
-        hasGrok: Bool,
         grokCount: Int,
         hasOllama: Bool,
         hasCursor: Bool,
@@ -578,7 +618,7 @@ public class ProcessScanner {
                 provider: "",
                 isRunning: claudeCount > 0,
                 tier: getClaudeTier(),
-                detail: claudeCount > 0 ? "\(claudeCount) 会话" : "待命",
+                detail: "\(claudeCount) 会话",
                 fiveHourPct: tokens.fiveHourPct,
                 sevenDayPct: tokens.sevenDayPct,
                 quotaSubtitle: ""
@@ -587,13 +627,13 @@ public class ProcessScanner {
         
         // 2. Codex
         let codexInstalled = FileManager.default.fileExists(atPath: "\(home)/.codex/auth.json")
-        if hasCodex || codexInstalled {
+        if codexCount > 0 || codexInstalled {
             list.append(DetectedLLMRuntime(
                 name: "Codex",
                 provider: "",
-                isRunning: hasCodex,
+                isRunning: codexCount > 0,
                 tier: getCodexTier(),
-                detail: hasCodex ? "活跃" : "待命",
+                detail: "\(codexCount) 会话",
                 quotaSubtitle: "OpenAI · 会话就绪"
             ))
         }
@@ -608,7 +648,7 @@ public class ProcessScanner {
                 provider: "",
                 isRunning: agyCount > 0,
                 tier: getGeminiTier(),
-                detail: agyCount > 0 ? "\(agyCount) 会话" : "待命",
+                detail: "\(agyCount) 会话",
                 fiveHourPct: dual.native5h,
                 sevenDayPct: dual.nativeW,
                 secondaryPoolName: "三方 (Claude/GPT)",
@@ -621,22 +661,20 @@ public class ProcessScanner {
         
         // 4. Grok (xAI 订阅)
         let grokInstalled = FileManager.default.fileExists(atPath: "\(home)/.grok")
-        if hasGrok || grokCount > 0 || grokInstalled {
-            let isRunning = grokCount > 0 || hasGrok
-            let grokDetail = isRunning ? (grokCount > 0 ? "\(grokCount) 会话" : "活跃") : "待命"
+        if grokCount > 0 || grokInstalled {
             list.append(DetectedLLMRuntime(
                 name: "Grok",
                 provider: "",
-                isRunning: isRunning,
+                isRunning: grokCount > 0,
                 tier: getGrokTier(),
-                detail: grokDetail,
+                detail: "\(grokCount) 会话",
                 quotaSubtitle: "xAI · grok-4.6 就绪"
             ))
         }
         
         // 5. Ollama
         if hasOllama {
-            var ollamaDetail = "待命"
+            var ollamaCount = 0
             var ollamaSub = "端侧运行 · 0 额度消耗"
             if let url = URL(string: "http://127.0.0.1:11434/api/ps") {
                 var request = URLRequest(url: url)
@@ -646,8 +684,8 @@ public class ProcessScanner {
                     if let data = data,
                        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                        let models = json["models"] as? [[String: Any]], !models.isEmpty {
+                        ollamaCount = models.count
                         let names = models.compactMap { $0["name"] as? String }.joined(separator: ", ")
-                        ollamaDetail = "推理"
                         ollamaSub = "模型: \(names)"
                     }
                     sema.signal()
@@ -657,9 +695,9 @@ public class ProcessScanner {
             list.append(DetectedLLMRuntime(
                 name: "Ollama",
                 provider: "",
-                isRunning: true,
+                isRunning: ollamaCount > 0,
                 tier: "本地",
-                detail: ollamaDetail,
+                detail: "\(ollamaCount) 会话",
                 quotaSubtitle: ollamaSub
             ))
         }
@@ -671,7 +709,7 @@ public class ProcessScanner {
                 provider: "",
                 isRunning: true,
                 tier: "Pro",
-                detail: "运行中",
+                detail: "1 会话",
                 quotaSubtitle: "高速池 500次/月"
             ))
         }
@@ -683,12 +721,82 @@ public class ProcessScanner {
                 provider: "",
                 isRunning: true,
                 tier: "本地",
-                detail: "运行中",
+                detail: "1 会话",
                 quotaSubtitle: "端侧运行 · 0 额度消耗"
             ))
         }
         
         return list
+    }
+    
+    // 毫秒级极速探查活跃 LLM 会话状态 (用于菜单打开时的动态实时更新)
+    public func scanActiveLLMs() -> [DetectedLLMRuntime] {
+        let psOut = execute("ps -axo pid,ppid,command")
+        let lines = psOut.components(separatedBy: "\n").dropFirst()
+        
+        var claudeCount = 0
+        var codexCount = 0
+        var agyCount = 0
+        var grokCount = 0
+        var hasOllama = false
+        var hasCursor = false
+        var hasLMStudio = false
+        
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            let parts = trimmed.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            if parts.count < 3 { continue }
+            guard let ppid = Int(parts[1]) else { continue }
+            let cmd = String(parts[2])
+            
+            let lowerCmd = cmd.lowercased()
+            if lowerCmd.contains("cursor.app") || (lowerCmd.contains("/cursor") && !lowerCmd.contains("cursoruiviewservice")) {
+                hasCursor = true
+            }
+            if lowerCmd.contains("ollama") {
+                hasOllama = true
+            }
+            if lowerCmd.contains("lmstudio") || lowerCmd.contains("lm studio") {
+                hasLMStudio = true
+            }
+            
+            if ppid != 1 {
+                if ProcessScanner.isClaudeCLISession(cmd: cmd) {
+                    claudeCount += 1
+                } else if ProcessScanner.isCodexCLISession(cmd: cmd) {
+                    codexCount += 1
+                } else if ProcessScanner.isAgyCLISession(cmd: cmd) {
+                    agyCount += 1
+                } else if ProcessScanner.isGrokCLISession(cmd: cmd) {
+                    grokCount += 1
+                }
+            }
+        }
+        
+        if grokCount == 0 {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let grokSessionsPath = "\(home)/.grok/active_sessions.json"
+            if let data = try? Data(contentsOf: URL(fileURLWithPath: grokSessionsPath)),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                for s in json {
+                    if let pid = s["pid"] as? Int, kill(pid_t(pid), 0) == 0 {
+                        grokCount += 1
+                    }
+                }
+            }
+        }
+        
+        return detectAllLLMRuntimes(
+            claudeCount: claudeCount,
+            codexCount: codexCount,
+            agyCount: agyCount,
+            grokCount: grokCount,
+            hasOllama: hasOllama,
+            hasCursor: hasCursor,
+            hasLMStudio: hasLMStudio,
+            tokens: cachedTokenStats
+        )
     }
     
     private func scanTokens() -> TokenStats {

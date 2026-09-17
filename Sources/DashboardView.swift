@@ -29,6 +29,7 @@ public struct DashboardView: View {
     @State private var liveNow: Date = Date()
     @State private var pulseAnim: Bool = false
     @State private var dynamicTokens: TokenStats? = nil
+    @State private var dynamicLLMs: [DetectedLLMRuntime]? = nil
     @State private var tickCounter: Int = 0
     
     private let liveTicker = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
@@ -45,6 +46,10 @@ public struct DashboardView: View {
     
     private var currentTokens: TokenStats {
         dynamicTokens ?? report.tokens
+    }
+    
+    private var currentLLMs: [DetectedLLMRuntime] {
+        dynamicLLMs ?? report.detectedLLMs
     }
     
     private func liveTimeAgoText(tokens: TokenStats) -> String {
@@ -91,7 +96,7 @@ public struct DashboardView: View {
         var groups: [ModelDisplayGroup] = []
         var currentRegular: [DetectedLLMRuntime] = []
         
-        for llm in report.detectedLLMs {
+        for llm in currentLLMs {
             if llm.isFullWidth {
                 if !currentRegular.isEmpty {
                     groups.append(ModelDisplayGroup(id: "reg-\(groups.count)", isFullWidth: false, models: currentRegular))
@@ -232,7 +237,7 @@ public struct DashboardView: View {
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.secondary)
                     Spacer()
-                    let activeCount = report.detectedLLMs.filter { $0.isRunning }.count
+                    let activeCount = currentLLMs.filter { $0.isRunning }.count
                     HStack(spacing: 4) {
                         Circle()
                             .fill(activeCount > 0 ? Color.green : Color.secondary.opacity(0.4))
@@ -502,10 +507,22 @@ public struct DashboardView: View {
             tickCounter += 1
             if tickCounter % 2 == 0 {
                 DispatchQueue.global(qos: .userInitiated).async {
-                    let latest = ProcessScanner.shared.scanLatestInteraction()
+                    let latestTokens = ProcessScanner.shared.scanLatestInteraction()
+                    let latestLLMs = ProcessScanner.shared.scanActiveLLMs()
                     DispatchQueue.main.async {
-                        self.dynamicTokens = latest
+                        self.dynamicTokens = latestTokens
+                        self.dynamicLLMs = latestLLMs
                     }
+                }
+            }
+        }
+        .onAppear {
+            DispatchQueue.global(qos: .userInitiated).async {
+                let latestTokens = ProcessScanner.shared.scanLatestInteraction()
+                let latestLLMs = ProcessScanner.shared.scanActiveLLMs()
+                DispatchQueue.main.async {
+                    self.dynamicTokens = latestTokens
+                    self.dynamicLLMs = latestLLMs
                 }
             }
         }
@@ -541,9 +558,10 @@ public struct DashboardView: View {
                 Spacer(minLength: 2)
                 
                 Text(llm.detail)
-                    .font(.system(size: 8.5))
-                    .foregroundColor(llm.isRunning ? .secondary : .secondary.opacity(0.5))
+                    .font(.system(size: 8.5, weight: llm.isRunning ? .medium : .regular))
+                    .foregroundColor(llm.isRunning ? .secondary : .secondary.opacity(0.75))
                     .lineLimit(1)
+                    .fixedSize()
             }
             
             // Row 2: 专属额度用量条 (在百分比前放置微型进度条)
@@ -622,8 +640,10 @@ public struct DashboardView: View {
                 Spacer()
                 
                 Text(llm.detail)
-                    .font(.system(size: 8.5))
-                    .foregroundColor(llm.isRunning ? .secondary : .secondary.opacity(0.5))
+                    .font(.system(size: 8.5, weight: llm.isRunning ? .medium : .regular))
+                    .foregroundColor(llm.isRunning ? .secondary : .secondary.opacity(0.75))
+                    .lineLimit(1)
+                    .fixedSize()
             }
             
             // Row 2: 复合双额度池 (原生池 + Claude/GPT 三方池并排)

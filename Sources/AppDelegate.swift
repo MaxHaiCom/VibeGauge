@@ -160,7 +160,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - NSMenuDelegate (嵌入 SwiftUI 图表卡片)
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        let report = currentReport
+        
+        // 极速同步当前活跃会话，确保菜单弹出的第一帧即是最新实时状态
+        var report = currentReport
+        report.detectedLLMs = ProcessScanner.shared.scanActiveLLMs()
+        currentReport = report
         
         // 1. SwiftUI 图表面板项 (彻底解决灰色纯文本割裂感)
         let dashboard = DashboardView(
