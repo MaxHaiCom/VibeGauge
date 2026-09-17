@@ -13,9 +13,11 @@ rm -rf "${APP_BUNDLE}" "${APP_NAME}"
 swiftc -O \
     -target arm64-apple-macosx14.0 \
     -framework Cocoa \
+    -framework SwiftUI \
     -framework ServiceManagement \
     -framework UserNotifications \
     Sources/ProcessScanner.swift \
+    Sources/DashboardView.swift \
     Sources/AppDelegate.swift \
     Sources/main.swift \
     -o "${APP_NAME}"
