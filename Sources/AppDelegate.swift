@@ -2,6 +2,14 @@ import Cocoa
 import ServiceManagement
 import UserNotifications
 
+enum DisplayStyle: String, CaseIterable {
+    case textOnly = "清晰纯数字 (如 58%)"
+    case circleRing = "微型环形进度圈"
+    case horizontalCompact = "小图标 + 适中数字"
+    case vertical = "上下微型堆叠"
+    case iconOnly = "纯芯片图标"
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var menu: NSMenu!
@@ -12,7 +20,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     
     // UserDefaults Keys
     private let autoCleanKey = "autoCleanEnabled"
-    private let showPercentageKey = "showPercentageInMenuBar"
+    private let displayStyleKey = "menuBarDisplayStyle"
     
     var isAutoCleanEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: autoCleanKey) }
@@ -22,14 +30,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     
-    var isShowPercentageEnabled: Bool {
+    var currentStyle: DisplayStyle {
         get {
-            UserDefaults.standard.object(forKey: showPercentageKey) == nil
-                ? true
-                : UserDefaults.standard.bool(forKey: showPercentageKey)
+            if let raw = UserDefaults.standard.string(forKey: displayStyleKey),
+               let style = DisplayStyle(rawValue: raw) {
+                return style
+            }
+            // 默认改为最清晰且极省空间的纯数字风格
+            return .textOnly
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: showPercentageKey)
+            UserDefaults.standard.set(newValue.rawValue, forKey: displayStyleKey)
             renderStatusButton(report: currentReport)
         }
     }
@@ -99,61 +110,131 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     
-    // MARK: - Vertical Stacked Menu Bar Icon & Text
-    private func createVerticalStatusImage(percentage: Int, showPercentage: Bool) -> NSImage {
-        let width: CGFloat = 21.0
-        let height: CGFloat = 22.0
-        
-        let img = NSImage(size: NSSize(width: width, height: height), flipped: false) { rect in
-            if showPercentage {
-                // 1. Draw SF Symbol at the top
-                let symbolConfig = NSImage.SymbolConfiguration(pointSize: 9.5, weight: .medium)
-                if let symbol = NSImage(systemSymbolName: "memorychip", accessibilityDescription: nil)?.withSymbolConfiguration(symbolConfig) {
-                    let iconSize: CGFloat = 10.5
-                    let iconX = (width - iconSize) / 2.0
-                    let iconY: CGFloat = 10.5
-                    symbol.draw(in: NSRect(x: iconX, y: iconY, width: iconSize, height: iconSize))
-                }
-                
-                // 2. Draw percentage text directly below the icon
+    // MARK: - Multi-Style Rendering
+    private func renderImage(for style: DisplayStyle, percentage: Int) -> NSImage {
+        switch style {
+        case .textOnly:
+            // 方案 1: 纯大号数字 (字号 12pt，不伤眼，横向仅 28pt)
+            let width: CGFloat = 28.0
+            let img = NSImage(size: NSSize(width: width, height: 22.0), flipped: false) { rect in
                 let text = "\(percentage)%"
-                let font = NSFont.monospacedDigitSystemFont(ofSize: 7.2, weight: .bold)
+                let font = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .semibold)
                 let paragraphStyle = NSMutableParagraphStyle()
                 paragraphStyle.alignment = .center
-                
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: font,
                     .foregroundColor: NSColor.black,
                     .paragraphStyle: paragraphStyle
                 ]
+                text.draw(in: NSRect(x: 0, y: 4.0, width: width, height: 14.0), withAttributes: attrs)
+                return true
+            }
+            img.isTemplate = true
+            return img
+            
+        case .circleRing:
+            // 方案 2: Apple Watch 风格微型圆环 (宽度仅 18pt，不看小字看弧度)
+            let size: CGFloat = 18.0
+            let img = NSImage(size: NSSize(width: size, height: 22.0), flipped: false) { rect in
+                let center = NSPoint(x: size / 2.0, y: 11.0)
+                let radius: CGFloat = 6.5
+                let lineWidth: CGFloat = 2.0
                 
-                let textRect = NSRect(x: 0, y: 0.5, width: width, height: 9.0)
-                text.draw(in: textRect, withAttributes: attrs)
-            } else {
-                // Icon only (centered vertically & horizontally)
+                // 轨道底色
+                let bgPath = NSBezierPath()
+                bgPath.appendArc(withCenter: center, radius: radius, startAngle: 0, endAngle: 360)
+                bgPath.lineWidth = lineWidth
+                NSColor.black.withAlphaComponent(0.25).setStroke()
+                bgPath.stroke()
+                
+                // 内存占用进度弧
+                let usedRatio = CGFloat(100 - percentage) / 100.0
+                if usedRatio > 0 {
+                    let startAngle: CGFloat = 90.0
+                    let endAngle: CGFloat = 90.0 - (usedRatio * 360.0)
+                    let activePath = NSBezierPath()
+                    activePath.appendArc(withCenter: center, radius: radius, startAngle: startAngle, endAngle: endAngle, clockwise: true)
+                    activePath.lineWidth = lineWidth
+                    activePath.lineCapStyle = .round
+                    NSColor.black.setStroke()
+                    activePath.stroke()
+                }
+                return true
+            }
+            img.isTemplate = true
+            return img
+            
+        case .horizontalCompact:
+            // 方案 3: 小图标 + 适中数字 (横向仅 36pt，字号 10.5pt 清晰易读)
+            let width: CGFloat = 36.0
+            let img = NSImage(size: NSSize(width: width, height: 22.0), flipped: false) { rect in
+                let symbolConfig = NSImage.SymbolConfiguration(pointSize: 10.0, weight: .medium)
+                if let symbol = NSImage(systemSymbolName: "memorychip", accessibilityDescription: nil)?.withSymbolConfiguration(symbolConfig) {
+                    let iconSize: CGFloat = 11.0
+                    symbol.draw(in: NSRect(x: 0, y: 5.5, width: iconSize, height: iconSize))
+                }
+                let text = "\(percentage)%"
+                let font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
+                let paragraphStyle = NSMutableParagraphStyle()
+                paragraphStyle.alignment = .right
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: font,
+                    .foregroundColor: NSColor.black,
+                    .paragraphStyle: paragraphStyle
+                ]
+                text.draw(in: NSRect(x: 12.0, y: 4.5, width: width - 12.0, height: 14.0), withAttributes: attrs)
+                return true
+            }
+            img.isTemplate = true
+            return img
+            
+        case .vertical:
+            // 方案 4: 上下微型堆叠
+            let width: CGFloat = 21.0
+            let img = NSImage(size: NSSize(width: width, height: 22.0), flipped: false) { rect in
+                let symbolConfig = NSImage.SymbolConfiguration(pointSize: 9.5, weight: .medium)
+                if let symbol = NSImage(systemSymbolName: "memorychip", accessibilityDescription: nil)?.withSymbolConfiguration(symbolConfig) {
+                    let iconSize: CGFloat = 10.5
+                    let iconX = (width - iconSize) / 2.0
+                    symbol.draw(in: NSRect(x: iconX, y: 10.5, width: iconSize, height: iconSize))
+                }
+                let text = "\(percentage)%"
+                let font = NSFont.monospacedDigitSystemFont(ofSize: 7.2, weight: .bold)
+                let paragraphStyle = NSMutableParagraphStyle()
+                paragraphStyle.alignment = .center
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: font,
+                    .foregroundColor: NSColor.black,
+                    .paragraphStyle: paragraphStyle
+                ]
+                text.draw(in: NSRect(x: 0, y: 0.5, width: width, height: 9.0), withAttributes: attrs)
+                return true
+            }
+            img.isTemplate = true
+            return img
+            
+        case .iconOnly:
+            // 方案 5: 纯图标
+            let width: CGFloat = 20.0
+            let img = NSImage(size: NSSize(width: width, height: 22.0), flipped: false) { rect in
                 let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
                 if let symbol = NSImage(systemSymbolName: "memorychip", accessibilityDescription: nil)?.withSymbolConfiguration(symbolConfig) {
                     let iconSize: CGFloat = 14.0
                     let iconX = (width - iconSize) / 2.0
-                    let iconY = (height - iconSize) / 2.0
+                    let iconY = (22.0 - iconSize) / 2.0
                     symbol.draw(in: NSRect(x: iconX, y: iconY, width: iconSize, height: iconSize))
                 }
+                return true
             }
-            return true
+            img.isTemplate = true
+            return img
         }
-        
-        img.isTemplate = true
-        return img
     }
     
     private func renderStatusButton(report: ScanReport) {
         guard let button = statusItem.button else { return }
         
-        let img = createVerticalStatusImage(
-            percentage: report.freePercentage,
-            showPercentage: isShowPercentageEnabled
-        )
-        
+        let img = renderImage(for: currentStyle, percentage: report.freePercentage)
         button.image = img
         button.imagePosition = .imageOnly
         button.title = ""
@@ -250,16 +331,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        // 3. 选项偏好
+        // 3. 菜单栏显示样式切换 (单选子菜单)
+        let styleSubmenu = NSMenu()
+        for style in DisplayStyle.allCases {
+            let item = NSMenuItem(title: style.rawValue, action: #selector(changeStyleAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = style
+            item.state = (style == currentStyle) ? .on : .off
+            styleSubmenu.addItem(item)
+        }
+        let styleMenuItem = NSMenuItem(title: "菜单栏显示样式", action: nil, keyEquivalent: "")
+        styleMenuItem.submenu = styleSubmenu
+        menu.addItem(styleMenuItem)
+        
+        // 4. 选项偏好
         let autoCleanItem = NSMenuItem(title: "定时自动清理 (每 30 分钟)", action: #selector(toggleAutoClean), keyEquivalent: "")
         autoCleanItem.target = self
         autoCleanItem.state = isAutoCleanEnabled ? .on : .off
         menu.addItem(autoCleanItem)
-        
-        let showPctItem = NSMenuItem(title: "在图标下方显示百分比", action: #selector(toggleShowPercentage), keyEquivalent: "")
-        showPctItem.target = self
-        showPctItem.state = isShowPercentageEnabled ? .on : .off
-        menu.addItem(showPctItem)
         
         let launchItem = NSMenuItem(title: "登录时自动启动", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         launchItem.target = self
@@ -268,7 +357,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        // 4. 控制操作
+        // 5. 控制操作
         let refreshItem = NSMenuItem(title: "重新扫描", action: #selector(refreshAction), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
@@ -291,13 +380,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateStatus()
     }
     
+    @objc func changeStyleAction(_ sender: NSMenuItem) {
+        if let style = sender.representedObject as? DisplayStyle {
+            currentStyle = style
+        }
+    }
+    
     @objc func toggleAutoClean() {
         isAutoCleanEnabled.toggle()
         updateStatus()
-    }
-    
-    @objc func toggleShowPercentage() {
-        isShowPercentageEnabled.toggle()
     }
     
     @objc func toggleLaunchAtLogin() {
