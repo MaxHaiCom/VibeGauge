@@ -39,14 +39,14 @@ public struct DashboardView: View {
     private func tierBackgroundColor(_ tier: String) -> Color {
         if tier.contains("API") { return Color.blue.opacity(0.18) }
         if tier.contains("本地") { return Color.purple.opacity(0.18) }
-        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") || tier.contains("5x") || tier.contains("Premium") || tier.contains("SuperGrok") { return Color.green.opacity(0.18) }
+        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") || tier.contains("5x") || tier.contains("Premium") || tier.contains("SuperGrok") || tier.contains("Advanced") || tier.contains("AI Premium") { return Color.green.opacity(0.18) }
         return Color.teal.opacity(0.18)
     }
     
     private func tierForegroundColor(_ tier: String) -> Color {
         if tier.contains("API") { return Color.blue }
         if tier.contains("本地") { return Color.purple }
-        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") || tier.contains("5x") || tier.contains("Premium") || tier.contains("SuperGrok") { return Color.green }
+        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") || tier.contains("5x") || tier.contains("Premium") || tier.contains("SuperGrok") || tier.contains("Advanced") || tier.contains("AI Premium") { return Color.green }
         return Color.teal
     }
     

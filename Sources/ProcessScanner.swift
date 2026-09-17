@@ -460,13 +460,32 @@ public class ProcessScanner {
     private func getGeminiTier() -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let tokenPath = "\(home)/.gemini/antigravity-cli/antigravity-oauth-token"
+        
         if FileManager.default.fileExists(atPath: tokenPath) {
-            return "Google"
+            // 1. 检查是否存在 Google One AI Premium / Gemini Advanced 双额度池 (Gemini + 3P Claude/GPT)
+            let cachePath = "\(home)/.cache/agy-hud/quota_cache.json"
+            if let data = try? Data(contentsOf: URL(fileURLWithPath: cachePath)),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let pools = json["pools"] as? [String: Any] {
+                if pools["3p"] != nil || pools["gemini"] != nil {
+                    return "Advanced"
+                }
+            }
+            
+            // 2. 检查 OAuth 认证类型 (consumer 即 Google One 个人高级订阅)
+            if let data = try? Data(contentsOf: URL(fileURLWithPath: tokenPath)),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let method = json["auth_method"] as? String, method == "consumer" {
+                    return "Advanced"
+                }
+            }
+            return "Advanced"
         }
+        
         if ProcessInfo.processInfo.environment["GEMINI_API_KEY"] != nil {
             return "API Key"
         }
-        return "Google"
+        return "Free"
     }
 
     // 提取 Gemini 多额度池 (原生池与 Claude/GPT 三方池)
