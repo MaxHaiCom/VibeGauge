@@ -8,6 +8,27 @@ public struct ServiceGroup: Identifiable {
     public var pids: [Int]
 }
 
+public struct TokenStats {
+    public var latestModel: String = ""
+    public var latestContext: Int = 0
+    public var latestCacheHitRate: Double = 0.0
+    public var latestOutput: Int = 0
+    public var latestThinking: Int = 0
+    public var latestSecondsAgo: Int = 0
+    
+    public var turns5h: Int = 0
+    public var context5h: Int64 = 0
+    public var output5h: Int64 = 0
+    
+    public var todayContext: Int64 = 0
+    public var todayCacheRead: Int64 = 0
+    public var todayOutput: Int64 = 0
+    public var todayThinking: Int64 = 0
+    public var todayCacheHitRate: Double {
+        todayContext > 0 ? (Double(todayCacheRead) / Double(todayContext)) * 100.0 : 0.0
+    }
+}
+
 public struct ScanReport {
     // 内存与虚拟内存
     public var freePercentage: Int = 0
@@ -30,6 +51,9 @@ public struct ScanReport {
     public var activeMCPProcessCount: Int = 0
     public var activeMCPTotalMemMB: Double = 0.0
     
+    // Token 与 Prompt Cache 实时与累计监控
+    public var tokens: TokenStats = TokenStats()
+    
     // 程序员开发缓存
     public var npxCacheMB: Double = 0.0
     
@@ -42,6 +66,9 @@ public struct ScanReport {
 
 public class ProcessScanner {
     public static let shared = ProcessScanner()
+    
+    private var lastCumulativeScanTime: TimeInterval = 0
+    private var cachedTokenStats = TokenStats()
     
     private let whitelist = [
         "CleanMyMac",
@@ -97,7 +124,7 @@ public class ProcessScanner {
                 let parts = line.components(separatedBy: ":")
                 if parts.count > 1 {
                     let pages = Double(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0.0
-                    report.compressorGB = (pages * 16384.0) / (1024.0 * 1024.0 * 1024.0)
+                    report.compressorGB = (pages * 16384.0) / (1024.0 * 1024.0)
                 }
             }
         }
@@ -234,7 +261,7 @@ public class ProcessScanner {
             }
         }
         
-        // 递归追踪孤儿的子进程 (例如 npm exec 派生的 node)
+        // 递归追踪孤儿的子进程
         var allOrphanPids = Set(orphanRootPids)
         var stack = Array(orphanRootPids)
         while !stack.isEmpty {
@@ -284,7 +311,128 @@ public class ProcessScanner {
         report.totalOrphanCount = allOrphanPids.count
         report.totalOrphanMemMB = groups.reduce(0.0) { $0 + $1.totalMemMB }
         
+        // 10. Token & Prompt Cache 实时与累计遥测
+        report.tokens = scanTokens()
+        
         return report
+    }
+    
+    private func scanTokens() -> TokenStats {
+        let now = Date().timeIntervalSince1970
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let projectsDir = "\(home)/.claude/projects"
+        guard FileManager.default.fileExists(atPath: projectsDir) else { return cachedTokenStats }
+        
+        let window5h = now - 5.0 * 3600.0
+        let window24h = now - 24.0 * 3600.0
+        
+        let fileManager = FileManager.default
+        guard let enumerator = fileManager.enumerator(atPath: projectsDir) else { return cachedTokenStats }
+        
+        var recentFiles: [(path: String, mtime: TimeInterval)] = []
+        while let element = enumerator.nextObject() as? String {
+            if element.hasSuffix(".jsonl") {
+                let fullPath = "\(projectsDir)/\(element)"
+                if let attrs = try? fileManager.attributesOfItem(atPath: fullPath),
+                   let modDate = attrs[.modificationDate] as? Date {
+                    let mtime = modDate.timeIntervalSince1970
+                    if mtime > window24h {
+                        recentFiles.append((fullPath, mtime))
+                    }
+                }
+            }
+        }
+        recentFiles.sort { $0.mtime > $1.mtime }
+        
+        var stats = TokenStats()
+        
+        // A. 实时提取：最新会话文件的最后一轮交互 (毫秒级响应)
+        if let newest = recentFiles.first {
+            stats.latestSecondsAgo = max(0, Int(now - newest.mtime))
+            if let content = try? String(contentsOfFile: newest.path, encoding: .utf8) {
+                let lines = content.components(separatedBy: "\n")
+                for line in lines.reversed() {
+                    if line.contains("\"type\":\"assistant\"") && line.contains("\"usage\":") {
+                        if let data = line.data(using: .utf8),
+                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let msg = json["message"] as? [String: Any],
+                           let usage = msg["usage"] as? [String: Any] {
+                            stats.latestModel = msg["model"] as? String ?? "claude"
+                            let inp = usage["input_tokens"] as? Int ?? 0
+                            let cRead = usage["cache_read_input_tokens"] as? Int ?? 0
+                            let cCreate = usage["cache_creation_input_tokens"] as? Int ?? 0
+                            let out = usage["output_tokens"] as? Int ?? 0
+                            let details = usage["output_tokens_details"] as? [String: Any]
+                            let thinking = details?["thinking_tokens"] as? Int ?? 0
+                            
+                            let totalCtx = inp + cRead + cCreate
+                            stats.latestContext = totalCtx
+                            stats.latestOutput = out
+                            stats.latestThinking = thinking
+                            stats.latestCacheHitRate = totalCtx > 0 ? (Double(cRead) / Double(totalCtx)) * 100.0 : 0.0
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        
+        // B. 累计统计：每 45 秒刷新一次全量，避免频繁磁盘 I/O
+        if now - lastCumulativeScanTime > 45.0 || cachedTokenStats.todayContext == 0 {
+            lastCumulativeScanTime = now
+            for file in recentFiles {
+                guard let content = try? String(contentsOfFile: file.path, encoding: .utf8) else { continue }
+                let lines = content.components(separatedBy: "\n")
+                let is5h = file.mtime > window5h
+                
+                for line in lines {
+                    if line.contains("\"type\":\"assistant\"") && line.contains("\"usage\":") {
+                        if let data = line.data(using: .utf8),
+                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let msg = json["message"] as? [String: Any],
+                           let usage = msg["usage"] as? [String: Any] {
+                            let inp = Int64(usage["input_tokens"] as? Int ?? 0)
+                            let cRead = Int64(usage["cache_read_input_tokens"] as? Int ?? 0)
+                            let cCreate = Int64(usage["cache_creation_input_tokens"] as? Int ?? 0)
+                            let out = Int64(usage["output_tokens"] as? Int ?? 0)
+                            let details = usage["output_tokens_details"] as? [String: Any]
+                            let thinking = Int64(details?["thinking_tokens"] as? Int ?? 0)
+                            let ctx = inp + cRead + cCreate
+                            
+                            stats.todayContext += ctx
+                            stats.todayCacheRead += cRead
+                            stats.todayOutput += out
+                            stats.todayThinking += thinking
+                            
+                            if is5h {
+                                stats.turns5h += 1
+                                stats.context5h += ctx
+                                stats.output5h += out
+                            }
+                        }
+                    }
+                }
+            }
+            // Update cache
+            cachedTokenStats.turns5h = stats.turns5h
+            cachedTokenStats.context5h = stats.context5h
+            cachedTokenStats.output5h = stats.output5h
+            cachedTokenStats.todayContext = stats.todayContext
+            cachedTokenStats.todayCacheRead = stats.todayCacheRead
+            cachedTokenStats.todayOutput = stats.todayOutput
+            cachedTokenStats.todayThinking = stats.todayThinking
+        } else {
+            // Use cached cumulative data
+            stats.turns5h = cachedTokenStats.turns5h
+            stats.context5h = cachedTokenStats.context5h
+            stats.output5h = cachedTokenStats.output5h
+            stats.todayContext = cachedTokenStats.todayContext
+            stats.todayCacheRead = cachedTokenStats.todayCacheRead
+            stats.todayOutput = cachedTokenStats.todayOutput
+            stats.todayThinking = cachedTokenStats.todayThinking
+        }
+        
+        return stats
     }
     
     public func killProcesses(pids: [Int]) -> (killedCount: Int, freedMB: Double) {
