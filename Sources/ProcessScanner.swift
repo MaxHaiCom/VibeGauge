@@ -38,8 +38,15 @@ public struct DetectedLLMRuntime: Identifiable {
     public let name: String
     public let provider: String
     public let isRunning: Bool
-    public let authType: String
+    public let tier: String
     public let detail: String
+    public var fiveHourPct: Int? = nil
+    public var sevenDayPct: Int? = nil
+    public var secondaryPoolName: String = ""
+    public var secondaryFiveHourPct: Int? = nil
+    public var secondarySevenDayPct: Int? = nil
+    public var isFullWidth: Bool = false
+    public var quotaSubtitle: String = ""
 }
 
 public struct ScanReport {
@@ -274,17 +281,7 @@ public class ProcessScanner {
             }
         }
         
-        // 9. 多模型全景感知汇聚
-        report.detectedLLMs = detectAllLLMRuntimes(
-            claudeCount: report.activeClaudeCount,
-            agyCount: report.activeAgyCount,
-            hasCodex: hasCodex,
-            hasOllama: hasOllama,
-            hasCursor: hasCursor,
-            hasLMStudio: hasLMStudio
-        )
-        
-        // 10. 甄别断链孤儿进程
+        // 9. 甄别断链孤儿进程
         var orphanRootPids = Set<Int>()
         for (pid, proc) in allProcs {
             if proc.ppid != 1 { continue }
@@ -355,69 +352,136 @@ public class ProcessScanner {
         report.totalOrphanCount = allOrphanPids.count
         report.totalOrphanMemMB = groups.reduce(0.0) { $0 + $1.totalMemMB }
         
-        // 11. Token & Prompt Cache 实时与累计遥测
+        // 10. Token & Prompt Cache 实时与累计遥测
         report.tokens = scanTokens()
+        
+        // 11. 多模型全景感知与各模型专属额度汇聚
+        report.detectedLLMs = detectAllLLMRuntimes(
+            claudeCount: report.activeClaudeCount,
+            agyCount: report.activeAgyCount,
+            hasCodex: hasCodex,
+            hasOllama: hasOllama,
+            hasCursor: hasCursor,
+            hasLMStudio: hasLMStudio,
+            tokens: report.tokens
+        )
         
         return report
     }
     
-    // 订阅与 API Key 鉴权特征判别
-    private func getClaudeAuthType() -> String {
+    // 档位与鉴权特征判别
+    private func getClaudeTier() -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let claudeJson = "\(home)/.claude.json"
         if let data = try? Data(contentsOf: URL(fileURLWithPath: claudeJson)),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let oa = json["oauthAccount"] as? [String: Any] {
-            let billing = oa["billingType"] as? String ?? ""
             let rateTier = oa["organizationRateLimitTier"] as? String ?? ""
             if rateTier.contains("max") {
-                return "订阅 Max"
+                return "Max 5x"
             } else if rateTier.contains("team") {
-                return "订阅 Team"
+                return "Team"
+            } else if rateTier.contains("pro") {
+                return "Pro"
             }
+            let billing = oa["billingType"] as? String ?? ""
             if billing.contains("subscription") {
-                return "订阅 Pro"
+                return "Pro"
             }
-            return "账号"
         }
         if ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] != nil {
             return "API Key"
         }
-        return "订阅"
+        return "Max 5x"
     }
     
-    private func getCodexAuthType() -> String {
+    private func getCodexTier() -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let authPath = "\(home)/.codex/auth.json"
         if let data = try? Data(contentsOf: URL(fileURLWithPath: authPath)),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            let mode = json["auth_mode"] as? String ?? ""
-            if mode == "chatgpt" {
-                return "订阅"
-            } else if mode == "api_key" {
-                return "API Key"
+            if let toks = json["tokens"] as? [String: Any],
+               let idTok = toks["id_token"] as? String {
+                let parts = idTok.split(separator: ".")
+                if parts.count >= 2 {
+                    var payloadStr = String(parts[1])
+                    let rem = payloadStr.count % 4
+                    if rem > 0 { payloadStr += String(repeating: "=", count: 4 - rem) }
+                    if let pData = Data(base64Encoded: payloadStr),
+                       let pJson = try? JSONSerialization.jsonObject(with: pData) as? [String: Any],
+                       let authObj = pJson["https://api.openai.com/auth"] as? [String: Any],
+                       let plan = authObj["chatgpt_plan_type"] as? String {
+                        if plan.contains("prolite") || plan.contains("plus") {
+                            return "Plus"
+                        } else if plan.contains("pro") {
+                            return "Pro"
+                        } else if plan.contains("team") {
+                            return "Team"
+                        }
+                    }
+                }
             }
+            let mode = json["auth_mode"] as? String ?? ""
+            if mode == "chatgpt" { return "Plus" }
+            if mode == "api_key" { return "API Key" }
         }
         if ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil {
             return "API Key"
         }
-        return "订阅"
+        return "Plus"
     }
     
-    private func getGeminiAuthType() -> String {
+    private func getGeminiTier() -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let tokenPath = "\(home)/.gemini/antigravity-cli/antigravity-oauth-token"
         if FileManager.default.fileExists(atPath: tokenPath) {
-            return "账号"
+            return "Google"
         }
         if ProcessInfo.processInfo.environment["GEMINI_API_KEY"] != nil {
             return "API Key"
         }
-        return "账号"
+        return "Google"
+    }
+
+    // 提取 Gemini 多额度池 (原生池与 Claude/GPT 三方池)
+    private func getGeminiDualPools() -> (native5h: Int?, nativeW: Int?, tp5h: Int?, tpW: Int?) {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let cachePath = "\(home)/.cache/agy-hud/quota_cache.json"
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: cachePath)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pools = json["pools"] as? [String: Any] else {
+            return (nil, nil, nil, nil)
+        }
+        
+        func extractPct(_ dict: [String: Any]?, key: String) -> Int? {
+            guard let sub = dict?[key] as? [String: Any],
+                  let rf = sub["remaining_fraction"] as? Double else {
+                return nil
+            }
+            return max(0, min(100, Int(round((1.0 - rf) * 100.0))))
+        }
+        
+        let g = pools["gemini"] as? [String: Any]
+        let tp = pools["3p"] as? [String: Any]
+        
+        let g5h = extractPct(g, key: "5h")
+        let gw = extractPct(g, key: "weekly")
+        let tp5h = extractPct(tp, key: "5h")
+        let tpw = extractPct(tp, key: "weekly")
+        
+        return (g5h, gw, tp5h, tpw)
     }
 
     // 多模型自动探针
-    private func detectAllLLMRuntimes(claudeCount: Int, agyCount: Int, hasCodex: Bool, hasOllama: Bool, hasCursor: Bool, hasLMStudio: Bool) -> [DetectedLLMRuntime] {
+    private func detectAllLLMRuntimes(
+        claudeCount: Int,
+        agyCount: Int,
+        hasCodex: Bool,
+        hasOllama: Bool,
+        hasCursor: Bool,
+        hasLMStudio: Bool,
+        tokens: TokenStats
+    ) -> [DetectedLLMRuntime] {
         var list: [DetectedLLMRuntime] = []
         
         // 1. Claude
@@ -426,19 +490,31 @@ public class ProcessScanner {
                 name: "Claude",
                 provider: "",
                 isRunning: true,
-                authType: getClaudeAuthType(),
-                detail: "\(claudeCount) 会话"
+                tier: getClaudeTier(),
+                detail: "\(claudeCount) 会话",
+                fiveHourPct: tokens.fiveHourPct,
+                sevenDayPct: tokens.sevenDayPct,
+                quotaSubtitle: ""
             ))
         }
         
-        // 2. Gemini
+        // 2. Gemini (支持原生与 Claude/GPT 三方双额度池)
         if agyCount > 0 {
+            let dual = getGeminiDualPools()
+            let hasDual = dual.tpW != nil || dual.tp5h != nil || dual.native5h != nil || dual.nativeW != nil
             list.append(DetectedLLMRuntime(
                 name: "Gemini",
                 provider: "",
                 isRunning: true,
-                authType: getGeminiAuthType(),
-                detail: "\(agyCount) 会话"
+                tier: getGeminiTier(),
+                detail: "\(agyCount) 会话",
+                fiveHourPct: dual.native5h,
+                sevenDayPct: dual.nativeW,
+                secondaryPoolName: "三方 (Claude/GPT)",
+                secondaryFiveHourPct: dual.tp5h,
+                secondarySevenDayPct: dual.tpW,
+                isFullWidth: hasDual,
+                quotaSubtitle: "Agy 运行时 · 会话活跃"
             ))
         }
         
@@ -448,14 +524,16 @@ public class ProcessScanner {
                 name: "Codex",
                 provider: "",
                 isRunning: true,
-                authType: getCodexAuthType(),
-                detail: "活跃"
+                tier: getCodexTier(),
+                detail: "活跃",
+                quotaSubtitle: "3H 交互 · 会话就绪"
             ))
         }
         
         // 4. Ollama
         if hasOllama {
             var ollamaDetail = "待命"
+            var ollamaSub = "端侧运行 · 0 额度消耗"
             if let url = URL(string: "http://127.0.0.1:11434/api/ps") {
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 0.3
@@ -465,7 +543,8 @@ public class ProcessScanner {
                        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                        let models = json["models"] as? [[String: Any]], !models.isEmpty {
                         let names = models.compactMap { $0["name"] as? String }.joined(separator: ", ")
-                        ollamaDetail = "推理: \(names)"
+                        ollamaDetail = "推理"
+                        ollamaSub = "模型: \(names)"
                     }
                     sema.signal()
                 }.resume()
@@ -475,8 +554,9 @@ public class ProcessScanner {
                 name: "Ollama",
                 provider: "",
                 isRunning: true,
-                authType: "本地",
-                detail: ollamaDetail
+                tier: "本地",
+                detail: ollamaDetail,
+                quotaSubtitle: ollamaSub
             ))
         }
         
@@ -486,8 +566,9 @@ public class ProcessScanner {
                 name: "Cursor",
                 provider: "",
                 isRunning: true,
-                authType: "订阅",
-                detail: "运行中"
+                tier: "Pro",
+                detail: "运行中",
+                quotaSubtitle: "高速池 500次/月"
             ))
         }
         
@@ -497,8 +578,9 @@ public class ProcessScanner {
                 name: "LM Studio",
                 provider: "",
                 isRunning: true,
-                authType: "本地",
-                detail: "运行中"
+                tier: "本地",
+                detail: "运行中",
+                quotaSubtitle: "端侧运行 · 0 额度消耗"
             ))
         }
         

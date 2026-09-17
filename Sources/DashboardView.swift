@@ -1,6 +1,26 @@
 import Cocoa
 import SwiftUI
 
+struct MiniProgressBar: View {
+    var value: Double
+    var color: Color = .green
+    var width: CGFloat = 16
+    var height: CGFloat = 3.5
+    
+    var body: some View {
+        ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: height / 2)
+                .fill(Color.secondary.opacity(0.22))
+                .frame(width: width, height: height)
+            
+            let safeRatio = max(0.02, min(1.0, value))
+            RoundedRectangle(cornerRadius: height / 2)
+                .fill(color)
+                .frame(width: max(1.5, width * CGFloat(safeRatio)), height: height)
+        }
+    }
+}
+
 public struct DashboardView: View {
     public var report: ScanReport
     public var onCleanOrphans: () -> Void
@@ -14,6 +34,20 @@ public struct DashboardView: View {
         self.report = report
         self.onCleanOrphans = onCleanOrphans
         self.onCleanNPX = onCleanNPX
+    }
+    
+    private func tierBackgroundColor(_ tier: String) -> Color {
+        if tier.contains("API") { return Color.blue.opacity(0.18) }
+        if tier.contains("本地") { return Color.purple.opacity(0.18) }
+        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") { return Color.green.opacity(0.18) }
+        return Color.teal.opacity(0.18)
+    }
+    
+    private func tierForegroundColor(_ tier: String) -> Color {
+        if tier.contains("API") { return Color.blue }
+        if tier.contains("本地") { return Color.purple }
+        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") { return Color.green }
+        return Color.teal
     }
     
     private func formatTokens(_ count: Int64) -> String {
@@ -151,44 +185,35 @@ public struct DashboardView: View {
                     }
                 }
                 
-                // 2.1 主流大模型运行状态矩阵 (双列紧凑卡片，带订阅/API Key 标识)
-                let columns = [
+                // 2.1 主流大模型运行状态矩阵 (普通卡片双列，Gemini 等多额度池模型独占单列通栏)
+                let regularTop = report.detectedLLMs.filter { !$0.isFullWidth && ($0.name == "Claude" || $0.name == "Codex") }
+                let fullWidthModels = report.detectedLLMs.filter { $0.isFullWidth }
+                let regularBottom = report.detectedLLMs.filter { !$0.isFullWidth && $0.name != "Claude" && $0.name != "Codex" }
+                
+                let gridCols = [
                     GridItem(.flexible(), spacing: 6),
                     GridItem(.flexible(), spacing: 6)
                 ]
-                LazyVGrid(columns: columns, spacing: 5) {
-                    ForEach(report.detectedLLMs) { llm in
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(llm.isRunning ? Color.green : Color.secondary.opacity(0.3))
-                                .frame(width: 5, height: 5)
-                            
-                            Text(llm.name)
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(llm.isRunning ? .primary : .secondary)
-                                .lineLimit(1)
-                            
-                            if !llm.authType.isEmpty {
-                                Text(llm.authType)
-                                    .font(.system(size: 7.5, weight: .semibold))
-                                    .padding(.horizontal, 3)
-                                    .padding(.vertical, 1)
-                                    .background(llm.authType.contains("API") ? Color.blue.opacity(0.18) : (llm.authType == "本地" ? Color.purple.opacity(0.18) : Color.green.opacity(0.18)))
-                                    .foregroundColor(llm.authType.contains("API") ? .blue : (llm.authType == "本地" ? .purple : .green))
-                                    .cornerRadius(2.5)
+                
+                VStack(spacing: 5) {
+                    if !regularTop.isEmpty {
+                        LazyVGrid(columns: gridCols, spacing: 5) {
+                            ForEach(regularTop) { llm in
+                                modelCard(for: llm)
                             }
-                            
-                            Spacer(minLength: 2)
-                            
-                            Text(llm.detail)
-                                .font(.system(size: 8.5))
-                                .foregroundColor(llm.isRunning ? .secondary : .secondary.opacity(0.5))
-                                .lineLimit(1)
                         }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 4.5)
-                        .background(llm.isRunning ? Color.secondary.opacity(0.08) : Color.secondary.opacity(0.03))
-                        .cornerRadius(5)
+                    }
+                    
+                    ForEach(fullWidthModels) { llm in
+                        fullWidthModelCard(for: llm)
+                    }
+                    
+                    if !regularBottom.isEmpty {
+                        LazyVGrid(columns: gridCols, spacing: 5) {
+                            ForEach(regularBottom) { llm in
+                                modelCard(for: llm)
+                            }
+                        }
                     }
                 }
                 
@@ -388,5 +413,182 @@ public struct DashboardView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(width: 320)
+    }
+    
+    // 普通卡片 (双列)
+    @ViewBuilder
+    private func modelCard(for llm: DetectedLLMRuntime) -> some View {
+        VStack(alignment: .leading, spacing: 3.5) {
+            // Row 1: 状态指示点 + 模型名 + 档位标 + 状态
+            HStack(spacing: 3.5) {
+                Circle()
+                    .fill(llm.isRunning ? Color.green : Color.secondary.opacity(0.3))
+                    .frame(width: 5, height: 5)
+                
+                Text(llm.name)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(llm.isRunning ? .primary : .secondary)
+                    .lineLimit(1)
+                
+                if !llm.tier.isEmpty {
+                    Text(llm.tier)
+                        .font(.system(size: 7.5, weight: .bold))
+                        .padding(.horizontal, 3.5)
+                        .padding(.vertical, 1)
+                        .background(tierBackgroundColor(llm.tier))
+                        .foregroundColor(tierForegroundColor(llm.tier))
+                        .cornerRadius(2.5)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                
+                Spacer(minLength: 2)
+                
+                Text(llm.detail)
+                    .font(.system(size: 8.5))
+                    .foregroundColor(llm.isRunning ? .secondary : .secondary.opacity(0.5))
+                    .lineLimit(1)
+            }
+            
+            // Row 2: 专属额度用量条 (在百分比前放置微型进度条)
+            if let fh = llm.fiveHourPct {
+                HStack(spacing: 3) {
+                    Text("5H")
+                        .font(.system(size: 7.5, weight: .medium))
+                        .foregroundColor(.secondary)
+                    MiniProgressBar(value: Double(fh) / 100.0, color: fh > 80 ? .orange : .green, width: 16, height: 3.5)
+                    Text("\(fh)%")
+                        .font(.system(size: 7.5, weight: .bold))
+                        .foregroundColor(fh > 80 ? .orange : .primary)
+                    
+                    if let sd = llm.sevenDayPct {
+                        Text("·")
+                            .font(.system(size: 7))
+                            .foregroundColor(.secondary)
+                        Text("W")
+                            .font(.system(size: 7.5, weight: .medium))
+                            .foregroundColor(.secondary)
+                        MiniProgressBar(value: Double(sd) / 100.0, color: sd > 80 ? .orange : .green, width: 16, height: 3.5)
+                        Text("\(sd)%")
+                            .font(.system(size: 7.5, weight: .bold))
+                            .foregroundColor(sd > 80 ? .orange : .primary)
+                    }
+                }
+            } else {
+                Text(llm.quotaSubtitle.isEmpty ? (llm.isRunning ? "服务就绪" : "未启动") : llm.quotaSubtitle)
+                    .font(.system(size: 8))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .background(llm.isRunning ? Color.secondary.opacity(0.08) : Color.secondary.opacity(0.03))
+        .cornerRadius(6)
+    }
+    
+    // 全宽卡片 (支持 Gemini 复合多额度池：原生池 + Claude/GPT 三方池)
+    @ViewBuilder
+    private func fullWidthModelCard(for llm: DetectedLLMRuntime) -> some View {
+        VStack(alignment: .leading, spacing: 4.5) {
+            // Row 1: 标题 + 档位标 + 会话数
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(llm.isRunning ? Color.green : Color.secondary.opacity(0.3))
+                    .frame(width: 5, height: 5)
+                
+                Text(llm.name)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(llm.isRunning ? .primary : .secondary)
+                
+                if !llm.tier.isEmpty {
+                    Text(llm.tier)
+                        .font(.system(size: 7.5, weight: .bold))
+                        .padding(.horizontal, 3.5)
+                        .padding(.vertical, 1)
+                        .background(tierBackgroundColor(llm.tier))
+                        .foregroundColor(tierForegroundColor(llm.tier))
+                        .cornerRadius(2.5)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                
+                Spacer()
+                
+                Text(llm.detail)
+                    .font(.system(size: 8.5))
+                    .foregroundColor(llm.isRunning ? .secondary : .secondary.opacity(0.5))
+            }
+            
+            // Row 2: 复合双额度池 (原生池 + Claude/GPT 三方池并排)
+            HStack(spacing: 6) {
+                // 原生池 (5H 与 W)
+                HStack(spacing: 3) {
+                    Text("原生池")
+                        .font(.system(size: 7.5, weight: .bold))
+                        .foregroundColor(.secondary)
+                    
+                    if let fh = llm.fiveHourPct {
+                        Text("5H")
+                            .font(.system(size: 7.5))
+                            .foregroundColor(.secondary)
+                        MiniProgressBar(value: Double(fh) / 100.0, color: fh > 80 ? .orange : .green, width: 15, height: 3.5)
+                        Text("\(fh)%")
+                            .font(.system(size: 7.5, weight: .bold))
+                            .foregroundColor(fh > 80 ? .orange : .primary)
+                    }
+                    
+                    if let sd = llm.sevenDayPct {
+                        Text("·")
+                            .font(.system(size: 7))
+                            .foregroundColor(.secondary)
+                        Text("W")
+                            .font(.system(size: 7.5))
+                            .foregroundColor(.secondary)
+                        MiniProgressBar(value: Double(sd) / 100.0, color: sd > 80 ? .orange : .green, width: 15, height: 3.5)
+                        Text("\(sd)%")
+                            .font(.system(size: 7.5, weight: .bold))
+                            .foregroundColor(sd > 80 ? .orange : .primary)
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3.5)
+                .background(Color.secondary.opacity(0.06))
+                .cornerRadius(4)
+                
+                Spacer()
+                
+                // 三方聚合池 (Claude + GPT)
+                if let tpW = llm.secondarySevenDayPct {
+                    HStack(spacing: 3) {
+                        Text("三方池")
+                            .font(.system(size: 7.5, weight: .bold))
+                            .foregroundColor(.secondary)
+                        
+                        Text("W")
+                            .font(.system(size: 7.5))
+                            .foregroundColor(.secondary)
+                        MiniProgressBar(value: Double(tpW) / 100.0, color: tpW >= 100 ? .red : (tpW > 80 ? .orange : .green), width: 15, height: 3.5)
+                        Text("\(tpW)%")
+                            .font(.system(size: 7.5, weight: .bold))
+                            .foregroundColor(tpW >= 100 ? .red : (tpW > 80 ? .orange : .primary))
+                        
+                        if tpW >= 100 {
+                            Text("耗尽")
+                                .font(.system(size: 7, weight: .semibold))
+                                .foregroundColor(.red.opacity(0.85))
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3.5)
+                    .background(Color.secondary.opacity(0.06))
+                    .cornerRadius(4)
+                }
+            }
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .background(llm.isRunning ? Color.secondary.opacity(0.08) : Color.secondary.opacity(0.03))
+        .cornerRadius(6)
     }
 }
