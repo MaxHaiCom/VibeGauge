@@ -220,6 +220,7 @@ public class ProcessScanner {
         var hasCodex = false
         var hasCursor = false
         var hasOllama = false
+        var hasLMStudio = false
         
         for line in psLines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -235,15 +236,18 @@ public class ProcessScanner {
                 
                 let lowerCmd = cmd.lowercased()
                 
-                // 检查主流模型进程
+                // 检查主流模型与工具进程
                 if lowerCmd.contains("codex") || lowerCmd.contains("chatgpt") {
                     hasCodex = true
                 }
-                if lowerCmd.contains("cursor") {
+                if lowerCmd.contains("cursor.app") || (lowerCmd.contains("/cursor") && !lowerCmd.contains("cursoruiviewservice")) {
                     hasCursor = true
                 }
                 if lowerCmd.contains("ollama") {
                     hasOllama = true
+                }
+                if lowerCmd.contains("lmstudio") || lowerCmd.contains("lm studio") {
+                    hasLMStudio = true
                 }
                 
                 // 统计正在活跃的 AI 会话
@@ -271,7 +275,8 @@ public class ProcessScanner {
             agyCount: report.activeAgyCount,
             hasCodex: hasCodex,
             hasOllama: hasOllama,
-            hasCursor: hasCursor
+            hasCursor: hasCursor,
+            hasLMStudio: hasLMStudio
         )
         
         // 10. 甄别断链孤儿进程
@@ -352,36 +357,42 @@ public class ProcessScanner {
     }
     
     // 多模型自动探针
-    private func detectAllLLMRuntimes(claudeCount: Int, agyCount: Int, hasCodex: Bool, hasOllama: Bool, hasCursor: Bool) -> [DetectedLLMRuntime] {
+    private func detectAllLLMRuntimes(claudeCount: Int, agyCount: Int, hasCodex: Bool, hasOllama: Bool, hasCursor: Bool, hasLMStudio: Bool) -> [DetectedLLMRuntime] {
         var list: [DetectedLLMRuntime] = []
         
-        // 1. Claude (Anthropic)
-        list.append(DetectedLLMRuntime(
-            name: "Claude",
-            provider: "Anthropic",
-            isRunning: claudeCount > 0,
-            detail: claudeCount > 0 ? "\(claudeCount) 个会话活跃" : "空闲"
-        ))
+        // 1. Claude
+        if claudeCount > 0 {
+            list.append(DetectedLLMRuntime(
+                name: "Claude",
+                provider: "",
+                isRunning: true,
+                detail: "\(claudeCount) 会话"
+            ))
+        }
         
-        // 2. Gemini (Google)
-        list.append(DetectedLLMRuntime(
-            name: "Gemini",
-            provider: "Google",
-            isRunning: agyCount > 0,
-            detail: agyCount > 0 ? "\(agyCount) 个 Agy 会话" : "空闲"
-        ))
+        // 2. Gemini
+        if agyCount > 0 {
+            list.append(DetectedLLMRuntime(
+                name: "Gemini",
+                provider: "",
+                isRunning: true,
+                detail: "\(agyCount) 会话"
+            ))
+        }
         
-        // 3. OpenAI (Codex / ChatGPT)
-        list.append(DetectedLLMRuntime(
-            name: "OpenAI",
-            provider: "Codex / GPT",
-            isRunning: hasCodex,
-            detail: hasCodex ? "客户端活跃" : "未运行"
-        ))
+        // 3. Codex
+        if hasCodex {
+            list.append(DetectedLLMRuntime(
+                name: "Codex",
+                provider: "",
+                isRunning: true,
+                detail: "活跃"
+            ))
+        }
         
-        // 4. Ollama (本地开源模型)
+        // 4. Ollama
         if hasOllama {
-            var ollamaDetail = "服务待命 (端口 11434)"
+            var ollamaDetail = "待命"
             if let url = URL(string: "http://127.0.0.1:11434/api/ps") {
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 0.3
@@ -391,7 +402,7 @@ public class ProcessScanner {
                        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                        let models = json["models"] as? [[String: Any]], !models.isEmpty {
                         let names = models.compactMap { $0["name"] as? String }.joined(separator: ", ")
-                        ollamaDetail = "正在推理: \(names)"
+                        ollamaDetail = "推理: \(names)"
                     }
                     sema.signal()
                 }.resume()
@@ -399,17 +410,27 @@ public class ProcessScanner {
             }
             list.append(DetectedLLMRuntime(
                 name: "Ollama",
-                provider: "本地开源模型",
+                provider: "",
                 isRunning: true,
                 detail: ollamaDetail
             ))
         }
         
-        // 5. Cursor (AI 编辑器)
+        // 5. Cursor
         if hasCursor {
             list.append(DetectedLLMRuntime(
                 name: "Cursor",
-                provider: "AI 编辑器",
+                provider: "",
+                isRunning: true,
+                detail: "运行中"
+            ))
+        }
+        
+        // 6. LM Studio
+        if hasLMStudio {
+            list.append(DetectedLLMRuntime(
+                name: "LM Studio",
+                provider: "",
                 isRunning: true,
                 detail: "运行中"
             ))

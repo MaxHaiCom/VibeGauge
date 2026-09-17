@@ -136,79 +136,74 @@ public struct DashboardView: View {
             // ==========================================
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("AI 编程与大模型")
+                    Text("AI 运行与大模型")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.secondary)
                     Spacer()
                     let activeCount = report.detectedLLMs.filter { $0.isRunning }.count
-                    Text("\(activeCount) 个平台活跃")
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundColor(.secondary)
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(activeCount > 0 ? Color.green : Color.secondary.opacity(0.4))
+                            .frame(width: 5, height: 5)
+                        Text("\(activeCount) 个平台活跃")
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
                 }
                 
-                // 2.1 主流大模型运行状态矩阵
-                VStack(spacing: 3) {
+                // 2.1 主流大模型运行状态矩阵 (双列紧凑卡片，去除冗余公司名)
+                let columns = [
+                    GridItem(.flexible(), spacing: 6),
+                    GridItem(.flexible(), spacing: 6)
+                ]
+                LazyVGrid(columns: columns, spacing: 5) {
                     ForEach(report.detectedLLMs) { llm in
-                        HStack(spacing: 6) {
+                        HStack(spacing: 5) {
                             Circle()
                                 .fill(llm.isRunning ? Color.green : Color.secondary.opacity(0.3))
-                                .frame(width: 5.5, height: 5.5)
+                                .frame(width: 5, height: 5)
                             
                             Text(llm.name)
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundColor(llm.isRunning ? .primary : .secondary)
+                                .lineLimit(1)
                             
-                            Text(llm.provider)
-                                .font(.system(size: 9))
-                                .foregroundColor(.secondary)
-                            
-                            Spacer()
+                            Spacer(minLength: 2)
                             
                             Text(llm.detail)
-                                .font(.system(size: 9))
-                                .foregroundColor(llm.isRunning ? .secondary : .secondary.opacity(0.6))
+                                .font(.system(size: 8.5))
+                                .foregroundColor(llm.isRunning ? .secondary : .secondary.opacity(0.5))
+                                .lineLimit(1)
                         }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(llm.isRunning ? Color.secondary.opacity(0.06) : Color.clear)
-                        .cornerRadius(4)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4.5)
+                        .background(llm.isRunning ? Color.secondary.opacity(0.08) : Color.secondary.opacity(0.03))
+                        .cornerRadius(5)
                     }
                 }
                 
-                Divider().opacity(0.4)
+                Divider().opacity(0.35)
                 
-                // 2.2 Token 实时与 Prompt Cache 效益
-                VStack(alignment: .leading, spacing: 4) {
-                    // 实时最新交互
-                    if report.tokens.latestContext > 0 {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 1.5) {
-                                Text("最新交互 (\(report.tokens.latestModel.isEmpty ? "AI" : report.tokens.latestModel) · \(report.tokens.latestSecondsAgo > 60 ? "\(report.tokens.latestSecondsAgo / 60)分钟前" : "刚刚"))")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.secondary)
-                                Text("上下文 \(formatTokensInt(report.tokens.latestContext)) · 输出 \(formatTokensInt(report.tokens.latestOutput))")
-                                    .font(.system(size: 10, weight: .medium))
-                            }
-                            Spacer()
-                            Text(String(format: "%.1f%% 命中", report.tokens.latestCacheHitRate))
-                                .font(.system(size: 9.5, weight: .bold))
-                                .foregroundColor(.green)
-                        }
-                        .padding(6)
-                        .background(Color.secondary.opacity(0.06))
-                        .cornerRadius(5)
-                    }
-                    
-                    // 今日累计与缓存率进度条
+                // 2.2 Token 消耗与 Prompt Cache 效益 (精致仪表盘)
+                VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Text("今日上下文: \(formatTokens(report.tokens.todayContext))")
+                        Text("今日上下文")
                             .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.secondary)
+                        Text(formatTokens(report.tokens.todayContext))
+                            .font(.system(size: 10.5, weight: .bold))
+                            .foregroundColor(.primary)
                         Spacer()
                         Text(String(format: "缓存率 %.1f%%", report.tokens.todayCacheHitRate))
                             .font(.system(size: 9.5, weight: .semibold))
                             .foregroundColor(report.tokens.todayCacheHitRate >= 80 ? .green : .secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(report.tokens.todayCacheHitRate >= 80 ? Color.green.opacity(0.15) : Color.secondary.opacity(0.12))
+                            .cornerRadius(3)
                     }
                     
+                    // Prompt Cache 命中率对比进度条
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
                             RoundedRectangle(cornerRadius: 2)
@@ -224,29 +219,83 @@ public struct DashboardView: View {
                     
                     HStack {
                         Text("总生成 \(formatTokens(report.tokens.todayOutput)) (思考 \(formatTokens(report.tokens.todayThinking)))")
+                            .font(.system(size: 8.5))
+                            .foregroundColor(.secondary)
                         Spacer()
-                        Text("5h限额周期: \(report.tokens.turns5h)轮 · \(formatTokens(report.tokens.context5h))")
+                        Text("5h限额: \(report.tokens.turns5h)轮 · \(formatTokens(report.tokens.context5h))")
+                            .font(.system(size: 8.5, weight: .medium))
+                            .foregroundColor(.secondary)
                     }
-                    .font(.system(size: 8.5))
-                    .foregroundColor(.secondary)
                 }
                 
-                Divider().opacity(0.4)
+                // 2.3 最新交互遥测
+                if report.tokens.latestContext > 0 {
+                    HStack(spacing: 6) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 4) {
+                                Text("最新交互")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundColor(.primary)
+                                Text("·")
+                                    .font(.system(size: 8))
+                                    .foregroundColor(.secondary)
+                                Text(report.tokens.latestModel.isEmpty ? "AI" : report.tokens.latestModel)
+                                    .font(.system(size: 8.5))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                                Text(report.tokens.latestSecondsAgo > 60 ? "(\(report.tokens.latestSecondsAgo / 60)分钟前)" : "(刚刚)")
+                                    .font(.system(size: 8.5))
+                                    .foregroundColor(.secondary)
+                            }
+                            HStack(spacing: 4) {
+                                Text("上下文 \(formatTokensInt(report.tokens.latestContext))")
+                                Text("·")
+                                Text("输出 \(formatTokensInt(report.tokens.latestOutput))")
+                            }
+                            .font(.system(size: 8.5))
+                            .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 1) {
+                            Text(String(format: "%.1f%%", report.tokens.latestCacheHitRate))
+                                .font(.system(size: 10.5, weight: .bold))
+                                .foregroundColor(report.tokens.latestCacheHitRate >= 80 ? .green : .primary)
+                            Text("缓存命中")
+                                .font(.system(size: 8))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.secondary.opacity(0.06))
+                    .cornerRadius(6)
+                }
                 
-                // 2.3 MCP 与开发缓存概况
+                Divider().opacity(0.35)
+                
+                // 2.4 MCP 与开发缓存概况
                 HStack {
                     let mcpMemStr = report.activeMCPTotalMemMB > 1024
                         ? String(format: "%.1f GB", report.activeMCPTotalMemMB / 1024.0)
                         : "\(Int(report.activeMCPTotalMemMB)) MB"
-                    Text("MCP: \(report.activeMCPProcessCount) 进程 (\(mcpMemStr))")
+                    HStack(spacing: 3) {
+                        Text("MCP:")
+                            .foregroundColor(.secondary)
+                        Text("\(report.activeMCPProcessCount) 进程 (\(mcpMemStr))")
+                            .foregroundColor(.primary)
+                    }
                     Spacer()
                     let npxStr = report.npxCacheMB > 1024
                         ? String(format: "%.1f GB", report.npxCacheMB / 1024.0)
                         : "\(Int(report.npxCacheMB)) MB"
-                    Text("NPX 缓存: \(npxStr)")
+                    HStack(spacing: 3) {
+                        Text("NPX 缓存:")
+                            .foregroundColor(.secondary)
+                        Text(npxStr)
+                            .foregroundColor(.primary)
+                    }
                 }
                 .font(.system(size: 9))
-                .foregroundColor(.secondary)
             }
             .padding(10)
             .background(Color.secondary.opacity(0.06))
