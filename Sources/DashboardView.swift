@@ -26,6 +26,13 @@ public struct DashboardView: View {
     public var onCleanOrphans: () -> Void
     public var onCleanNPX: () -> Void
     
+    @State private var liveNow: Date = Date()
+    @State private var pulseAnim: Bool = false
+    @State private var dynamicTokens: TokenStats? = nil
+    @State private var tickCounter: Int = 0
+    
+    private let liveTicker = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+    
     public init(
         report: ScanReport,
         onCleanOrphans: @escaping () -> Void,
@@ -34,6 +41,30 @@ public struct DashboardView: View {
         self.report = report
         self.onCleanOrphans = onCleanOrphans
         self.onCleanNPX = onCleanNPX
+    }
+    
+    private var currentTokens: TokenStats {
+        dynamicTokens ?? report.tokens
+    }
+    
+    private func liveTimeAgoText(tokens: TokenStats) -> String {
+        let ts = tokens.latestTimestamp > 0 ? tokens.latestTimestamp : (Date().timeIntervalSince1970 - Double(tokens.latestSecondsAgo))
+        let secs = max(0, Int(liveNow.timeIntervalSince1970 - ts))
+        if secs < 8 {
+            return "刚刚 · 实时"
+        } else if secs < 60 {
+            return "\(secs)秒前"
+        } else if secs < 3600 {
+            return "\(secs / 60)分钟前"
+        } else {
+            return "\(secs / 3600)小时前"
+        }
+    }
+    
+    private func isRecentInteraction(tokens: TokenStats) -> Bool {
+        let ts = tokens.latestTimestamp > 0 ? tokens.latestTimestamp : (Date().timeIntervalSince1970 - Double(tokens.latestSecondsAgo))
+        let secs = max(0, Int(liveNow.timeIntervalSince1970 - ts))
+        return secs < 120
     }
     
     private func tierBackgroundColor(_ tier: String) -> Color {
@@ -280,42 +311,84 @@ public struct DashboardView: View {
                     }
                 }
                 
-                // 2.3 最新交互遥测
-                if report.tokens.latestContext > 0 {
-                    HStack(spacing: 6) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 4) {
-                                Text("最新交互")
-                                    .font(.system(size: 9, weight: .semibold))
-                                    .foregroundColor(.primary)
-                                Text("·")
-                                    .font(.system(size: 8))
-                                    .foregroundColor(.secondary)
-                                Text(report.tokens.latestModel.isEmpty ? "AI" : report.tokens.latestModel)
-                                    .font(.system(size: 8.5))
+                // 2.3 最新交互遥测 (动态实时监测)
+                if currentTokens.latestContext > 0 {
+                    let recent = isRecentInteraction(tokens: currentTokens)
+                    let timeAgo = liveTimeAgoText(tokens: currentTokens)
+                    
+                    VStack(spacing: 4.5) {
+                        HStack(spacing: 6) {
+                            VStack(alignment: .leading, spacing: 2.5) {
+                                HStack(spacing: 4) {
+                                    // 动态呼吸状态指示灯
+                                    Circle()
+                                        .fill(recent ? Color.green : Color.secondary.opacity(0.4))
+                                        .frame(width: 5.5, height: 5.5)
+                                        .scaleEffect(recent && pulseAnim ? 1.25 : 0.85)
+                                        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulseAnim)
+                                    
+                                    Text(recent ? "实时捕获" : "最新交互")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundColor(recent ? .primary : .secondary)
+                                    
+                                    Text("·")
+                                        .font(.system(size: 8))
+                                        .foregroundColor(.secondary)
+                                    
+                                    Text(currentTokens.latestModel.isEmpty ? "AI" : currentTokens.latestModel)
+                                        .font(.system(size: 8.5, weight: .medium))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                    
+                                    Text("(\(timeAgo))")
+                                        .font(.system(size: 8))
+                                        .foregroundColor(recent ? .green : .secondary)
+                                        .lineLimit(1)
+                                        .fixedSize()
+                                }
+                                
+                                HStack(spacing: 4) {
+                                    Text("上下文 \(formatTokensInt(currentTokens.latestContext))")
+                                    Text("·")
+                                    Text("输出 \(formatTokensInt(currentTokens.latestOutput))")
+                                    if currentTokens.latestThinking > 0 {
+                                        Text("·")
+                                        Text("思考 \(formatTokensInt(currentTokens.latestThinking))")
+                                    }
+                                }
+                                .font(.system(size: 8.5))
+                                .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            VStack(alignment: .trailing, spacing: 1) {
+                                Text(String(format: "%.1f%%", currentTokens.latestCacheHitRate))
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(currentTokens.latestCacheHitRate >= 80 ? .green : .primary)
+                                    .lineLimit(1)
+                                    .fixedSize()
+                                Text("缓存命中")
+                                    .font(.system(size: 7.5))
                                     .foregroundColor(.secondary)
                                     .lineLimit(1)
-                                Text(report.tokens.latestSecondsAgo > 60 ? "(\(report.tokens.latestSecondsAgo / 60)分钟前)" : "(刚刚)")
-                                    .font(.system(size: 8.5))
-                                    .foregroundColor(.secondary)
+                                    .fixedSize()
                             }
-                            HStack(spacing: 4) {
-                                Text("上下文 \(formatTokensInt(report.tokens.latestContext))")
-                                Text("·")
-                                Text("输出 \(formatTokensInt(report.tokens.latestOutput))")
+                        }
+                        
+                        // 动态微型 Prompt Cache 命中效益条
+                        GeometryReader { geo in
+                            let cacheRatio = min(1.0, max(0.01, currentTokens.latestCacheHitRate / 100.0))
+                            HStack(spacing: 1.5) {
+                                RoundedRectangle(cornerRadius: 1.5)
+                                    .fill(Color.green.opacity(0.85))
+                                    .frame(width: max(2, geo.size.width * CGFloat(cacheRatio)), height: 3)
+                                RoundedRectangle(cornerRadius: 1.5)
+                                    .fill(Color.secondary.opacity(0.18))
+                                    .frame(height: 3)
                             }
-                            .font(.system(size: 8.5))
-                            .foregroundColor(.secondary)
                         }
-                        Spacer()
-                        VStack(alignment: .trailing, spacing: 1) {
-                            Text(String(format: "%.1f%%", report.tokens.latestCacheHitRate))
-                                .font(.system(size: 10.5, weight: .bold))
-                                .foregroundColor(report.tokens.latestCacheHitRate >= 80 ? .green : .primary)
-                            Text("缓存命中")
-                                .font(.system(size: 8))
-                                .foregroundColor(.secondary)
-                        }
+                        .frame(height: 3)
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
@@ -422,7 +495,20 @@ public struct DashboardView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .frame(width: 320)
+        .frame(width: 355)
+        .onReceive(liveTicker) { date in
+            liveNow = date
+            pulseAnim.toggle()
+            tickCounter += 1
+            if tickCounter % 2 == 0 {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let latest = ProcessScanner.shared.scanLatestInteraction()
+                    DispatchQueue.main.async {
+                        self.dynamicTokens = latest
+                    }
+                }
+            }
+        }
     }
     
     // 普通卡片 (双列)
@@ -466,22 +552,32 @@ public struct DashboardView: View {
                     Text("5H")
                         .font(.system(size: 7.5, weight: .medium))
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
                     MiniProgressBar(value: Double(fh) / 100.0, color: fh > 80 ? .orange : .green, width: 16, height: 3.5)
                     Text("\(fh)%")
                         .font(.system(size: 7.5, weight: .bold))
                         .foregroundColor(fh > 80 ? .orange : .primary)
+                        .lineLimit(1)
+                        .fixedSize()
                     
                     if let sd = llm.sevenDayPct {
                         Text("·")
                             .font(.system(size: 7))
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
                         Text("W")
                             .font(.system(size: 7.5, weight: .medium))
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
                         MiniProgressBar(value: Double(sd) / 100.0, color: sd > 80 ? .orange : .green, width: 16, height: 3.5)
                         Text("\(sd)%")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(sd > 80 ? .orange : .primary)
+                            .lineLimit(1)
+                            .fixedSize()
                     }
                 }
             } else {
@@ -538,31 +634,42 @@ public struct DashboardView: View {
                         Text("5H")
                             .font(.system(size: 7.5, weight: .medium))
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
                         MiniProgressBar(value: Double(fh) / 100.0, color: fh > 80 ? .orange : .green, width: 16, height: 3.5)
                         Text("\(fh)%")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(fh > 80 ? .orange : .primary)
+                            .lineLimit(1)
+                            .fixedSize()
                     }
                     
                     if let sd = llm.sevenDayPct {
                         Text("·")
                             .font(.system(size: 7))
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
                         Text("W")
                             .font(.system(size: 7.5, weight: .medium))
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
                         MiniProgressBar(value: Double(sd) / 100.0, color: sd > 80 ? .orange : .green, width: 16, height: 3.5)
                         Text("\(sd)%")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(sd > 80 ? .orange : .primary)
+                            .lineLimit(1)
+                            .fixedSize()
                     }
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3.5)
                 .background(Color.secondary.opacity(0.06))
                 .cornerRadius(4)
+                .fixedSize(horizontal: true, vertical: false)
                 
-                Spacer()
+                Spacer(minLength: 4)
                 
                 // 三方聚合池 (Claude + GPT)
                 if let tpW = llm.secondarySevenDayPct {
@@ -570,25 +677,34 @@ public struct DashboardView: View {
                         Text("三方")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
                         
                         Text("W")
                             .font(.system(size: 7.5))
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
                         MiniProgressBar(value: Double(tpW) / 100.0, color: tpW >= 100 ? .red : (tpW > 80 ? .orange : .green), width: 16, height: 3.5)
                         Text("\(tpW)%")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(tpW >= 100 ? .red : (tpW > 80 ? .orange : .primary))
+                            .lineLimit(1)
+                            .fixedSize()
                         
                         if tpW >= 100 {
                             Text("耗尽")
                                 .font(.system(size: 7, weight: .semibold))
                                 .foregroundColor(.red.opacity(0.85))
+                                .lineLimit(1)
+                                .fixedSize()
                         }
                     }
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3.5)
                     .background(Color.secondary.opacity(0.06))
                     .cornerRadius(4)
+                    .fixedSize(horizontal: true, vertical: false)
                 }
             }
         }

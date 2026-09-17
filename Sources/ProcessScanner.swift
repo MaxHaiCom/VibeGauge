@@ -15,6 +15,8 @@ public struct TokenStats {
     public var latestOutput: Int = 0
     public var latestThinking: Int = 0
     public var latestSecondsAgo: Int = 0
+    public var latestTimestamp: TimeInterval = 0
+    public var isActive: Bool = false
     
     public var turns5h: Int = 0
     public var context5h: Int64 = 0
@@ -527,12 +529,8 @@ public class ProcessScanner {
            let pJson = try? JSONSerialization.jsonObject(with: pData) as? [String: Any],
            let settings = pJson["settings"] as? [String: Any] {
             if let tierDisplay = settings["subscription_tier_display"] as? String, !tierDisplay.isEmpty {
-                if tierDisplay.contains("Premium+") {
-                    return "Premium+"
-                } else if tierDisplay.contains("SuperGrok") {
+                if tierDisplay.contains("Premium") || tierDisplay.contains("SuperGrok") {
                     return "SuperGrok"
-                } else if tierDisplay.contains("Premium") {
-                    return "Premium"
                 }
                 return tierDisplay
             }
@@ -544,7 +542,7 @@ public class ProcessScanner {
             for (_, v) in json {
                 if let dict = v as? [String: Any] {
                     if let mode = dict["auth_mode"] as? String, mode == "oidc" {
-                        return "Premium+"
+                        return "SuperGrok"
                     }
                 }
             }
@@ -554,7 +552,7 @@ public class ProcessScanner {
             return "API Key"
         }
         
-        return "Premium+"
+        return "SuperGrok"
     }
 
     // 多模型自动探针
@@ -724,6 +722,7 @@ public class ProcessScanner {
         
         // A. 实时提取：最新会话文件的最后一轮交互
         if let newest = recentFiles.first {
+            stats.latestTimestamp = newest.mtime
             stats.latestSecondsAgo = max(0, Int(now - newest.mtime))
             if let content = try? String(contentsOfFile: newest.path, encoding: .utf8) {
                 let lines = content.components(separatedBy: "\n")
@@ -823,6 +822,67 @@ public class ProcessScanner {
             }
         }
         
+        return stats
+    }
+    
+    // 毫秒级极速探查最新一轮会话遥测 (用于菜单打开时的动态实时监测)
+    public func scanLatestInteraction() -> TokenStats {
+        var stats = cachedTokenStats
+        let now = Date().timeIntervalSince1970
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let projectsDir = "\(home)/.claude/projects"
+        guard FileManager.default.fileExists(atPath: projectsDir) else { return stats }
+        
+        let fileManager = FileManager.default
+        guard let enumerator = fileManager.enumerator(atPath: projectsDir) else { return stats }
+        
+        var newestPath: String? = nil
+        var newestMtime: TimeInterval = 0
+        
+        while let element = enumerator.nextObject() as? String {
+            if element.hasSuffix(".jsonl") {
+                let fullPath = "\(projectsDir)/\(element)"
+                if let attrs = try? fileManager.attributesOfItem(atPath: fullPath),
+                   let modDate = attrs[.modificationDate] as? Date {
+                    let mtime = modDate.timeIntervalSince1970
+                    if mtime > newestMtime {
+                        newestMtime = mtime
+                        newestPath = fullPath
+                    }
+                }
+            }
+        }
+        
+        if let path = newestPath {
+            stats.latestTimestamp = newestMtime
+            stats.latestSecondsAgo = max(0, Int(now - newestMtime))
+            if let content = try? String(contentsOfFile: path, encoding: .utf8) {
+                let lines = content.components(separatedBy: "\n")
+                for line in lines.reversed() {
+                    if line.contains("\"type\":\"assistant\"") && line.contains("\"usage\":") {
+                        if let data = line.data(using: .utf8),
+                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let msg = json["message"] as? [String: Any],
+                           let usage = msg["usage"] as? [String: Any] {
+                            stats.latestModel = msg["model"] as? String ?? "claude"
+                            let inp = usage["input_tokens"] as? Int ?? 0
+                            let cRead = usage["cache_read_input_tokens"] as? Int ?? 0
+                            let cCreate = usage["cache_creation_input_tokens"] as? Int ?? 0
+                            let out = usage["output_tokens"] as? Int ?? 0
+                            let details = usage["output_tokens_details"] as? [String: Any]
+                            let thinking = details?["thinking_tokens"] as? Int ?? 0
+                            
+                            let totalCtx = inp + cRead + cCreate
+                            stats.latestContext = totalCtx
+                            stats.latestOutput = out
+                            stats.latestThinking = thinking
+                            stats.latestCacheHitRate = totalCtx > 0 ? (Double(cRead) / Double(totalCtx)) * 100.0 : 0.0
+                            break
+                        }
+                    }
+                }
+            }
+        }
         return stats
     }
     
