@@ -16,13 +16,6 @@ public struct DashboardView: View {
         self.onCleanNPX = onCleanNPX
     }
     
-    private var cliSummaryText: String {
-        var arr: [String] = []
-        if report.activeClaudeCount > 0 { arr.append("Claude (\(report.activeClaudeCount))") }
-        if report.activeAgyCount > 0 { arr.append("Agy (\(report.activeAgyCount))") }
-        return arr.isEmpty ? "无活跃会话" : arr.joined(separator: " · ")
-    }
-    
     private func formatTokens(_ count: Int64) -> String {
         if count >= 100_000_000 {
             return String(format: "%.2f 亿", Double(count) / 100_000_000.0)
@@ -38,7 +31,7 @@ public struct DashboardView: View {
     }
     
     public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 11) {
             // 1. 物理内存图表
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline) {
@@ -94,7 +87,52 @@ public struct DashboardView: View {
             
             Divider().opacity(0.5)
             
-            // 2. Token 实时与 Prompt Cache 监控 (核心亮点)
+            // 2. 主流大模型运行态矩阵 (自动感知接入)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("大模型运行态 (自动感知)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    let activeCount = report.detectedLLMs.filter { $0.isRunning }.count
+                    Text("\(activeCount) 个运行中")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                
+                // 模型卡片流
+                VStack(spacing: 4) {
+                    ForEach(report.detectedLLMs) { llm in
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(llm.isRunning ? Color.green : Color.secondary.opacity(0.3))
+                                .frame(width: 6, height: 6)
+                            
+                            Text(llm.name)
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundColor(llm.isRunning ? .primary : .secondary)
+                            
+                            Text(llm.provider)
+                                .font(.system(size: 9.5))
+                                .foregroundColor(.secondary)
+                            
+                            Spacer()
+                            
+                            Text(llm.detail)
+                                .font(.system(size: 9.5))
+                                .foregroundColor(llm.isRunning ? .secondary : .secondary.opacity(0.6))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(llm.isRunning ? Color.secondary.opacity(0.06) : Color.clear)
+                        .cornerRadius(5)
+                    }
+                }
+            }
+            
+            Divider().opacity(0.5)
+            
+            // 3. AI Token 与 Prompt Cache 遥测
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("AI Token 与 Prompt Cache")
@@ -112,7 +150,7 @@ public struct DashboardView: View {
                     }
                 }
                 
-                // A. 实时最新一轮交互卡片
+                // 实时最新一轮交互
                 if report.tokens.latestContext > 0 {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -134,12 +172,12 @@ public struct DashboardView: View {
                             }
                         }
                     }
-                    .padding(8)
+                    .padding(7)
                     .background(Color.secondary.opacity(0.06))
                     .cornerRadius(6)
                 }
                 
-                // B. 今日累计上下文与缓存进度条
+                // 今日累计上下文与缓存进度条
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text("今日总上下文: \(formatTokens(report.tokens.todayContext))")
@@ -150,7 +188,6 @@ public struct DashboardView: View {
                             .foregroundColor(report.tokens.todayCacheHitRate >= 80 ? .green : .secondary)
                     }
                     
-                    // Prompt Cache 命中率可视化进度条
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
                             RoundedRectangle(cornerRadius: 2.5)
@@ -173,49 +210,18 @@ public struct DashboardView: View {
                     .font(.system(size: 9.5))
                     .foregroundColor(.secondary)
                 }
-                .padding(.top, 2)
+                .padding(.top, 1)
             }
             
             Divider().opacity(0.5)
             
-            // 3. Vibe Coding AI 会话与硬件负载
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    // 活动会话
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("活动终端")
-                            .font(.system(size: 9.5))
-                            .foregroundColor(.secondary)
-                        Text(cliSummaryText)
-                            .font(.system(size: 10.5, weight: .medium))
-                            .lineLimit(1)
-                    }
-                    .padding(7)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.secondary.opacity(0.06))
-                    .cornerRadius(6)
-                    
-                    // 挂载 MCP
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("挂载 MCP")
-                            .font(.system(size: 9.5))
-                            .foregroundColor(.secondary)
-                        let mcpMemStr = report.activeMCPTotalMemMB > 1024
-                            ? String(format: "%.1f GB", report.activeMCPTotalMemMB / 1024.0)
-                            : "\(Int(report.activeMCPTotalMemMB)) MB"
-                        Text("\(report.activeMCPProcessCount)个 · \(mcpMemStr)")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .lineLimit(1)
-                    }
-                    .padding(7)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.secondary.opacity(0.06))
-                    .cornerRadius(6)
-                }
-                
-                // 磁盘
+            // 4. 磁盘与 MCP 负载
+            VStack(alignment: .leading, spacing: 5) {
                 HStack {
-                    Text(String(format: "磁盘剩余 %.1f GB (%.0f%%)", report.diskFreeGB, report.diskFreePct))
+                    let mcpMemStr = report.activeMCPTotalMemMB > 1024
+                        ? String(format: "%.1f GB", report.activeMCPTotalMemMB / 1024.0)
+                        : "\(Int(report.activeMCPTotalMemMB)) MB"
+                    Text("MCP: \(report.activeMCPProcessCount)个进程 (\(mcpMemStr))")
                     Spacer()
                     let npxStr = report.npxCacheMB > 1024
                         ? String(format: "%.1f GB", report.npxCacheMB / 1024.0)
@@ -224,9 +230,17 @@ public struct DashboardView: View {
                 }
                 .font(.system(size: 9.5))
                 .foregroundColor(.secondary)
+                
+                HStack {
+                    Text(String(format: "系统主磁盘: 剩余 %.1f GB (%.0f%%)", report.diskFreeGB, report.diskFreePct))
+                    Spacer()
+                    Text(String(format: "CPU 负载: %.2f", report.loadAvg1m))
+                }
+                .font(.system(size: 9.5))
+                .foregroundColor(.secondary)
             }
             
-            // 4. 清理触发区
+            // 5. 清理触发区
             if report.totalOrphanCount > 0 || report.npxCacheMB > 100 {
                 Divider().opacity(0.5)
                 
@@ -283,6 +297,6 @@ public struct DashboardView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .frame(width: 310)
+        .frame(width: 320)
     }
 }

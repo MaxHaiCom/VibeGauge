@@ -29,6 +29,14 @@ public struct TokenStats {
     }
 }
 
+public struct DetectedLLMRuntime: Identifiable {
+    public var id: String { name }
+    public let name: String
+    public let provider: String
+    public let isRunning: Bool
+    public let detail: String
+}
+
 public struct ScanReport {
     // 内存与虚拟内存
     public var freePercentage: Int = 0
@@ -45,13 +53,16 @@ public struct ScanReport {
     public var diskTotalGB: Double = 0.0
     public var diskFreePct: Double = 0.0
     
+    // 全景主流大模型检测 (Claude / Gemini / OpenAI / Ollama / Cursor 等)
+    public var detectedLLMs: [DetectedLLMRuntime] = []
+    
     // Vibe Coding 专属环境状态
     public var activeClaudeCount: Int = 0
     public var activeAgyCount: Int = 0
     public var activeMCPProcessCount: Int = 0
     public var activeMCPTotalMemMB: Double = 0.0
     
-    // Token 与 Prompt Cache 实时与累计监控
+    // Token 与 Prompt Cache 实时与累计遥测
     public var tokens: TokenStats = TokenStats()
     
     // 程序员开发缓存
@@ -206,6 +217,9 @@ public class ProcessScanner {
         
         var allProcs: [Int: RawProc] = [:]
         let allKeywords = serviceDefinitions.map { $0.key } + ["_npx", "mcp"]
+        var hasCodex = false
+        var hasCursor = false
+        var hasOllama = false
         
         for line in psLines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -220,6 +234,17 @@ public class ProcessScanner {
                 allProcs[pid] = RawProc(pid: pid, ppid: ppid, memMB: memMB, cmd: cmd)
                 
                 let lowerCmd = cmd.lowercased()
+                
+                // 检查主流模型进程
+                if lowerCmd.contains("codex") || lowerCmd.contains("chatgpt") {
+                    hasCodex = true
+                }
+                if lowerCmd.contains("cursor") {
+                    hasCursor = true
+                }
+                if lowerCmd.contains("ollama") {
+                    hasOllama = true
+                }
                 
                 // 统计正在活跃的 AI 会话
                 if ppid != 1 {
@@ -240,7 +265,16 @@ public class ProcessScanner {
             }
         }
         
-        // 9. 甄别断链孤儿进程: PPID == 1, not listening on port, matching MCP signatures
+        // 9. 多模型全景感知汇聚
+        report.detectedLLMs = detectAllLLMRuntimes(
+            claudeCount: report.activeClaudeCount,
+            agyCount: report.activeAgyCount,
+            hasCodex: hasCodex,
+            hasOllama: hasOllama,
+            hasCursor: hasCursor
+        )
+        
+        // 10. 甄别断链孤儿进程
         var orphanRootPids = Set<Int>()
         for (pid, proc) in allProcs {
             if proc.ppid != 1 { continue }
@@ -311,10 +345,77 @@ public class ProcessScanner {
         report.totalOrphanCount = allOrphanPids.count
         report.totalOrphanMemMB = groups.reduce(0.0) { $0 + $1.totalMemMB }
         
-        // 10. Token & Prompt Cache 实时与累计遥测
+        // 11. Token & Prompt Cache 实时与累计遥测
         report.tokens = scanTokens()
         
         return report
+    }
+    
+    // 多模型自动探针
+    private func detectAllLLMRuntimes(claudeCount: Int, agyCount: Int, hasCodex: Bool, hasOllama: Bool, hasCursor: Bool) -> [DetectedLLMRuntime] {
+        var list: [DetectedLLMRuntime] = []
+        
+        // 1. Claude (Anthropic)
+        list.append(DetectedLLMRuntime(
+            name: "Claude",
+            provider: "Anthropic",
+            isRunning: claudeCount > 0,
+            detail: claudeCount > 0 ? "\(claudeCount) 个会话活跃" : "空闲"
+        ))
+        
+        // 2. Gemini (Google)
+        list.append(DetectedLLMRuntime(
+            name: "Gemini",
+            provider: "Google",
+            isRunning: agyCount > 0,
+            detail: agyCount > 0 ? "\(agyCount) 个 Agy 会话" : "空闲"
+        ))
+        
+        // 3. OpenAI (Codex / ChatGPT)
+        list.append(DetectedLLMRuntime(
+            name: "OpenAI",
+            provider: "Codex / GPT",
+            isRunning: hasCodex,
+            detail: hasCodex ? "客户端活跃" : "未运行"
+        ))
+        
+        // 4. Ollama (本地开源模型)
+        if hasOllama {
+            var ollamaDetail = "服务待命 (端口 11434)"
+            if let url = URL(string: "http://127.0.0.1:11434/api/ps") {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 0.3
+                let sema = DispatchSemaphore(value: 0)
+                URLSession.shared.dataTask(with: request) { data, _, _ in
+                    if let data = data,
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let models = json["models"] as? [[String: Any]], !models.isEmpty {
+                        let names = models.compactMap { $0["name"] as? String }.joined(separator: ", ")
+                        ollamaDetail = "正在推理: \(names)"
+                    }
+                    sema.signal()
+                }.resume()
+                _ = sema.wait(timeout: .now() + 0.3)
+            }
+            list.append(DetectedLLMRuntime(
+                name: "Ollama",
+                provider: "本地开源模型",
+                isRunning: true,
+                detail: ollamaDetail
+            ))
+        }
+        
+        // 5. Cursor (AI 编辑器)
+        if hasCursor {
+            list.append(DetectedLLMRuntime(
+                name: "Cursor",
+                provider: "AI 编辑器",
+                isRunning: true,
+                detail: "运行中"
+            ))
+        }
+        
+        return list
     }
     
     private func scanTokens() -> TokenStats {
@@ -346,7 +447,7 @@ public class ProcessScanner {
         
         var stats = TokenStats()
         
-        // A. 实时提取：最新会话文件的最后一轮交互 (毫秒级响应)
+        // A. 实时提取：最新会话文件的最后一轮交互
         if let newest = recentFiles.first {
             stats.latestSecondsAgo = max(0, Int(now - newest.mtime))
             if let content = try? String(contentsOfFile: newest.path, encoding: .utf8) {
@@ -377,7 +478,7 @@ public class ProcessScanner {
             }
         }
         
-        // B. 累计统计：每 45 秒刷新一次全量，避免频繁磁盘 I/O
+        // B. 累计统计：每 45 秒刷新一次全量
         if now - lastCumulativeScanTime > 45.0 || cachedTokenStats.todayContext == 0 {
             lastCumulativeScanTime = now
             for file in recentFiles {
@@ -413,7 +514,6 @@ public class ProcessScanner {
                     }
                 }
             }
-            // Update cache
             cachedTokenStats.turns5h = stats.turns5h
             cachedTokenStats.context5h = stats.context5h
             cachedTokenStats.output5h = stats.output5h
@@ -422,7 +522,6 @@ public class ProcessScanner {
             cachedTokenStats.todayOutput = stats.todayOutput
             cachedTokenStats.todayThinking = stats.todayThinking
         } else {
-            // Use cached cumulative data
             stats.turns5h = cachedTokenStats.turns5h
             stats.context5h = cachedTokenStats.context5h
             stats.output5h = cachedTokenStats.output5h
@@ -437,24 +536,19 @@ public class ProcessScanner {
     
     public func killProcesses(pids: [Int]) -> (killedCount: Int, freedMB: Double) {
         if pids.isEmpty { return (0, 0.0) }
-        
         let report = scan()
         var freedMB: Double = 0.0
         var killedCount = 0
-        
         for pid in pids {
             kill(pid_t(pid), SIGTERM)
             killedCount += 1
         }
-        
         usleep(300_000)
-        
         for pid in pids {
             if kill(pid_t(pid), 0) == 0 {
                 kill(pid_t(pid), SIGKILL)
             }
         }
-        
         freedMB = report.totalOrphanMemMB
         return (killedCount, freedMB)
     }
