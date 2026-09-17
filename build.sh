@@ -26,6 +26,9 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources"
 
 mv "${APP_NAME}" "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
 cp Resources/Info.plist "${APP_BUNDLE}/Contents/Info.plist"
+if [ -f Resources/AppIcon.icns ]; then
+    cp Resources/AppIcon.icns "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
+fi
 
 echo "==> 正在签名..."
 codesign --force --deep --sign - "${APP_BUNDLE}"
