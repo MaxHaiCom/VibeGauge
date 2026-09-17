@@ -39,14 +39,14 @@ public struct DashboardView: View {
     private func tierBackgroundColor(_ tier: String) -> Color {
         if tier.contains("API") { return Color.blue.opacity(0.18) }
         if tier.contains("本地") { return Color.purple.opacity(0.18) }
-        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") { return Color.green.opacity(0.18) }
+        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") || tier.contains("5x") { return Color.green.opacity(0.18) }
         return Color.teal.opacity(0.18)
     }
     
     private func tierForegroundColor(_ tier: String) -> Color {
         if tier.contains("API") { return Color.blue }
         if tier.contains("本地") { return Color.purple }
-        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") { return Color.green }
+        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") || tier.contains("5x") { return Color.green }
         return Color.teal
     }
     
@@ -522,17 +522,13 @@ public struct DashboardView: View {
             
             // Row 2: 复合双额度池 (原生池 + Claude/GPT 三方池并排)
             HStack(spacing: 6) {
-                // 原生池 (5H 与 W)
-                HStack(spacing: 3) {
-                    Text("原生池")
-                        .font(.system(size: 7.5, weight: .bold))
-                        .foregroundColor(.secondary)
-                    
+                // 5H 与 W (直接展示，不加任何“原生”前缀)
+                HStack(spacing: 3.5) {
                     if let fh = llm.fiveHourPct {
                         Text("5H")
-                            .font(.system(size: 7.5))
+                            .font(.system(size: 7.5, weight: .medium))
                             .foregroundColor(.secondary)
-                        MiniProgressBar(value: Double(fh) / 100.0, color: fh > 80 ? .orange : .green, width: 15, height: 3.5)
+                        MiniProgressBar(value: Double(fh) / 100.0, color: fh > 80 ? .orange : .green, width: 16, height: 3.5)
                         Text("\(fh)%")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(fh > 80 ? .orange : .primary)
@@ -543,9 +539,9 @@ public struct DashboardView: View {
                             .font(.system(size: 7))
                             .foregroundColor(.secondary)
                         Text("W")
-                            .font(.system(size: 7.5))
+                            .font(.system(size: 7.5, weight: .medium))
                             .foregroundColor(.secondary)
-                        MiniProgressBar(value: Double(sd) / 100.0, color: sd > 80 ? .orange : .green, width: 15, height: 3.5)
+                        MiniProgressBar(value: Double(sd) / 100.0, color: sd > 80 ? .orange : .green, width: 16, height: 3.5)
                         Text("\(sd)%")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(sd > 80 ? .orange : .primary)
@@ -561,14 +557,14 @@ public struct DashboardView: View {
                 // 三方聚合池 (Claude + GPT)
                 if let tpW = llm.secondarySevenDayPct {
                     HStack(spacing: 3) {
-                        Text("三方池")
+                        Text("三方")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(.secondary)
                         
                         Text("W")
                             .font(.system(size: 7.5))
                             .foregroundColor(.secondary)
-                        MiniProgressBar(value: Double(tpW) / 100.0, color: tpW >= 100 ? .red : (tpW > 80 ? .orange : .green), width: 15, height: 3.5)
+                        MiniProgressBar(value: Double(tpW) / 100.0, color: tpW >= 100 ? .red : (tpW > 80 ? .orange : .green), width: 16, height: 3.5)
                         Text("\(tpW)%")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(tpW >= 100 ? .red : (tpW > 80 ? .orange : .primary))

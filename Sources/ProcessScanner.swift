@@ -411,24 +411,24 @@ public class ProcessScanner {
                        let pJson = try? JSONSerialization.jsonObject(with: pData) as? [String: Any],
                        let authObj = pJson["https://api.openai.com/auth"] as? [String: Any],
                        let plan = authObj["chatgpt_plan_type"] as? String {
-                        if plan.contains("prolite") || plan.contains("plus") {
-                            return "Plus"
-                        } else if plan.contains("pro") {
-                            return "Pro"
+                        if plan.contains("prolite") || plan.contains("5x") || plan.contains("pro") {
+                            return "Pro 5x"
                         } else if plan.contains("team") {
                             return "Team"
+                        } else if plan.contains("plus") {
+                            return "Plus"
                         }
                     }
                 }
             }
             let mode = json["auth_mode"] as? String ?? ""
-            if mode == "chatgpt" { return "Plus" }
+            if mode == "chatgpt" { return "Pro 5x" }
             if mode == "api_key" { return "API Key" }
         }
         if ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil {
             return "API Key"
         }
-        return "Plus"
+        return "Pro 5x"
     }
     
     private func getGeminiTier() -> String {
