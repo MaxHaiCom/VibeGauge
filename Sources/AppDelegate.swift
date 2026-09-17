@@ -12,6 +12,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     
     // UserDefaults Keys
     private let autoCleanKey = "autoCleanEnabled"
+    private let showPercentageKey = "showPercentageInMenuBar"
     
     var isAutoCleanEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: autoCleanKey) }
@@ -21,26 +22,44 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     
+    var isShowPercentageEnabled: Bool {
+        get {
+            // Default to true
+            UserDefaults.standard.object(forKey: showPercentageKey) == nil
+                ? true
+                : UserDefaults.standard.bool(forKey: showPercentageKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: showPercentageKey)
+            renderStatusButton(report: currentReport)
+        }
+    }
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Request notification authorization
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         
-        // Setup Status Item in Menu Bar
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        
+        // Setup SF Symbol icon
+        if let button = statusItem.button {
+            let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+            if let img = NSImage(systemSymbolName: "memorychip", accessibilityDescription: "VibeClean")?.withSymbolConfiguration(symbolConfig) {
+                img.isTemplate = true
+                button.image = img
+                button.imagePosition = .imageLeading
+            }
+        }
         
         menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
         
-        // Initial scan and update
         updateStatus()
         
-        // Schedule regular update (every 10s)
-        timer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { [weak self] _ in
             self?.updateStatus()
         }
         
-        // Setup auto-clean timer if enabled
         setupAutoCleanTimer()
     }
     
@@ -49,7 +68,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         autoCleanTimer = nil
         
         if isAutoCleanEnabled {
-            // Run every 30 minutes
             autoCleanTimer = Timer.scheduledTimer(withTimeInterval: 1800.0, repeats: true) { [weak self] _ in
                 self?.performSilentAutoClean()
             }
@@ -59,14 +77,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func performSilentAutoClean() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let report = ProcessScanner.shared.scan()
-            if !report.orphanedMCPs.isEmpty {
-                let pids = report.orphanedMCPs.map { $0.pid }
-                let result = ProcessScanner.shared.killProcesses(pids: pids)
-                
+            if !report.allOrphanPids.isEmpty {
+                let result = ProcessScanner.shared.killProcesses(pids: report.allOrphanPids)
                 DispatchQueue.main.async {
                     self?.sendNotification(
-                        title: "VibeClean 静默清理",
-                        body: "已自动清理 \(result.killedCount) 个孤儿 MCP 进程，释放 \(String(format: "%.1f", result.freedMB)) MB 内存。"
+                        title: "VibeClean 内存优化",
+                        body: "已静默清理 \(result.killedCount) 个残留 AI 进程，回收 \(String(format: "%.1f", result.freedMB)) MB 内存。"
                     )
                     self?.updateStatus()
                 }
@@ -97,196 +113,161 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func renderStatusButton(report: ScanReport) {
         guard let button = statusItem.button else { return }
         
-        let freePct = report.freePercentage
-        let dotColor: NSColor
-        let statusEmoji: String
-        
-        if freePct >= 60 {
-            dotColor = NSColor.systemGreen
-            statusEmoji = "●"
-        } else if freePct >= 40 {
-            dotColor = NSColor.systemOrange
-            statusEmoji = "●"
+        if isShowPercentageEnabled {
+            let freePct = report.freePercentage
+            let text = " \(freePct)%"
+            let attrTitle = NSMutableAttributedString(
+                string: text,
+                attributes: [
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
+                    .foregroundColor: NSColor.labelColor
+                ]
+            )
+            button.attributedTitle = attrTitle
         } else {
-            dotColor = NSColor.systemRed
-            statusEmoji = "●"
+            button.title = ""
+            button.attributedTitle = NSAttributedString(string: "")
         }
-        
-        let orphanCount = report.orphanedMCPs.count
-        var titleText = "\(statusEmoji) \(freePct)%"
-        if orphanCount > 0 {
-            let memStr = report.totalOrphanMemMB > 1024
-                ? String(format: "%.1fG", report.totalOrphanMemMB / 1024.0)
-                : "\(Int(report.totalOrphanMemMB))M"
-            titleText += " (\(orphanCount)可清 \(memStr))"
-        }
-        
-        let attrTitle = NSMutableAttributedString(
-            string: titleText,
-            attributes: [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-                .foregroundColor: NSColor.labelColor
-            ]
-        )
-        
-        // Color the dot
-        if let range = titleText.range(of: statusEmoji) {
-            let nsRange = NSRange(range, in: titleText)
-            attrTitle.addAttribute(.foregroundColor, value: dotColor, range: nsRange)
-        }
-        
-        button.attributedTitle = attrTitle
     }
     
-    // MARK: - NSMenuDelegate (Dynamic Build)
+    // MARK: - NSMenuDelegate
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        
         let report = currentReport
         
-        // 1. 系统概览 Header
+        // 1. 内存压力与健康状态
         let healthLabel: String
         if report.freePercentage >= 60 {
-            healthLabel = "良好"
+            healthLabel = "正常"
         } else if report.freePercentage >= 40 {
-            healthLabel = "吃紧"
+            healthLabel = "偏高"
         } else {
-            healthLabel = "严重卡顿风险"
+            healthLabel = "严重 (有卡顿风险)"
         }
         
-        let headerItem = NSMenuItem(title: "📊 内存可用健康度: \(report.freePercentage)% (\(healthLabel))", action: nil, keyEquivalent: "")
-        headerItem.isEnabled = false
-        menu.addItem(headerItem)
+        let pressureItem = NSMenuItem(
+            title: "内存压力：\(healthLabel) (可用 \(report.freePercentage)%)",
+            action: nil,
+            keyEquivalent: ""
+        )
+        pressureItem.isEnabled = false
+        menu.addItem(pressureItem)
         
-        let usedGB = report.totalMemoryGB * (1.0 - Double(report.freePercentage) / 100.0)
         let memDetailItem = NSMenuItem(
-            title: "💾 物理内存: 已用 \(String(format: "%.1f", usedGB)) GB / \(String(format: "%.1f", report.totalMemoryGB)) GB",
+            title: "物理内存：已用 \(String(format: "%.1f", report.usedMemoryGB)) GB / \(String(format: "%.1f", report.totalMemoryGB)) GB",
             action: nil,
             keyEquivalent: ""
         )
         memDetailItem.isEnabled = false
         menu.addItem(memDetailItem)
         
-        let swapStr = report.swapUsedMB > 1024
-            ? String(format: "%.2f GB", report.swapUsedMB / 1024.0)
-            : "\(Int(report.swapUsedMB)) MB"
-        let compStr = report.compressorMB > 1024
-            ? String(format: "%.2f GB", report.compressorMB / 1024.0)
-            : "\(Int(report.compressorMB)) MB"
+        let compStr = report.compressorGB > 1.0
+            ? String(format: "%.2f GB", report.compressorGB)
+            : "\(Int(report.compressorGB * 1024)) MB"
+        let swapStr = report.swapUsedGB > 1.0
+            ? String(format: "%.2f GB", report.swapUsedGB)
+            : "\(Int(report.swapUsedGB * 1024)) MB"
         
-        let vmItem = NSMenuItem(title: "🔄 压缩内存池: \(compStr) | Swap: \(swapStr)", action: nil, keyEquivalent: "")
+        let vmItem = NSMenuItem(
+            title: "虚拟内存：压缩池 \(compStr) · Swap \(swapStr)",
+            action: nil,
+            keyEquivalent: ""
+        )
         vmItem.isEnabled = false
         menu.addItem(vmItem)
         
         menu.addItem(NSMenuItem.separator())
         
-        // 2. Vibe 垃圾进程专区 (孤儿 MCP)
-        if !report.orphanedMCPs.isEmpty {
-            let orphanMem = report.totalOrphanMemMB > 1024
+        // 2. 核心操作：清理已断链的 AI 工具与孤儿进程
+        if !report.orphanedGroups.isEmpty {
+            let memFormatted = report.totalOrphanMemMB > 1024
                 ? String(format: "%.2f GB", report.totalOrphanMemMB / 1024.0)
                 : "\(Int(report.totalOrphanMemMB)) MB"
             
-            let orphanTitleItem = NSMenuItem(title: "🧹 发现 \(report.orphanedMCPs.count) 个孤儿 MCP 进程 (约 \(orphanMem))", action: nil, keyEquivalent: "")
-            orphanTitleItem.isEnabled = false
-            menu.addItem(orphanTitleItem)
-            
-            let cleanActionItem = NSMenuItem(title: "▶️ 立即一键清理 (释放 \(orphanMem))", action: #selector(cleanOrphansAction), keyEquivalent: "c")
+            let cleanActionItem = NSMenuItem(
+                title: "清理已退出的 AI 残留进程 (\(memFormatted))",
+                action: #selector(cleanOrphansAction),
+                keyEquivalent: "c"
+            )
             cleanActionItem.target = self
             menu.addItem(cleanActionItem)
             
-            // Submenu for orphan details
+            let summaryText = "已检测到 \(report.orphanedGroups.count) 项断链服务 (共 \(report.totalOrphanCount) 个后台进程)"
+            let summaryItem = NSMenuItem(title: summaryText, action: nil, keyEquivalent: "")
+            summaryItem.isEnabled = false
+            menu.addItem(summaryItem)
+            
+            // 明细子菜单 (清晰可读的名字，无哈希无乱码)
             let detailSubmenu = NSMenu()
-            for o in report.orphanedMCPs {
-                let subItem = NSMenuItem(title: "PID \(o.pid) | \(String(format: "%.1f", o.memMB))MB | \(o.name)", action: nil, keyEquivalent: "")
+            for group in report.orphanedGroups {
+                let groupMem = group.totalMemMB > 1024
+                    ? String(format: "%.1f GB", group.totalMemMB / 1024.0)
+                    : "\(Int(group.totalMemMB)) MB"
+                let subTitle = "\(group.serviceName) (\(groupMem) · \(group.processCount) 个进程)"
+                let subItem = NSMenuItem(title: subTitle, action: nil, keyEquivalent: "")
                 subItem.isEnabled = false
                 detailSubmenu.addItem(subItem)
             }
-            let detailItem = NSMenuItem(title: "   查看孤儿列表...", action: nil, keyEquivalent: "")
-            detailItem.submenu = detailSubmenu
-            menu.addItem(detailItem)
+            
+            let detailMenuItem = NSMenuItem(title: "   查看服务明细...", action: nil, keyEquivalent: "")
+            detailMenuItem.submenu = detailSubmenu
+            menu.addItem(detailMenuItem)
         } else {
-            let cleanItem = NSMenuItem(title: "✨ 无孤儿 MCP 进程 (系统干净)", action: nil, keyEquivalent: "")
+            let cleanItem = NSMenuItem(title: "运行环境干净，暂无残留后台服务", action: nil, keyEquivalent: "")
             cleanItem.isEnabled = false
             menu.addItem(cleanItem)
         }
         
         menu.addItem(NSMenuItem.separator())
         
-        // 3. 本地开发端口服务
-        if !report.devServers.isEmpty {
-            let devTitle = NSMenuItem(title: "🌐 活跃本地开发服务 (\(report.devServers.count) 个)", action: nil, keyEquivalent: "")
-            devTitle.isEnabled = false
-            menu.addItem(devTitle)
-            
-            for dev in report.devServers {
-                let devSubmenu = NSMenu()
-                let stopItem = NSMenuItem(title: "停止此服务 (Kill PID \(dev.pid))", action: #selector(killSpecificProcess(_:)), keyEquivalent: "")
-                stopItem.target = self
-                stopItem.tag = dev.pid
-                devSubmenu.addItem(stopItem)
-                
-                let devItem = NSMenuItem(
-                    title: "  :\(dev.port) · \(dev.name) (PID \(dev.pid), \(String(format: "%.1f", dev.memMB))MB)",
-                    action: nil,
-                    keyEquivalent: ""
-                )
-                devItem.submenu = devSubmenu
-                menu.addItem(devItem)
-            }
-        } else {
-            let devNone = NSMenuItem(title: "🌐 暂无活跃本地开发端口", action: nil, keyEquivalent: "")
-            devNone.isEnabled = false
-            menu.addItem(devNone)
-        }
-        
-        menu.addItem(NSMenuItem.separator())
-        
-        // 4. 选项与控制
-        let autoCleanItem = NSMenuItem(title: "⏱️ 每 30 分钟静默清理孤儿 MCP", action: #selector(toggleAutoClean), keyEquivalent: "")
+        // 3. 选项偏好
+        let autoCleanItem = NSMenuItem(title: "定时自动清理 (每 30 分钟)", action: #selector(toggleAutoClean), keyEquivalent: "")
         autoCleanItem.target = self
         autoCleanItem.state = isAutoCleanEnabled ? .on : .off
         menu.addItem(autoCleanItem)
         
-        let launchItem = NSMenuItem(title: "🚀 登录时自动启动", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        let showPctItem = NSMenuItem(title: "在菜单栏显示可用百分比", action: #selector(toggleShowPercentage), keyEquivalent: "")
+        showPctItem.target = self
+        showPctItem.state = isShowPercentageEnabled ? .on : .off
+        menu.addItem(showPctItem)
+        
+        let launchItem = NSMenuItem(title: "登录时自动启动", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         launchItem.target = self
         launchItem.state = isLaunchAtLoginEnabled() ? .on : .off
         menu.addItem(launchItem)
         
         menu.addItem(NSMenuItem.separator())
         
-        let refreshItem = NSMenuItem(title: "🔄 立即重新扫描", action: #selector(refreshAction), keyEquivalent: "r")
+        // 4. 控制操作
+        let refreshItem = NSMenuItem(title: "重新扫描", action: #selector(refreshAction), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
         
-        let quitItem = NSMenuItem(title: "🚪 退出 VibeClean", action: #selector(quitAction), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "退出 VibeClean", action: #selector(quitAction), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
     }
     
     // MARK: - Actions
     @objc func cleanOrphansAction() {
-        let pids = currentReport.orphanedMCPs.map { $0.pid }
+        let pids = currentReport.allOrphanPids
         guard !pids.isEmpty else { return }
         
         let result = ProcessScanner.shared.killProcesses(pids: pids)
         sendNotification(
-            title: "VibeClean 清理完成",
-            body: "已成功释放 \(result.killedCount) 个孤儿 MCP 进程，回收 \(String(format: "%.1f", result.freedMB)) MB 物理内存。"
+            title: "清理完成",
+            body: "已释放 \(result.killedCount) 个残留 AI 进程，回收 \(String(format: "%.1f", result.freedMB)) MB 内存。"
         )
         updateStatus()
-    }
-    
-    @objc func killSpecificProcess(_ sender: NSMenuItem) {
-        let pid = sender.tag
-        if pid > 0 {
-            _ = ProcessScanner.shared.killProcesses(pids: [pid])
-            updateStatus()
-        }
     }
     
     @objc func toggleAutoClean() {
         isAutoCleanEnabled.toggle()
         updateStatus()
+    }
+    
+    @objc func toggleShowPercentage() {
+        isShowPercentageEnabled.toggle()
     }
     
     @objc func toggleLaunchAtLogin() {
@@ -298,7 +279,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     try SMAppService.mainApp.register()
                 }
             } catch {
-                print("Toggle launch at login error: \(error)")
+                print("Toggle launch error: \(error)")
             }
         }
         updateStatus()

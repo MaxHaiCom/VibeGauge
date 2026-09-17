@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ProcessInfoItem: Identifiable {
+public struct ProcessDetailItem: Identifiable {
     public let id: Int
     public let pid: Int
     public let ppid: Int
@@ -9,27 +9,25 @@ public struct ProcessInfoItem: Identifiable {
     public let cmd: String
 }
 
-public struct DevServerItem: Identifiable {
-    public let id: Int
-    public let pid: Int
-    public let name: String
-    public let port: String
-    public let memMB: Double
-    public let cmd: String
+public struct ServiceGroup: Identifiable {
+    public var id: String { serviceName }
+    public let serviceName: String
+    public var processCount: Int
+    public var totalMemMB: Double
+    public var pids: [Int]
 }
 
 public struct ScanReport {
     public var freePercentage: Int = 0
     public var totalMemoryGB: Double = 0.0
-    public var swapUsedMB: Double = 0.0
-    public var compressorMB: Double = 0.0
+    public var usedMemoryGB: Double = 0.0
+    public var swapUsedGB: Double = 0.0
+    public var compressorGB: Double = 0.0
     
-    public var orphanedMCPs: [ProcessInfoItem] = []
-    public var devServers: [DevServerItem] = []
-    
-    public var totalOrphanMemMB: Double {
-        orphanedMCPs.reduce(0) { $0 + $1.memMB }
-    }
+    public var orphanedGroups: [ServiceGroup] = []
+    public var allOrphanPids: [Int] = []
+    public var totalOrphanCount: Int = 0
+    public var totalOrphanMemMB: Double = 0.0
 }
 
 public class ProcessScanner {
@@ -46,17 +44,15 @@ public class ProcessScanner {
         "/usr/sbin"
     ]
     
-    private let mcpKeywords = [
-        "mcp",
-        "_npx",
-        "apple-docs",
-        "chrome-devtools",
-        "xcodebuildmcp",
-        "notebooklm",
-        "mcpvault",
-        "magicuidesign",
-        "meigen",
-        "context7"
+    private let serviceDefinitions: [(key: String, name: String)] = [
+        ("apple-docs", "Apple Docs 接口服务"),
+        ("chrome-devtools", "Chrome DevTools 自动化插件"),
+        ("notebooklm", "NotebookLM 交互插件"),
+        ("xcodebuildmcp", "Xcode 构建工具插件"),
+        ("mcpvault", "Obsidian Vault 插件"),
+        ("magicuidesign", "Magic UI 设计工具"),
+        ("meigen", "Meigen 图像服务"),
+        ("context7", "Context7 检索服务")
     ]
     
     private func execute(_ cmd: String) -> String {
@@ -91,7 +87,7 @@ public class ProcessScanner {
                 let parts = line.components(separatedBy: ":")
                 if parts.count > 1 {
                     let pages = Double(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0.0
-                    report.compressorMB = (pages * 16384.0) / (1024.0 * 1024.0)
+                    report.compressorGB = (pages * 16384.0) / (1024.0 * 1024.0 * 1024.0)
                 }
             }
         }
@@ -100,28 +96,27 @@ public class ProcessScanner {
         let memStr = execute("sysctl -n hw.memsize").trimmingCharacters(in: .whitespacesAndNewlines)
         if let bytes = Double(memStr) {
             report.totalMemoryGB = bytes / (1024.0 * 1024.0 * 1024.0)
+            report.usedMemoryGB = report.totalMemoryGB * (1.0 - Double(report.freePercentage) / 100.0)
         }
         
-        // 3. Swap usage: total = 3072.00M  used = 2582.62M  free = 489.38M
+        // 3. Swap usage
         let swapStr = execute("sysctl vm.swapusage")
         if let regex = try? NSRegularExpression(pattern: "used\\s*=\\s*([0-9\\.]+)M") {
             let ns = swapStr as NSString
             if let match = regex.firstMatch(in: swapStr, range: NSRange(location: 0, length: ns.length)) {
                 let valStr = ns.substring(with: match.range(at: 1))
-                report.swapUsedMB = Double(valStr) ?? 0.0
+                let mb = Double(valStr) ?? 0.0
+                report.swapUsedGB = mb / 1024.0
             }
         }
         
         // 4. Listening ports via lsof
         let lsofOut = execute("lsof -iTCP -sTCP:LISTEN -n -P")
-        var listeningPids: [Int: [String]] = [:]
+        var listeningPids = Set<Int>()
         for line in lsofOut.components(separatedBy: "\n").dropFirst() {
             let cols = line.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-            if cols.count >= 9 {
-                if let pid = Int(cols[1]) {
-                    let port = cols[8].components(separatedBy: ":").last ?? cols[8]
-                    listeningPids[pid, default: []].append(port)
-                }
+            if cols.count >= 2, let pid = Int(cols[1]) {
+                listeningPids.insert(pid)
             }
         }
         
@@ -151,50 +146,31 @@ public class ProcessScanner {
             }
         }
         
-        // Identify Dev Servers and potential Orphan roots
+        // Find orphan roots: PPID == 1, not listening on port, matching MCP/tool signatures
         var orphanRootPids = Set<Int>()
+        let allKeywords = serviceDefinitions.map { $0.key } + ["_npx", "mcp"]
         
         for (pid, proc) in allProcs {
+            if proc.ppid != 1 { continue }
+            if listeningPids.contains(pid) { continue }
+            
             let cmd = proc.cmd
             let lowerCmd = cmd.lowercased()
             
-            // Check whitelist
+            // Whitelist
             if whitelist.contains(where: { cmd.contains($0) }) {
                 continue
             }
             
-            // 1. Dev servers (listening on port)
-            if let ports = listeningPids[pid] {
-                if lowerCmd.contains("node") || lowerCmd.contains("python") || lowerCmd.contains("bun") || lowerCmd.contains("deno") || lowerCmd.contains("go") {
-                    let portList = Array(Set(ports)).sorted().joined(separator: ", ")
-                    var name = cmd.components(separatedBy: " ").first?.components(separatedBy: "/").last ?? "Server"
-                    if lowerCmd.contains("vite") { name = "Vite" }
-                    else if lowerCmd.contains("next") { name = "Next.js" }
-                    else if lowerCmd.contains("nuxt") { name = "Nuxt" }
-                    else if lowerCmd.contains("fastapi") || lowerCmd.contains("uvicorn") { name = "FastAPI" }
-                    else if lowerCmd.contains("flask") { name = "Flask" }
-                    
-                    report.devServers.append(DevServerItem(
-                        id: pid,
-                        pid: pid,
-                        name: name,
-                        port: portList,
-                        memMB: proc.memMB,
-                        cmd: cmd
-                    ))
-                }
-            } else if proc.ppid == 1 {
-                // 2. Orphan detection (PPID == 1, not listening on port)
-                let isRunner = lowerCmd.contains("node") || lowerCmd.contains("npm") || lowerCmd.contains("python") || lowerCmd.contains("uv")
-                let hasSignature = mcpKeywords.contains(where: { lowerCmd.contains($0) })
-                
-                if isRunner && hasSignature {
-                    orphanRootPids.insert(pid)
-                }
+            let isRunner = lowerCmd.contains("node") || lowerCmd.contains("npm") || lowerCmd.contains("python") || lowerCmd.contains("uv")
+            let hasSignature = allKeywords.contains(where: { lowerCmd.contains($0) })
+            
+            if isRunner && hasSignature {
+                orphanRootPids.insert(pid)
             }
         }
         
-        // Recursively find child processes of orphan roots (e.g. npm -> node)
+        // Trace children
         var allOrphanPids = Set(orphanRootPids)
         var stack = Array(orphanRootPids)
         while !stack.isEmpty {
@@ -207,28 +183,43 @@ public class ProcessScanner {
             }
         }
         
+        // Group by readable service name
+        var groupMap: [String: (count: Int, mem: Double, pids: [Int])] = [:]
+        
         for pid in allOrphanPids {
-            if let proc = allProcs[pid] {
-                var cleanName = proc.cmd.components(separatedBy: " ").first?.components(separatedBy: "/").last ?? "Orphan"
-                for kw in mcpKeywords {
-                    if proc.cmd.contains(kw) {
-                        cleanName = kw
-                        break
-                    }
+            guard let proc = allProcs[pid] else { continue }
+            let lowerCmd = proc.cmd.lowercased()
+            
+            var matchedName = "其他已退出 AI 进程"
+            for def in serviceDefinitions {
+                if lowerCmd.contains(def.key) {
+                    matchedName = def.name
+                    break
                 }
-                report.orphanedMCPs.append(ProcessInfoItem(
-                    id: pid,
-                    pid: pid,
-                    ppid: proc.ppid,
-                    name: cleanName,
-                    memMB: proc.memMB,
-                    cmd: proc.cmd
-                ))
             }
+            
+            var curr = groupMap[matchedName, default: (count: 0, mem: 0.0, pids: [])]
+            curr.count += 1
+            curr.mem += proc.memMB
+            curr.pids.append(pid)
+            groupMap[matchedName] = curr
         }
         
-        report.orphanedMCPs.sort { $0.memMB > $1.memMB }
-        report.devServers.sort { $0.memMB > $1.memMB }
+        var groups: [ServiceGroup] = []
+        for (name, val) in groupMap {
+            groups.append(ServiceGroup(
+                serviceName: name,
+                processCount: val.count,
+                totalMemMB: val.mem,
+                pids: val.pids
+            ))
+        }
+        
+        groups.sort { $0.totalMemMB > $1.totalMemMB }
+        report.orphanedGroups = groups
+        report.allOrphanPids = Array(allOrphanPids)
+        report.totalOrphanCount = allOrphanPids.count
+        report.totalOrphanMemMB = groups.reduce(0.0) { $0 + $1.totalMemMB }
         
         return report
     }
@@ -241,25 +232,19 @@ public class ProcessScanner {
         var killedCount = 0
         
         for pid in pids {
-            if let target = report.orphanedMCPs.first(where: { $0.pid == pid }) {
-                freedMB += target.memMB
-            } else if let dev = report.devServers.first(where: { $0.pid == pid }) {
-                freedMB += dev.memMB
-            }
-            
             kill(pid_t(pid), SIGTERM)
             killedCount += 1
         }
         
-        usleep(300_000) // 300ms
+        usleep(300_000)
         
-        // Force kill any survivors
         for pid in pids {
             if kill(pid_t(pid), 0) == 0 {
                 kill(pid_t(pid), SIGKILL)
             }
         }
         
+        freedMB = report.totalOrphanMemMB
         return (killedCount, freedMB)
     }
 }
