@@ -8,6 +8,37 @@ public struct ServiceGroup: Identifiable {
     public var pids: [Int]
 }
 
+public struct InteractionRecord: Identifiable, Equatable {
+    public var id: String
+    public var model: String
+    public var timestamp: TimeInterval
+    public var secondsAgo: Int
+    public var contextTokens: Int
+    public var outputTokens: Int
+    public var thinkingTokens: Int
+    public var cacheHitRate: Double
+    
+    public init(
+        id: String = UUID().uuidString,
+        model: String = "",
+        timestamp: TimeInterval = 0,
+        secondsAgo: Int = 0,
+        contextTokens: Int = 0,
+        outputTokens: Int = 0,
+        thinkingTokens: Int = 0,
+        cacheHitRate: Double = 0.0
+    ) {
+        self.id = id
+        self.model = model
+        self.timestamp = timestamp
+        self.secondsAgo = secondsAgo
+        self.contextTokens = contextTokens
+        self.outputTokens = outputTokens
+        self.thinkingTokens = thinkingTokens
+        self.cacheHitRate = cacheHitRate
+    }
+}
+
 public struct TokenStats {
     public var latestModel: String = ""
     public var latestContext: Int = 0
@@ -17,6 +48,9 @@ public struct TokenStats {
     public var latestSecondsAgo: Int = 0
     public var latestTimestamp: TimeInterval = 0
     public var isActive: Bool = false
+    
+    // 最近交互流水 (最多保留 3 轮)
+    public var recentInteractions: [InteractionRecord] = []
     
     public var turns5h: Int = 0
     public var context5h: Int64 = 0
@@ -799,6 +833,72 @@ public class ProcessScanner {
         )
     }
     
+    // 从最近修改的会话中提取多轮交互记录 (最多提取 maxCount 条)
+    private func parseRecentInteractions(recentFiles: [(path: String, mtime: TimeInterval)], maxCount: Int = 3, now: TimeInterval) -> [InteractionRecord] {
+        var records: [InteractionRecord] = []
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let isoFallback = ISO8601DateFormatter()
+        isoFallback.formatOptions = [.withInternetDateTime]
+        
+        for file in recentFiles.prefix(5) {
+            guard let content = try? String(contentsOfFile: file.path, encoding: .utf8) else { continue }
+            let lines = content.components(separatedBy: "\n")
+            for line in lines.reversed() {
+                if line.contains("\"type\":\"assistant\"") && line.contains("\"usage\":") {
+                    guard let data = line.data(using: .utf8),
+                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let msg = json["message"] as? [String: Any],
+                          let usage = msg["usage"] as? [String: Any] else { continue }
+                    
+                    let uuid = json["uuid"] as? String ?? UUID().uuidString
+                    if records.contains(where: { $0.id == uuid }) { continue }
+                    
+                    let model = msg["model"] as? String ?? "claude"
+                    let inp = usage["input_tokens"] as? Int ?? 0
+                    let cRead = usage["cache_read_input_tokens"] as? Int ?? 0
+                    let cCreate = usage["cache_creation_input_tokens"] as? Int ?? 0
+                    let out = usage["output_tokens"] as? Int ?? 0
+                    let details = usage["output_tokens_details"] as? [String: Any]
+                    let thinking = details?["thinking_tokens"] as? Int ?? 0
+                    let totalCtx = inp + cRead + cCreate
+                    let hitRate = totalCtx > 0 ? (Double(cRead) / Double(totalCtx)) * 100.0 : 0.0
+                    
+                    var ts: TimeInterval = 0
+                    if let tsStr = json["timestamp"] as? String {
+                        if let d = isoFormatter.date(from: tsStr) ?? isoFallback.date(from: tsStr) {
+                            ts = d.timeIntervalSince1970
+                        }
+                    }
+                    if ts == 0 {
+                        ts = file.mtime
+                    }
+                    
+                    records.append(InteractionRecord(
+                        id: uuid,
+                        model: model,
+                        timestamp: ts,
+                        secondsAgo: max(0, Int(now - ts)),
+                        contextTokens: totalCtx,
+                        outputTokens: out,
+                        thinkingTokens: thinking,
+                        cacheHitRate: hitRate
+                    ))
+                    
+                    if records.count >= maxCount {
+                        break
+                    }
+                }
+            }
+            if records.count >= maxCount {
+                break
+            }
+        }
+        
+        records.sort { $0.timestamp > $1.timestamp }
+        return Array(records.prefix(maxCount))
+    }
+
     private func scanTokens() -> TokenStats {
         let now = Date().timeIntervalSince1970
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -828,36 +928,17 @@ public class ProcessScanner {
         
         var stats = TokenStats()
         
-        // A. 实时提取：最新会话文件的最后一轮交互
-        if let newest = recentFiles.first {
-            stats.latestTimestamp = newest.mtime
-            stats.latestSecondsAgo = max(0, Int(now - newest.mtime))
-            if let content = try? String(contentsOfFile: newest.path, encoding: .utf8) {
-                let lines = content.components(separatedBy: "\n")
-                for line in lines.reversed() {
-                    if line.contains("\"type\":\"assistant\"") && line.contains("\"usage\":") {
-                        if let data = line.data(using: .utf8),
-                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                           let msg = json["message"] as? [String: Any],
-                           let usage = msg["usage"] as? [String: Any] {
-                            stats.latestModel = msg["model"] as? String ?? "claude"
-                            let inp = usage["input_tokens"] as? Int ?? 0
-                            let cRead = usage["cache_read_input_tokens"] as? Int ?? 0
-                            let cCreate = usage["cache_creation_input_tokens"] as? Int ?? 0
-                            let out = usage["output_tokens"] as? Int ?? 0
-                            let details = usage["output_tokens_details"] as? [String: Any]
-                            let thinking = details?["thinking_tokens"] as? Int ?? 0
-                            
-                            let totalCtx = inp + cRead + cCreate
-                            stats.latestContext = totalCtx
-                            stats.latestOutput = out
-                            stats.latestThinking = thinking
-                            stats.latestCacheHitRate = totalCtx > 0 ? (Double(cRead) / Double(totalCtx)) * 100.0 : 0.0
-                            break
-                        }
-                    }
-                }
-            }
+        // A. 实时提取：最新会话的多轮交互遥测 (最多提取 3 轮)
+        let interactions = parseRecentInteractions(recentFiles: recentFiles, maxCount: 3, now: now)
+        stats.recentInteractions = interactions
+        if let first = interactions.first {
+            stats.latestTimestamp = first.timestamp
+            stats.latestSecondsAgo = first.secondsAgo
+            stats.latestModel = first.model
+            stats.latestContext = first.contextTokens
+            stats.latestOutput = first.outputTokens
+            stats.latestThinking = first.thinkingTokens
+            stats.latestCacheHitRate = first.cacheHitRate
         }
         
         // B. 累计统计：每 45 秒刷新一次全量
@@ -944,8 +1025,8 @@ public class ProcessScanner {
         let fileManager = FileManager.default
         guard let enumerator = fileManager.enumerator(atPath: projectsDir) else { return stats }
         
-        var newestPath: String? = nil
-        var newestMtime: TimeInterval = 0
+        var recentFiles: [(path: String, mtime: TimeInterval)] = []
+        let window1h = now - 3600.0
         
         while let element = enumerator.nextObject() as? String {
             if element.hasSuffix(".jsonl") {
@@ -953,43 +1034,24 @@ public class ProcessScanner {
                 if let attrs = try? fileManager.attributesOfItem(atPath: fullPath),
                    let modDate = attrs[.modificationDate] as? Date {
                     let mtime = modDate.timeIntervalSince1970
-                    if mtime > newestMtime {
-                        newestMtime = mtime
-                        newestPath = fullPath
+                    if mtime > window1h {
+                        recentFiles.append((fullPath, mtime))
                     }
                 }
             }
         }
+        recentFiles.sort { $0.mtime > $1.mtime }
         
-        if let path = newestPath {
-            stats.latestTimestamp = newestMtime
-            stats.latestSecondsAgo = max(0, Int(now - newestMtime))
-            if let content = try? String(contentsOfFile: path, encoding: .utf8) {
-                let lines = content.components(separatedBy: "\n")
-                for line in lines.reversed() {
-                    if line.contains("\"type\":\"assistant\"") && line.contains("\"usage\":") {
-                        if let data = line.data(using: .utf8),
-                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                           let msg = json["message"] as? [String: Any],
-                           let usage = msg["usage"] as? [String: Any] {
-                            stats.latestModel = msg["model"] as? String ?? "claude"
-                            let inp = usage["input_tokens"] as? Int ?? 0
-                            let cRead = usage["cache_read_input_tokens"] as? Int ?? 0
-                            let cCreate = usage["cache_creation_input_tokens"] as? Int ?? 0
-                            let out = usage["output_tokens"] as? Int ?? 0
-                            let details = usage["output_tokens_details"] as? [String: Any]
-                            let thinking = details?["thinking_tokens"] as? Int ?? 0
-                            
-                            let totalCtx = inp + cRead + cCreate
-                            stats.latestContext = totalCtx
-                            stats.latestOutput = out
-                            stats.latestThinking = thinking
-                            stats.latestCacheHitRate = totalCtx > 0 ? (Double(cRead) / Double(totalCtx)) * 100.0 : 0.0
-                            break
-                        }
-                    }
-                }
-            }
+        let interactions = parseRecentInteractions(recentFiles: recentFiles, maxCount: 3, now: now)
+        stats.recentInteractions = interactions
+        if let first = interactions.first {
+            stats.latestTimestamp = first.timestamp
+            stats.latestSecondsAgo = first.secondsAgo
+            stats.latestModel = first.model
+            stats.latestContext = first.contextTokens
+            stats.latestOutput = first.outputTokens
+            stats.latestThinking = first.thinkingTokens
+            stats.latestCacheHitRate = first.cacheHitRate
         }
         return stats
     }

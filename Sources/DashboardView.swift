@@ -52,9 +52,29 @@ public struct DashboardView: View {
         dynamicLLMs ?? report.detectedLLMs
     }
     
-    private func liveTimeAgoText(tokens: TokenStats) -> String {
-        let ts = tokens.latestTimestamp > 0 ? tokens.latestTimestamp : (Date().timeIntervalSince1970 - Double(tokens.latestSecondsAgo))
-        let secs = max(0, Int(liveNow.timeIntervalSince1970 - ts))
+    private var currentInteractions: [InteractionRecord] {
+        if !currentTokens.recentInteractions.isEmpty {
+            return Array(currentTokens.recentInteractions.prefix(3))
+        } else if currentTokens.latestContext > 0 {
+            let ts = currentTokens.latestTimestamp > 0 ? currentTokens.latestTimestamp : (Date().timeIntervalSince1970 - Double(currentTokens.latestSecondsAgo))
+            return [
+                InteractionRecord(
+                    id: "fallback-latest",
+                    model: currentTokens.latestModel,
+                    timestamp: ts,
+                    secondsAgo: currentTokens.latestSecondsAgo,
+                    contextTokens: currentTokens.latestContext,
+                    outputTokens: currentTokens.latestOutput,
+                    thinkingTokens: currentTokens.latestThinking,
+                    cacheHitRate: currentTokens.latestCacheHitRate
+                )
+            ]
+        }
+        return []
+    }
+    
+    private func liveTimeAgoText(timestamp: TimeInterval) -> String {
+        let secs = max(0, Int(liveNow.timeIntervalSince1970 - timestamp))
         if secs < 8 {
             return "刚刚 · 实时"
         } else if secs < 60 {
@@ -66,10 +86,33 @@ public struct DashboardView: View {
         }
     }
     
-    private func isRecentInteraction(tokens: TokenStats) -> Bool {
-        let ts = tokens.latestTimestamp > 0 ? tokens.latestTimestamp : (Date().timeIntervalSince1970 - Double(tokens.latestSecondsAgo))
-        let secs = max(0, Int(liveNow.timeIntervalSince1970 - ts))
+    private func isRecentInteraction(timestamp: TimeInterval) -> Bool {
+        let secs = max(0, Int(liveNow.timeIntervalSince1970 - timestamp))
         return secs < 120
+    }
+    
+    private func formatModelName(_ raw: String) -> String {
+        if raw.isEmpty { return "AI" }
+        if raw.contains("opus-5") { return "Claude Opus 5" }
+        if raw.contains("opus") { return "Claude Opus" }
+        if raw.contains("3-7-sonnet") || raw.contains("3.7-sonnet") { return "Claude 3.7 Sonnet" }
+        if raw.contains("3-5-sonnet") || raw.contains("3.5-sonnet") { return "Claude 3.5 Sonnet" }
+        if raw.contains("3-5-haiku") || raw.contains("3.5-haiku") { return "Claude 3.5 Haiku" }
+        if raw.contains("sonnet") { return "Claude Sonnet" }
+        if raw.contains("haiku") { return "Claude Haiku" }
+        if raw.contains("gpt-4o-mini") { return "GPT-4o mini" }
+        if raw.contains("gpt-4o") { return "GPT-4o" }
+        if raw.contains("o1-preview") { return "o1-preview" }
+        if raw.contains("o1-mini") { return "o1-mini" }
+        if raw.contains("o3-mini") { return "o3-mini" }
+        if raw.contains("o1") { return "o1" }
+        if raw.contains("gemini-2.5-pro") { return "Gemini 2.5 Pro" }
+        if raw.contains("gemini-2.5-flash") { return "Gemini 2.5 Flash" }
+        if raw.contains("gemini-2.0") { return "Gemini 2.0" }
+        if raw.contains("gemini-1.5") { return "Gemini 1.5" }
+        if raw.contains("grok-4") { return "Grok 4.6" }
+        if raw.contains("grok-3") { return "Grok 3" }
+        return raw
     }
     
     private func tierBackgroundColor(_ tier: String) -> Color {
@@ -316,89 +359,40 @@ public struct DashboardView: View {
                     }
                 }
                 
-                // 2.3 最新交互遥测 (动态实时监测)
-                if currentTokens.latestContext > 0 {
-                    let recent = isRecentInteraction(tokens: currentTokens)
-                    let timeAgo = liveTimeAgoText(tokens: currentTokens)
+                // 2.3 最新交互遥测 (最多显示 3 轮实时/最近交互)
+                if !currentInteractions.isEmpty {
+                    let hasLive = currentInteractions.contains { isRecentInteraction(timestamp: $0.timestamp) }
                     
-                    VStack(spacing: 4.5) {
-                        HStack(spacing: 6) {
-                            VStack(alignment: .leading, spacing: 2.5) {
-                                HStack(spacing: 4) {
-                                    // 动态呼吸状态指示灯
-                                    Circle()
-                                        .fill(recent ? Color.green : Color.secondary.opacity(0.4))
-                                        .frame(width: 5.5, height: 5.5)
-                                        .scaleEffect(recent && pulseAnim ? 1.25 : 0.85)
-                                        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulseAnim)
-                                    
-                                    Text(recent ? "实时捕获" : "最新交互")
-                                        .font(.system(size: 9, weight: .bold))
-                                        .foregroundColor(recent ? .primary : .secondary)
-                                    
-                                    Text("·")
-                                        .font(.system(size: 8))
-                                        .foregroundColor(.secondary)
-                                    
-                                    Text(currentTokens.latestModel.isEmpty ? "AI" : currentTokens.latestModel)
-                                        .font(.system(size: 8.5, weight: .medium))
-                                        .foregroundColor(.secondary)
-                                        .lineLimit(1)
-                                    
-                                    Text("(\(timeAgo))")
-                                        .font(.system(size: 8))
-                                        .foregroundColor(recent ? .green : .secondary)
-                                        .lineLimit(1)
-                                        .fixedSize()
-                                }
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(hasLive ? Color.green : Color.secondary.opacity(0.4))
+                                    .frame(width: 5, height: 5)
+                                    .scaleEffect(hasLive && pulseAnim ? 1.25 : 0.85)
+                                    .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulseAnim)
                                 
-                                HStack(spacing: 4) {
-                                    Text("上下文 \(formatTokensInt(currentTokens.latestContext))")
-                                    Text("·")
-                                    Text("输出 \(formatTokensInt(currentTokens.latestOutput))")
-                                    if currentTokens.latestThinking > 0 {
-                                        Text("·")
-                                        Text("思考 \(formatTokensInt(currentTokens.latestThinking))")
-                                    }
-                                }
-                                .font(.system(size: 8.5))
-                                .foregroundColor(.secondary)
+                                Text(hasLive ? "实时捕获" : "最近交互")
+                                    .font(.system(size: 9.5, weight: .bold))
+                                    .foregroundColor(hasLive ? .primary : .secondary)
                             }
                             
                             Spacer()
                             
-                            VStack(alignment: .trailing, spacing: 1) {
-                                Text(String(format: "%.1f%%", currentTokens.latestCacheHitRate))
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(currentTokens.latestCacheHitRate >= 80 ? .green : .primary)
-                                    .lineLimit(1)
-                                    .fixedSize()
-                                Text("缓存命中")
-                                    .font(.system(size: 7.5))
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
-                                    .fixedSize()
-                            }
+                            Text("最新 \(currentInteractions.count) 轮")
+                                .font(.system(size: 8))
+                                .foregroundColor(.secondary)
                         }
                         
-                        // 动态微型 Prompt Cache 命中效益条
-                        GeometryReader { geo in
-                            let cacheRatio = min(1.0, max(0.01, currentTokens.latestCacheHitRate / 100.0))
-                            HStack(spacing: 1.5) {
-                                RoundedRectangle(cornerRadius: 1.5)
-                                    .fill(Color.green.opacity(0.85))
-                                    .frame(width: max(2, geo.size.width * CGFloat(cacheRatio)), height: 3)
-                                RoundedRectangle(cornerRadius: 1.5)
-                                    .fill(Color.secondary.opacity(0.18))
-                                    .frame(height: 3)
+                        VStack(spacing: 4) {
+                            ForEach(currentInteractions.prefix(3)) { item in
+                                interactionRow(for: item)
                             }
                         }
-                        .frame(height: 3)
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
+                    .padding(8)
                     .background(Color.secondary.opacity(0.06))
-                    .cornerRadius(6)
+                    .cornerRadius(7)
                 }
                 
                 Divider().opacity(0.35)
@@ -526,6 +520,72 @@ public struct DashboardView: View {
                 }
             }
         }
+    }
+    
+    // 最新交互单行条目 (Linear / Apple 极简卡片，去 AI 臃肿感)
+    @ViewBuilder
+    private func interactionRow(for item: InteractionRecord) -> some View {
+        let isLive = isRecentInteraction(timestamp: item.timestamp)
+        let timeAgo = liveTimeAgoText(timestamp: item.timestamp)
+        
+        VStack(alignment: .leading, spacing: 3) {
+            // Row 1: 模型名 + 相对时间 + 缓存命中率
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(isLive ? Color.green : Color.secondary.opacity(0.35))
+                    .frame(width: 4.5, height: 4.5)
+                
+                Text(formatModelName(item.model))
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                
+                Text("(\(timeAgo))")
+                    .font(.system(size: 7.5))
+                    .foregroundColor(isLive ? .green : .secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+                
+                Spacer(minLength: 4)
+                
+                // Prompt Cache 微型效益条 + 百分比
+                HStack(spacing: 3) {
+                    MiniProgressBar(
+                        value: item.cacheHitRate / 100.0,
+                        color: item.cacheHitRate >= 80 ? .green : (item.cacheHitRate > 50 ? .blue : .secondary),
+                        width: 20,
+                        height: 3
+                    )
+                    Text(String(format: "%.1f%%", item.cacheHitRate))
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundColor(item.cacheHitRate >= 80 ? .green : .primary)
+                        .lineLimit(1)
+                        .fixedSize()
+                    Text("命中")
+                        .font(.system(size: 7))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+            }
+            
+            // Row 2: 上下文、输出、思考 Token
+            HStack(spacing: 3.5) {
+                Text("上下文 \(formatTokensInt(item.contextTokens))")
+                Text("·")
+                Text("输出 \(formatTokensInt(item.outputTokens))")
+                if item.thinkingTokens > 0 {
+                    Text("·")
+                    Text("思考 \(formatTokensInt(item.thinkingTokens))")
+                }
+            }
+            .font(.system(size: 8))
+            .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4.5)
+        .background(Color.secondary.opacity(0.04))
+        .cornerRadius(5)
     }
     
     // 普通卡片 (双列)
