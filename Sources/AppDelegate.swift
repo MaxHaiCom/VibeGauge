@@ -2,14 +2,6 @@ import Cocoa
 import ServiceManagement
 import UserNotifications
 
-enum DisplayStyle: String, CaseIterable {
-    case chipFrame = "芯片框架 (数字居中)"
-    case circleRing = "微型环形进度圈"
-    case textOnly = "清晰纯数字 (如 58%)"
-    case horizontalCompact = "小图标 + 适中数字"
-    case iconOnly = "纯芯片图标"
-}
-
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var menu: NSMenu!
@@ -20,28 +12,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     
     // UserDefaults Keys
     private let autoCleanKey = "autoCleanEnabled"
-    private let displayStyleKey = "menuBarDisplayStyle"
     
     var isAutoCleanEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: autoCleanKey) }
         set {
             UserDefaults.standard.set(newValue, forKey: autoCleanKey)
             setupAutoCleanTimer()
-        }
-    }
-    
-    var currentStyle: DisplayStyle {
-        get {
-            if let raw = UserDefaults.standard.string(forKey: displayStyleKey),
-               let style = DisplayStyle(rawValue: raw) {
-                return style
-            }
-            // 默认采用芯片框架（数字居中）
-            return .chipFrame
-        }
-        set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: displayStyleKey)
-            renderStatusButton(report: currentReport)
         }
     }
     
@@ -53,9 +29,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
-        
-        // 强制确保当前样式为芯片框架
-        UserDefaults.standard.set(DisplayStyle.chipFrame.rawValue, forKey: displayStyleKey)
         
         updateStatus()
         
@@ -113,166 +86,73 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     
-    // MARK: - Multi-Style Rendering
-    private func renderImage(for style: DisplayStyle, percentage: Int) -> NSImage {
-        switch style {
-        case .chipFrame:
-            // 核心推荐：芯片框架 (带引脚，数字居中)
-            let width: CGFloat = 25.0
-            let height: CGFloat = 22.0
-            let img = NSImage(size: NSSize(width: width, height: height), flipped: false) { rect in
-                let bodyWidth: CGFloat = 19.5
-                let bodyHeight: CGFloat = 13.0
-                let bodyX: CGFloat = (width - bodyWidth) / 2.0
-                let bodyY: CGFloat = (height - bodyHeight) / 2.0
-                
-                // 芯片主体轮廓
-                let bodyRect = NSRect(x: bodyX, y: bodyY, width: bodyWidth, height: bodyHeight)
-                let bodyPath = NSBezierPath(roundedRect: bodyRect, xRadius: 2.8, yRadius: 2.8)
-                bodyPath.lineWidth = 1.2
-                NSColor.black.setStroke()
-                bodyPath.stroke()
-                
-                // 芯片四周引脚 (上下各 3 个金属引脚)
-                let pinW: CGFloat = 1.5
-                let pinH: CGFloat = 1.8
-                let pinSpacing: CGFloat = 4.3
-                let startX: CGFloat = bodyX + 3.4
-                for i in 0..<3 {
-                    let px = startX + CGFloat(i) * pinSpacing
-                    // 顶部引脚
-                    NSBezierPath(roundedRect: NSRect(x: px, y: bodyY + bodyHeight, width: pinW, height: pinH), xRadius: 0.5, yRadius: 0.5).fill()
-                    // 底部引脚
-                    NSBezierPath(roundedRect: NSRect(x: px, y: bodyY - pinH, width: pinW, height: pinH), xRadius: 0.5, yRadius: 0.5).fill()
-                }
-                
-                // 内部进度轻量填充 (根据可用或使用率)
-                let pad: CGFloat = 1.6
-                let maxW = bodyWidth - (pad * 2)
-                let fillW = maxW * CGFloat(percentage) / 100.0
-                if fillW > 1.0 {
-                    let fillRect = NSRect(x: bodyX + pad, y: bodyY + pad, width: fillW, height: bodyHeight - (pad * 2))
-                    let fillPath = NSBezierPath(roundedRect: fillRect, xRadius: 1.6, yRadius: 1.6)
-                    NSColor.black.withAlphaComponent(0.22).setFill()
-                    fillPath.fill()
-                }
-                
-                // 居中数字
-                let text = "\(percentage)"
-                let fontSize: CGFloat = (percentage >= 100) ? 7.2 : 8.5
-                let font = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .bold)
-                let pStyle = NSMutableParagraphStyle()
-                pStyle.alignment = .center
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: font,
-                    .foregroundColor: NSColor.black,
-                    .paragraphStyle: pStyle
-                ]
-                let textSize = (text as NSString).size(withAttributes: attrs)
-                let textY = bodyY + (bodyHeight - textSize.height) / 2.0
-                let textRect = NSRect(x: bodyX, y: textY, width: bodyWidth, height: textSize.height)
-                text.draw(in: textRect, withAttributes: attrs)
-                return true
-            }
-            img.isTemplate = true
-            return img
-
-        case .textOnly:
-            // 方案 2: 纯大号数字 (字号 11.5pt，横向仅 28pt)
-            let width: CGFloat = 28.0
-            let img = NSImage(size: NSSize(width: width, height: 22.0), flipped: false) { rect in
-                let text = "\(percentage)%"
-                let font = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .semibold)
-                let paragraphStyle = NSMutableParagraphStyle()
-                paragraphStyle.alignment = .center
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: font,
-                    .foregroundColor: NSColor.black,
-                    .paragraphStyle: paragraphStyle
-                ]
-                text.draw(in: NSRect(x: 0, y: 4.0, width: width, height: 14.0), withAttributes: attrs)
-                return true
-            }
-            img.isTemplate = true
-            return img
+    // MARK: - 定版芯片框架图标绘制 (数字内嵌居中)
+    private func renderChipFrameImage(percentage: Int) -> NSImage {
+        let width: CGFloat = 25.0
+        let height: CGFloat = 22.0
+        
+        let img = NSImage(size: NSSize(width: width, height: height), flipped: false) { rect in
+            let bodyWidth: CGFloat = 19.5
+            let bodyHeight: CGFloat = 13.0
+            let bodyX: CGFloat = (width - bodyWidth) / 2.0
+            let bodyY: CGFloat = (height - bodyHeight) / 2.0
             
-        case .circleRing:
-            // 方案 3: Apple Watch 风格微型圆环 (宽度仅 18pt)
-            let size: CGFloat = 18.0
-            let img = NSImage(size: NSSize(width: size, height: 22.0), flipped: false) { rect in
-                let center = NSPoint(x: size / 2.0, y: 11.0)
-                let radius: CGFloat = 6.5
-                let lineWidth: CGFloat = 2.0
-                
-                let bgPath = NSBezierPath()
-                bgPath.appendArc(withCenter: center, radius: radius, startAngle: 0, endAngle: 360)
-                bgPath.lineWidth = lineWidth
-                NSColor.black.withAlphaComponent(0.25).setStroke()
-                bgPath.stroke()
-                
-                let usedRatio = CGFloat(100 - percentage) / 100.0
-                if usedRatio > 0 {
-                    let startAngle: CGFloat = 90.0
-                    let endAngle: CGFloat = 90.0 - (usedRatio * 360.0)
-                    let activePath = NSBezierPath()
-                    activePath.appendArc(withCenter: center, radius: radius, startAngle: startAngle, endAngle: endAngle, clockwise: true)
-                    activePath.lineWidth = lineWidth
-                    activePath.lineCapStyle = .round
-                    NSColor.black.setStroke()
-                    activePath.stroke()
-                }
-                return true
-            }
-            img.isTemplate = true
-            return img
+            // 1. 芯片主体轮廓
+            let bodyRect = NSRect(x: bodyX, y: bodyY, width: bodyWidth, height: bodyHeight)
+            let bodyPath = NSBezierPath(roundedRect: bodyRect, xRadius: 2.8, yRadius: 2.8)
+            bodyPath.lineWidth = 1.2
+            NSColor.black.setStroke()
+            bodyPath.stroke()
             
-        case .horizontalCompact:
-            // 方案 4: 小图标 + 适中数字 (横向 36pt)
-            let width: CGFloat = 36.0
-            let img = NSImage(size: NSSize(width: width, height: 22.0), flipped: false) { rect in
-                let symbolConfig = NSImage.SymbolConfiguration(pointSize: 10.0, weight: .medium)
-                if let symbol = NSImage(systemSymbolName: "memorychip", accessibilityDescription: nil)?.withSymbolConfiguration(symbolConfig) {
-                    let iconSize: CGFloat = 11.0
-                    symbol.draw(in: NSRect(x: 0, y: 5.5, width: iconSize, height: iconSize))
-                }
-                let text = "\(percentage)%"
-                let font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
-                let paragraphStyle = NSMutableParagraphStyle()
-                paragraphStyle.alignment = .right
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: font,
-                    .foregroundColor: NSColor.black,
-                    .paragraphStyle: paragraphStyle
-                ]
-                text.draw(in: NSRect(x: 12.0, y: 4.5, width: width - 12.0, height: 14.0), withAttributes: attrs)
-                return true
+            // 2. 芯片四周引脚 (上下各 3 个金属引脚)
+            let pinW: CGFloat = 1.5
+            let pinH: CGFloat = 1.8
+            let pinSpacing: CGFloat = 4.3
+            let startX: CGFloat = bodyX + 3.4
+            for i in 0..<3 {
+                let px = startX + CGFloat(i) * pinSpacing
+                // 顶部引脚
+                NSBezierPath(roundedRect: NSRect(x: px, y: bodyY + bodyHeight, width: pinW, height: pinH), xRadius: 0.5, yRadius: 0.5).fill()
+                // 底部引脚
+                NSBezierPath(roundedRect: NSRect(x: px, y: bodyY - pinH, width: pinW, height: pinH), xRadius: 0.5, yRadius: 0.5).fill()
             }
-            img.isTemplate = true
-            return img
             
-        case .iconOnly:
-            // 方案 5: 纯芯片图标
-            let width: CGFloat = 20.0
-            let img = NSImage(size: NSSize(width: width, height: 22.0), flipped: false) { rect in
-                let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
-                if let symbol = NSImage(systemSymbolName: "memorychip", accessibilityDescription: nil)?.withSymbolConfiguration(symbolConfig) {
-                    let iconSize: CGFloat = 14.0
-                    let iconX = (width - iconSize) / 2.0
-                    let iconY = (22.0 - iconSize) / 2.0
-                    symbol.draw(in: NSRect(x: iconX, y: iconY, width: iconSize, height: iconSize))
-                }
-                return true
+            // 3. 内部进度轻量填充 (根据可用状态)
+            let pad: CGFloat = 1.6
+            let maxW = bodyWidth - (pad * 2)
+            let fillW = maxW * CGFloat(percentage) / 100.0
+            if fillW > 1.0 {
+                let fillRect = NSRect(x: bodyX + pad, y: bodyY + pad, width: fillW, height: bodyHeight - (pad * 2))
+                let fillPath = NSBezierPath(roundedRect: fillRect, xRadius: 1.6, yRadius: 1.6)
+                NSColor.black.withAlphaComponent(0.22).setFill()
+                fillPath.fill()
             }
-            img.isTemplate = true
-            return img
+            
+            // 4. 居中数字
+            let text = "\(percentage)"
+            let fontSize: CGFloat = (percentage >= 100) ? 7.2 : 8.5
+            let font = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .bold)
+            let pStyle = NSMutableParagraphStyle()
+            pStyle.alignment = .center
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: NSColor.black,
+                .paragraphStyle: pStyle
+            ]
+            let textSize = (text as NSString).size(withAttributes: attrs)
+            let textY = bodyY + (bodyHeight - textSize.height) / 2.0
+            let textRect = NSRect(x: bodyX, y: textY, width: bodyWidth, height: textSize.height)
+            text.draw(in: textRect, withAttributes: attrs)
+            return true
         }
+        
+        img.isTemplate = true
+        return img
     }
     
     private func renderStatusButton(report: ScanReport) {
         guard let button = statusItem.button else { return }
-        
-        let img = renderImage(for: currentStyle, percentage: report.freePercentage)
-        button.image = img
+        button.image = renderChipFrameImage(percentage: report.freePercentage)
         button.imagePosition = .imageOnly
         button.title = ""
         button.attributedTitle = NSAttributedString(string: "")
@@ -368,20 +248,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        // 3. 菜单栏显示样式切换
-        let styleSubmenu = NSMenu()
-        for style in DisplayStyle.allCases {
-            let item = NSMenuItem(title: style.rawValue, action: #selector(changeStyleAction(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = style
-            item.state = (style == currentStyle) ? .on : .off
-            styleSubmenu.addItem(item)
-        }
-        let styleMenuItem = NSMenuItem(title: "菜单栏显示样式", action: nil, keyEquivalent: "")
-        styleMenuItem.submenu = styleSubmenu
-        menu.addItem(styleMenuItem)
-        
-        // 4. 选项偏好
+        // 3. 选项偏好
         let autoCleanItem = NSMenuItem(title: "定时自动清理 (每 30 分钟)", action: #selector(toggleAutoClean), keyEquivalent: "")
         autoCleanItem.target = self
         autoCleanItem.state = isAutoCleanEnabled ? .on : .off
@@ -394,7 +261,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        // 5. 控制操作
+        // 4. 控制操作
         let refreshItem = NSMenuItem(title: "重新扫描", action: #selector(refreshAction), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
@@ -415,12 +282,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             body: "已释放 \(result.killedCount) 个残留 AI 进程，回收 \(String(format: "%.1f", result.freedMB)) MB 内存。"
         )
         updateStatus()
-    }
-    
-    @objc func changeStyleAction(_ sender: NSMenuItem) {
-        if let style = sender.representedObject as? DisplayStyle {
-            currentStyle = style
-        }
     }
     
     @objc func toggleAutoClean() {
