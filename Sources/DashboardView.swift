@@ -39,15 +39,42 @@ public struct DashboardView: View {
     private func tierBackgroundColor(_ tier: String) -> Color {
         if tier.contains("API") { return Color.blue.opacity(0.18) }
         if tier.contains("本地") { return Color.purple.opacity(0.18) }
-        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") || tier.contains("5x") { return Color.green.opacity(0.18) }
+        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") || tier.contains("5x") || tier.contains("Premium") || tier.contains("SuperGrok") { return Color.green.opacity(0.18) }
         return Color.teal.opacity(0.18)
     }
     
     private func tierForegroundColor(_ tier: String) -> Color {
         if tier.contains("API") { return Color.blue }
         if tier.contains("本地") { return Color.purple }
-        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") || tier.contains("5x") { return Color.green }
+        if tier.contains("Max") || tier.contains("Plus") || tier.contains("Pro") || tier.contains("5x") || tier.contains("Premium") || tier.contains("SuperGrok") { return Color.green }
         return Color.teal
+    }
+    
+    private struct ModelDisplayGroup: Identifiable {
+        let id: String
+        let isFullWidth: Bool
+        let models: [DetectedLLMRuntime]
+    }
+    
+    private var modelDisplayGroups: [ModelDisplayGroup] {
+        var groups: [ModelDisplayGroup] = []
+        var currentRegular: [DetectedLLMRuntime] = []
+        
+        for llm in report.detectedLLMs {
+            if llm.isFullWidth {
+                if !currentRegular.isEmpty {
+                    groups.append(ModelDisplayGroup(id: "reg-\(groups.count)", isFullWidth: false, models: currentRegular))
+                    currentRegular = []
+                }
+                groups.append(ModelDisplayGroup(id: "full-\(llm.id)", isFullWidth: true, models: [llm]))
+            } else {
+                currentRegular.append(llm)
+            }
+        }
+        if !currentRegular.isEmpty {
+            groups.append(ModelDisplayGroup(id: "reg-\(groups.count)", isFullWidth: false, models: currentRegular))
+        }
+        return groups
     }
     
     private func formatTokens(_ count: Int64) -> String {
@@ -186,32 +213,22 @@ public struct DashboardView: View {
                 }
                 
                 // 2.1 主流大模型运行状态矩阵 (普通卡片双列，Gemini 等多额度池模型独占单列通栏)
-                let regularTop = report.detectedLLMs.filter { !$0.isFullWidth && ($0.name == "Claude" || $0.name == "Codex") }
-                let fullWidthModels = report.detectedLLMs.filter { $0.isFullWidth }
-                let regularBottom = report.detectedLLMs.filter { !$0.isFullWidth && $0.name != "Claude" && $0.name != "Codex" }
-                
                 let gridCols = [
                     GridItem(.flexible(), spacing: 6),
                     GridItem(.flexible(), spacing: 6)
                 ]
                 
                 VStack(spacing: 5) {
-                    if !regularTop.isEmpty {
-                        LazyVGrid(columns: gridCols, spacing: 5) {
-                            ForEach(regularTop) { llm in
-                                modelCard(for: llm)
+                    ForEach(modelDisplayGroups) { group in
+                        if group.isFullWidth {
+                            if let model = group.models.first {
+                                fullWidthModelCard(for: model)
                             }
-                        }
-                    }
-                    
-                    ForEach(fullWidthModels) { llm in
-                        fullWidthModelCard(for: llm)
-                    }
-                    
-                    if !regularBottom.isEmpty {
-                        LazyVGrid(columns: gridCols, spacing: 5) {
-                            ForEach(regularBottom) { llm in
-                                modelCard(for: llm)
+                        } else {
+                            LazyVGrid(columns: gridCols, spacing: 5) {
+                                ForEach(group.models) { llm in
+                                    modelCard(for: llm)
+                                }
                             }
                         }
                     }
@@ -257,16 +274,9 @@ public struct DashboardView: View {
                             .font(.system(size: 8.5))
                             .foregroundColor(.secondary)
                         Spacer()
-                        if let fh = report.tokens.fiveHourPct {
-                            let sdStr = report.tokens.sevenDayPct != nil ? " · 周已用\(report.tokens.sevenDayPct!)%" : ""
-                            Text("5h限额: \(fh)% (\(report.tokens.turns5h)轮)\(sdStr)")
-                                .font(.system(size: 8.5, weight: .semibold))
-                                .foregroundColor(fh > 80 ? .orange : .secondary)
-                        } else {
-                            Text("5h限额: \(report.tokens.turns5h)轮 · \(formatTokens(report.tokens.context5h))")
-                                .font(.system(size: 8.5, weight: .medium))
-                                .foregroundColor(.secondary)
-                        }
+                        Text("今日交互: \(report.tokens.todayTurns) 轮")
+                            .font(.system(size: 8.5, weight: .medium))
+                            .foregroundColor(.secondary)
                     }
                 }
                 

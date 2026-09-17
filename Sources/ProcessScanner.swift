@@ -20,6 +20,7 @@ public struct TokenStats {
     public var context5h: Int64 = 0
     public var output5h: Int64 = 0
     
+    public var todayTurns: Int = 0
     public var todayContext: Int64 = 0
     public var todayCacheRead: Int64 = 0
     public var todayOutput: Int64 = 0
@@ -71,6 +72,7 @@ public struct ScanReport {
     // Vibe Coding 专属环境状态
     public var activeClaudeCount: Int = 0
     public var activeAgyCount: Int = 0
+    public var activeGrokCount: Int = 0
     public var activeMCPProcessCount: Int = 0
     public var activeMCPTotalMemMB: Double = 0.0
     
@@ -230,6 +232,7 @@ public class ProcessScanner {
         var allProcs: [Int: RawProc] = [:]
         let allKeywords = serviceDefinitions.map { $0.key } + ["_npx", "mcp"]
         var hasCodex = false
+        var hasGrok = false
         var hasCursor = false
         var hasOllama = false
         var hasLMStudio = false
@@ -252,6 +255,9 @@ public class ProcessScanner {
                 if lowerCmd.contains("codex") || lowerCmd.contains("chatgpt") {
                     hasCodex = true
                 }
+                if lowerCmd.contains("grok") && !lowerCmd.contains("grep") {
+                    hasGrok = true
+                }
                 if lowerCmd.contains("cursor.app") || (lowerCmd.contains("/cursor") && !lowerCmd.contains("cursoruiviewservice")) {
                     hasCursor = true
                 }
@@ -268,6 +274,8 @@ public class ProcessScanner {
                         report.activeClaudeCount += 1
                     } else if cmd.contains("agy --") || cmd.hasSuffix("/agy") {
                         report.activeAgyCount += 1
+                    } else if cmd.contains("grok --") || (cmd.contains("grok") && cmd.contains("bypassPermissions")) || cmd.hasSuffix("/grok") {
+                        report.activeGrokCount += 1
                     } else {
                         // 统计活跃挂载的 MCP 进程
                         let isMCP = allKeywords.contains(where: { lowerCmd.contains($0) })
@@ -279,6 +287,22 @@ public class ProcessScanner {
                     }
                 }
             }
+        }
+        
+        // 探活 Grok 活跃会话 (~/.grok/active_sessions.json 双重保障)
+        if report.activeGrokCount == 0 {
+            let grokSessionsPath = "\(home)/.grok/active_sessions.json"
+            if let data = try? Data(contentsOf: URL(fileURLWithPath: grokSessionsPath)),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                for s in json {
+                    if let pid = s["pid"] as? Int, kill(pid_t(pid), 0) == 0 {
+                        report.activeGrokCount += 1
+                    }
+                }
+            }
+        }
+        if report.activeGrokCount > 0 {
+            hasGrok = true
         }
         
         // 9. 甄别断链孤儿进程
@@ -360,6 +384,8 @@ public class ProcessScanner {
             claudeCount: report.activeClaudeCount,
             agyCount: report.activeAgyCount,
             hasCodex: hasCodex,
+            hasGrok: hasGrok,
+            grokCount: report.activeGrokCount,
             hasOllama: hasOllama,
             hasCursor: hasCursor,
             hasLMStudio: hasLMStudio,
@@ -472,42 +498,100 @@ public class ProcessScanner {
         return (g5h, gw, tp5h, tpw)
     }
 
+    private func getGrokTier() -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let settingsPath = "\(home)/.grok/settings_cache.json"
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let payloadStr = json["payload"] as? String,
+           let pData = payloadStr.data(using: .utf8),
+           let pJson = try? JSONSerialization.jsonObject(with: pData) as? [String: Any],
+           let settings = pJson["settings"] as? [String: Any] {
+            if let tierDisplay = settings["subscription_tier_display"] as? String, !tierDisplay.isEmpty {
+                if tierDisplay.contains("Premium+") {
+                    return "Premium+"
+                } else if tierDisplay.contains("SuperGrok") {
+                    return "SuperGrok"
+                } else if tierDisplay.contains("Premium") {
+                    return "Premium"
+                }
+                return tierDisplay
+            }
+        }
+        
+        let authPath = "\(home)/.grok/auth.json"
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: authPath)),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            for (_, v) in json {
+                if let dict = v as? [String: Any] {
+                    if let mode = dict["auth_mode"] as? String, mode == "oidc" {
+                        return "Premium+"
+                    }
+                }
+            }
+        }
+        
+        if ProcessInfo.processInfo.environment["XAI_API_KEY"] != nil || ProcessInfo.processInfo.environment["GROK_API_KEY"] != nil {
+            return "API Key"
+        }
+        
+        return "Premium+"
+    }
+
     // 多模型自动探针
     private func detectAllLLMRuntimes(
         claudeCount: Int,
         agyCount: Int,
         hasCodex: Bool,
+        hasGrok: Bool,
+        grokCount: Int,
         hasOllama: Bool,
         hasCursor: Bool,
         hasLMStudio: Bool,
         tokens: TokenStats
     ) -> [DetectedLLMRuntime] {
         var list: [DetectedLLMRuntime] = []
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
         
         // 1. Claude
-        if claudeCount > 0 {
+        let claudeInstalled = FileManager.default.fileExists(atPath: "\(home)/.claude.json")
+        if claudeCount > 0 || claudeInstalled {
             list.append(DetectedLLMRuntime(
                 name: "Claude",
                 provider: "",
-                isRunning: true,
+                isRunning: claudeCount > 0,
                 tier: getClaudeTier(),
-                detail: "\(claudeCount) 会话",
+                detail: claudeCount > 0 ? "\(claudeCount) 会话" : "待命",
                 fiveHourPct: tokens.fiveHourPct,
                 sevenDayPct: tokens.sevenDayPct,
                 quotaSubtitle: ""
             ))
         }
         
-        // 2. Gemini (支持原生与 Claude/GPT 三方双额度池)
-        if agyCount > 0 {
+        // 2. Codex
+        let codexInstalled = FileManager.default.fileExists(atPath: "\(home)/.codex/auth.json")
+        if hasCodex || codexInstalled {
+            list.append(DetectedLLMRuntime(
+                name: "Codex",
+                provider: "",
+                isRunning: hasCodex,
+                tier: getCodexTier(),
+                detail: hasCodex ? "活跃" : "待命",
+                quotaSubtitle: "OpenAI · 会话就绪"
+            ))
+        }
+        
+        // 3. Gemini (支持原生与 Claude/GPT 三方双额度池，独占单行通栏)
+        let geminiInstalled = FileManager.default.fileExists(atPath: "\(home)/.gemini/antigravity-cli/antigravity-oauth-token")
+        if agyCount > 0 || geminiInstalled {
             let dual = getGeminiDualPools()
             let hasDual = dual.tpW != nil || dual.tp5h != nil || dual.native5h != nil || dual.nativeW != nil
             list.append(DetectedLLMRuntime(
                 name: "Gemini",
                 provider: "",
-                isRunning: true,
+                isRunning: agyCount > 0,
                 tier: getGeminiTier(),
-                detail: "\(agyCount) 会话",
+                detail: agyCount > 0 ? "\(agyCount) 会话" : "待命",
                 fiveHourPct: dual.native5h,
                 sevenDayPct: dual.nativeW,
                 secondaryPoolName: "三方 (Claude/GPT)",
@@ -518,19 +602,22 @@ public class ProcessScanner {
             ))
         }
         
-        // 3. Codex
-        if hasCodex {
+        // 4. Grok (xAI 订阅)
+        let grokInstalled = FileManager.default.fileExists(atPath: "\(home)/.grok")
+        if hasGrok || grokCount > 0 || grokInstalled {
+            let isRunning = grokCount > 0 || hasGrok
+            let grokDetail = isRunning ? (grokCount > 0 ? "\(grokCount) 会话" : "活跃") : "待命"
             list.append(DetectedLLMRuntime(
-                name: "Codex",
+                name: "Grok",
                 provider: "",
-                isRunning: true,
-                tier: getCodexTier(),
-                detail: "活跃",
-                quotaSubtitle: "3H 交互 · 会话就绪"
+                isRunning: isRunning,
+                tier: getGrokTier(),
+                detail: grokDetail,
+                quotaSubtitle: "xAI · grok-4.6 就绪"
             ))
         }
         
-        // 4. Ollama
+        // 5. Ollama
         if hasOllama {
             var ollamaDetail = "待命"
             var ollamaSub = "端侧运行 · 0 额度消耗"
@@ -560,7 +647,7 @@ public class ProcessScanner {
             ))
         }
         
-        // 5. Cursor
+        // 6. Cursor
         if hasCursor {
             list.append(DetectedLLMRuntime(
                 name: "Cursor",
@@ -572,7 +659,7 @@ public class ProcessScanner {
             ))
         }
         
-        // 6. LM Studio
+        // 7. LM Studio
         if hasLMStudio {
             list.append(DetectedLLMRuntime(
                 name: "LM Studio",
@@ -669,6 +756,7 @@ public class ProcessScanner {
                             let thinking = Int64(details?["thinking_tokens"] as? Int ?? 0)
                             let ctx = inp + cRead + cCreate
                             
+                            stats.todayTurns += 1
                             stats.todayContext += ctx
                             stats.todayCacheRead += cRead
                             stats.todayOutput += out
@@ -686,6 +774,7 @@ public class ProcessScanner {
             cachedTokenStats.turns5h = stats.turns5h
             cachedTokenStats.context5h = stats.context5h
             cachedTokenStats.output5h = stats.output5h
+            cachedTokenStats.todayTurns = stats.todayTurns
             cachedTokenStats.todayContext = stats.todayContext
             cachedTokenStats.todayCacheRead = stats.todayCacheRead
             cachedTokenStats.todayOutput = stats.todayOutput
@@ -694,6 +783,7 @@ public class ProcessScanner {
             stats.turns5h = cachedTokenStats.turns5h
             stats.context5h = cachedTokenStats.context5h
             stats.output5h = cachedTokenStats.output5h
+            stats.todayTurns = cachedTokenStats.todayTurns
             stats.todayContext = cachedTokenStats.todayContext
             stats.todayCacheRead = cachedTokenStats.todayCacheRead
             stats.todayOutput = cachedTokenStats.todayOutput
