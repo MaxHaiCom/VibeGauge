@@ -229,6 +229,10 @@ if CommandLine.arguments.contains("--selftest") {
         precondition(rate(prev: UInt64(0), cur: 1, dt: 0) == nil)
         precondition(rate(prev: UInt64(0), cur: 1, dt: .infinity) == nil)
         precondition(rate(prev: Int64(-1), cur: 1, dt: 2) == nil)
+        precondition(ipv6Verdict(traceIP: "149.119.151.8", httpStatus: 200).blocked)  // IPv4 映射：走隧道，不是泄漏
+        precondition(!ipv6Verdict(traceIP: "240e:390::1", httpStatus: 200).blocked)
+        precondition(ipv6Verdict(traceIP: nil, httpStatus: 0).blocked)
+        precondition(!ipv6Verdict(traceIP: nil, httpStatus: 200).blocked)
         precondition(dnsVerdict([]) == .unknown)
         precondition(dnsVerdict(["192.0.2.1"]) == .unknown)
         precondition(dnsVerdict(["198.18.0.1", "127.0.0.1"]) == .proxyOK)

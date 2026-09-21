@@ -146,6 +146,15 @@ public func dnsVerdict(_ nameservers: [String]) -> DNSLeakVerdict {
     return proxy.count == valid.count ? .proxyOK : .unknown
 }
 
+/// `curl -6` 探测结果判定。本机没有公网 IPv6 时，macOS 会给 curl 合成 IPv4 映射地址（`::ffff:a.b.c.d`），
+/// 请求实际走 IPv4 进代理隧道 —— 只有 trace 回显的出口 IP 本身是 IPv6，才说明 IPv6 真的绕过了隧道。
+public func ipv6Verdict(traceIP: String?, httpStatus: Int) -> (blocked: Bool, message: String) {
+    if let ip = traceIP {
+        return ip.contains(":") ? (false, "IPv6 可直连（可能绕过代理隧道）⚠️") : (true, "无 IPv6 出口（探测走 IPv4 进隧道）✓")
+    }
+    return httpStatus > 0 ? (false, "IPv6 可直连（响应无 trace）⚠️") : (true, "IPv6 出站已阻断 ✓")
+}
+
 public func exitChange(previous: AIExitStatus, current: AIExitStatus) -> ExitChangeEvent? {
     guard !previous.ip.isEmpty, !current.ip.isEmpty,
           previous.ip != current.ip || (!previous.loc.isEmpty && previous.loc != current.loc) else { return nil }
@@ -527,9 +536,10 @@ public final class NetworkScanner {
         let pieces = text.components(separatedBy: marker)
         let body = pieces.first ?? text
         let httpStatus = pieces.dropFirst().first.flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
-        if let trace = parseTrace(body) { leak.ipv6Blocked = false; leak.ipv6Country = trace.loc; leak.ipv6Message = "IPv6 可直连（可能绕过代理隧道）⚠️" }
-        else if httpStatus > 0 { leak.ipv6Blocked = false; leak.ipv6Message = "IPv6 可直连（响应无 trace）⚠️" }
-        else { leak.ipv6Blocked = true; leak.ipv6Message = "IPv6 出站已阻断 ✓" }
+        let trace = parseTrace(body)
+        let verdict = ipv6Verdict(traceIP: trace?.ip, httpStatus: httpStatus)
+        leak.ipv6Blocked = verdict.blocked; leak.ipv6Message = verdict.message
+        if let trace, !verdict.blocked { leak.ipv6Country = trace.loc }
         lock.lock(); let dns = snapshotCache.local.dnsServers; lock.unlock()
         leak.dnsVerdict = dnsVerdict(dns); leak.checkedAt = Date().timeIntervalSince1970
         return leak
