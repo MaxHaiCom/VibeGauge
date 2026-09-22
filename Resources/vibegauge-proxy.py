@@ -24,6 +24,8 @@ import sys
 import threading
 import time
 import traceback
+import zlib
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 
@@ -172,63 +174,222 @@ def apply_json(u: Dict[str, Any], j: Any) -> None:
     if isinstance(msg, dict):
         if isinstance(msg.get("usage"), dict):
             apply_anthropic_usage(u, msg["usage"])
+            if t == "message" and isinstance(msg["usage"].get("output_tokens"), (int, float)):
+                u["_final_usage"] = True
         if msg.get("model"):
             u["model"] = msg["model"]
     if t == "message_delta" and isinstance(j.get("usage"), dict):
         apply_anthropic_usage(u, j["usage"])
+        if isinstance(j["usage"].get("output_tokens"), (int, float)):
+            u["_final_usage"] = True
     # OpenAI 兼容：usage.prompt_tokens / completion_tokens（流式在最后一个 chunk）
     us = j.get("usage")
     if isinstance(us, dict) and ("prompt_tokens" in us or "completion_tokens" in us):
         _set(u, "ctx", us.get("prompt_tokens"))
         _set(u, "out", us.get("completion_tokens"))
-        _set(u, "cache_read", (us.get("prompt_tokens_details") or {}).get("cached_tokens"))
-        _set(u, "think", (us.get("completion_tokens_details") or {}).get("reasoning_tokens"))
+        _set(u, "cache_read", _details(us, "prompt_tokens_details").get("cached_tokens"))
+        _set(u, "think", _details(us, "completion_tokens_details").get("reasoning_tokens"))
+        # completion_tokens 已含 reasoning_tokens；think 只是其中的明细。
+        u["_final_usage"] = True
         if j.get("model"):
             u["model"] = j["model"]
+    # Responses：整包对象 / response.completed 中的 response.usage。
+    response = j.get("response") if t in ("response.completed", "response.incomplete", "response.failed") else j
+    if isinstance(response, dict) and t not in ("message", "message_start", "message_delta"):
+        ru = response.get("usage")
+        if isinstance(ru, dict) and ("input_tokens" in ru or "output_tokens" in ru):
+            _set(u, "ctx", ru.get("input_tokens"))
+            _set(u, "out", ru.get("output_tokens"))
+            _set(u, "cache_read", _details(ru, "input_tokens_details").get("cached_tokens"))
+            _set(u, "think", _details(ru, "output_tokens_details").get("reasoning_tokens"))
+            u["_final_usage"] = True
+            if response.get("model"):
+                u["model"] = response["model"]
     # Gemini
     um = j.get("usageMetadata")
     if isinstance(um, dict):
         _set(u, "ctx", um.get("promptTokenCount"))
-        _set(u, "out", um.get("candidatesTokenCount"))
+        _set(u, "_candidates", um.get("candidatesTokenCount"))
         _set(u, "cache_read", um.get("cachedContentTokenCount"))
         _set(u, "think", um.get("thoughtsTokenCount"))
+        # Gemini 的 candidates 不含 thoughts。保存累计快照，重复事件不重复相加。
+        u["out"] = u.get("_candidates", 0) + u.get("think", 0)
+        u["_final_usage"] = True
         if j.get("modelVersion"):
             u["model"] = j["modelVersion"]
     # Ollama 原生
     if "eval_count" in j or "prompt_eval_count" in j:
         _set(u, "ctx", j.get("prompt_eval_count"))
         _set(u, "out", j.get("eval_count"))
+        u["_final_usage"] = True
         if j.get("model"):
             u["model"] = j["model"]
 
 
+def _details(usage: Dict[str, Any], key: str) -> Dict[str, Any]:
+    value = usage.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+class UsageParser:
+    """只保留当前 SSE 行/事件与累计 usage，不随整条流增长。
+
+    单事件和非流式 JSON 都有硬上限；超限仍透传，但明确记为不完整。
+    gzip 也分块解压，避免压缩后的短响应导致无界解压内存。
+    """
+    EVENT_LIMIT = 1024 * 1024
+    JSON_LIMIT = 8 * 1024 * 1024
+    CHUNK = 65536
+
+    def __init__(self, req_model: Optional[str], content_type: str, encoding: str):
+        self.u: Dict[str, Any] = {"model": req_model, "ctx": 0, "cache_read": 0,
+                                  "cache_write": 0, "out": 0, "think": 0, "parsed": False}
+        self.mode = "sse" if "text/event-stream" in content_type.lower() else None
+        self.buf = bytearray()
+        self.event = bytearray()
+        self.discard_line = False
+        self.discard_event = False
+        self.after_cr = False
+        self.error: Optional[str] = None
+        enc = encoding.strip().lower()
+        self.decoder = zlib.decompressobj(16 + zlib.MAX_WBITS) if enc == "gzip" else None
+        self.decode_failed = enc not in ("", "identity", "gzip")
+        if self.decode_failed:
+            self.error = "unsupported_content_encoding"
+
+    def fail(self, error: str) -> None:
+        if self.error is None:
+            self.error = error
+
+    def _json(self, payload: bytes) -> None:
+        try:
+            j = json.loads(payload)
+            apply_json(self.u, j)
+            if isinstance(j, dict) and (j.get("type") in ("error", "response.failed", "response.incomplete")
+                                       or j.get("error") or j.get("status") in ("failed", "incomplete")):
+                self.fail("upstream_response_error")
+        except (ValueError, UnicodeError, RecursionError, TypeError, OverflowError):
+            # 不保存异常正文：JSON 异常和厂商 error 可能带响应正文或凭据。
+            self.fail("invalid_usage_json")
+
+    def _line(self) -> None:
+        if not self.buf and not self.discard_line:
+            if self.event and not self.discard_event:
+                payload = bytes(self.event).strip()
+                if payload and payload != b"[DONE]":
+                    self._json(payload)
+            self.event.clear()
+            self.discard_event = False
+        elif not self.discard_event and self.buf.startswith(b"data:"):
+            data = self.buf[5:]
+            if data.startswith(b" "):
+                del data[:1]
+            if len(self.event) + len(data) + 1 > self.EVENT_LIMIT:
+                self.fail("sse_event_too_large")
+                self.event.clear()
+                self.discard_event = True
+            else:
+                self.event.extend(data)
+                self.event.append(10)  # SSE 多条 data 行按换行拼接后才解析
+        self.buf.clear()
+        self.discard_line = False
+
+    def _plain(self, data: bytes) -> None:
+        if self.mode is None:
+            # 兼容漏报 Content-Type 的上游；最多暂存少量前缀，不等待整个响应。
+            data = bytes(self.buf) + data
+            self.buf.clear()
+            data = data.lstrip(b" \t\r\n")
+            if not data:
+                return
+            if any(prefix.startswith(data) for prefix in (b"data:", b"event:", b"\xef\xbb\xbf")):
+                self.buf.extend(data)
+                return
+            if data.startswith(b"\xef\xbb\xbf"):
+                data = data[3:]
+            self.mode = "sse" if data.startswith((b"data:", b"event:", b":")) else "json"
+        if self.mode == "json":
+            if len(self.buf) + len(data) > self.JSON_LIMIT:
+                self.fail("json_body_too_large")
+                self.buf.clear()
+                self.mode = "discard"
+            else:
+                self.buf.extend(data)
+            return
+        if self.mode != "sse":
+            return
+        # 同时接受 LF、CRLF 和 CR，网络块可切在任何 UTF-8 字符/换行中间。
+        start = 0
+        for match in re.finditer(b"[\r\n]", data):
+            end = match.start()
+            part = data[start:end]
+            if part:
+                self.after_cr = False
+            self._part(part)
+            if not (data[end] == 10 and self.after_cr):
+                self._line()
+            self.after_cr = data[end] == 13
+            start = end + 1
+        if start < len(data):
+            self.after_cr = False
+            self._part(data[start:])
+
+    def _part(self, part: bytes) -> None:
+        if self.discard_line:
+            return
+        if len(self.buf) + len(part) > self.EVENT_LIMIT:
+            self.fail("sse_event_too_large")
+            self.buf.clear()
+            self.event.clear()
+            self.discard_line = self.discard_event = True
+        else:
+            self.buf.extend(part)
+
+    def feed(self, data: bytes) -> None:
+        if self.decode_failed:
+            return
+        if self.decoder is None:
+            self._plain(data)
+            return
+        try:
+            while data:
+                # gzip 允许拼接多个 member；每次解压的输出也限制为 CHUNK。
+                if self.decoder.eof:
+                    self.decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                self._plain(self.decoder.decompress(data, self.CHUNK))
+                data = self.decoder.unused_data if self.decoder.eof else self.decoder.unconsumed_tail
+        except zlib.error:
+            self.fail("invalid_gzip")
+            self.decode_failed = True
+
+    def finish(self, complete: bool = True) -> Dict[str, Any]:
+        if not complete:
+            self.fail("incomplete_response")
+        if self.decoder is not None and not self.decoder.eof:
+            self.fail("incomplete_gzip")
+        if self.mode == "json" and complete and not self.decode_failed:
+            self._json(bytes(self.buf))
+        elif self.mode == "sse" and (self.buf or self.event or self.discard_line or self.discard_event):
+            self.fail("incomplete_sse_event")
+        if not self.u["parsed"]:
+            self.fail("usage_not_found")
+        elif self.mode == "sse" and not self.u.get("_final_usage"):
+            self.fail("final_usage_not_found")
+        u = {k: v for k, v in self.u.items() if not k.startswith("_")}
+        # 已收到的计数保留作诊断，但不把部分 usage 标成解析成功。
+        u["parsed"] = bool(u["parsed"] and not self.error)
+        if self.error:
+            u["error"] = self.error
+        self.buf.clear()
+        self.event.clear()
+        return u
+
+
 def parse_usage(req_model: Optional[str], content_type: str, body: bytes, encoding: str) -> Dict[str, Any]:
-    u: Dict[str, Any] = {"model": req_model, "ctx": 0, "cache_read": 0, "cache_write": 0, "out": 0, "think": 0, "parsed": False}
-    if encoding and "gzip" in encoding:
-        try:
-            body = gzip.decompress(body)
-        except Exception:
-            return u
-    text = body.decode("utf-8", "replace")
-    stripped = text.lstrip()
-    if "text/event-stream" in content_type or stripped.startswith("event:") or stripped.startswith("data:"):
-        for line in text.split("\n"):
-            if not line.startswith("data:"):
-                continue
-            payload = line[5:].strip()
-            if not payload or payload == "[DONE]":
-                continue
-            try:
-                apply_json(u, json.loads(payload))
-            except ValueError:
-                continue
-    else:
-        try:
-            apply_json(u, json.loads(text))
-        except ValueError:
-            pass
-    u.pop("_in", None)
-    return u
+    parser = UsageParser(req_model, content_type, encoding)
+    for start in range(0, len(body), parser.CHUNK):
+        parser.feed(body[start:start + parser.CHUNK])
+    return parser.finish()
 
 
 # ---------------------------------------------------------------- 代理
@@ -333,81 +494,90 @@ class Handler(BaseHTTPRequestHandler):
         rec: Dict[str, Any] = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z", "epoch": round(t0, 3),
                                "host": hostport, "provider": provider_of(hostport, rest), "path": redact_path(rest),
                                "model": req_model, "stream": stream, "key": key_fp}
+        parser = UsageParser(req_model, "", "")
+        received = 0
+        complete = False
+        response_started = False
+        phase = "upstream"
+        rec["status"] = 502
+        sent = False            # 请求已完整发给上游：此后才算「到了厂商」（套餐按请求数估额度要用）
         try:
             conn = conn_cls(hostport, timeout=600)
             conn.request(self.command, rest, body=body, headers=hdrs)
+            sent = True
             resp = conn.getresponse()
-        except Exception as e:
-            if conn is not None:
-                conn.close()
-            rec.update({"status": 502, "ms": int((time.time() - t0) * 1000), "error": redact_text(str(e))[:200], "parsed": False,
-                        "ctx": 0, "cache_read": 0, "cache_write": 0, "out": 0, "think": 0})
-            if record:
-                with _lock:
-                    _stats["calls"] += 1
-                    _stats["errors"] += 1
-                append_call(rec)
-            return self._json(502, {"error": "vibegauge-proxy upstream error: %s" % type(e).__name__})
-
-        clen = resp.getheader("Content-Length")
-        chunked = clen is None
-        content_type = resp.getheader("Content-Type") or ""
-        encoding = resp.getheader("Content-Encoding") or ""
-        self.send_response(resp.status, resp.reason)
-        for k, v in resp.getheaders():
-            if k.lower() in DROP_RESP:
-                continue
-            self.send_header(k, v)
-        if chunked:
-            self.send_header("Transfer-Encoding", "chunked")
-        else:
-            self.send_header("Content-Length", clen)
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-
-        buf = bytearray()
-        client_gone = False
-        try:
+            rec["status"] = resp.status
+            rl = quota_headers(resp)
+            if rl:
+                rec["rl"] = rl
+            clen = resp.getheader("Content-Length")
+            chunked = clen is None
+            parser = UsageParser(req_model, resp.getheader("Content-Type") or "",
+                                 resp.getheader("Content-Encoding") or "")
+            phase = "client"
+            response_started = True
+            self.send_response(resp.status, resp.reason)
+            for k, v in resp.getheaders():
+                if k.lower() not in DROP_RESP:
+                    self.send_header(k, v)
+            if chunked:
+                self.send_header("Transfer-Encoding", "chunked")
+            else:
+                self.send_header("Content-Length", clen)
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
             while True:
+                phase = "upstream"
                 data = resp.read1(65536)          # 有多少给多少，SSE 不等满块
                 if not data:
+                    # read1 与 read 不同：Content-Length 未读满也可能直接返回 EOF。
+                    if resp.length not in (None, 0):
+                        raise http.client.IncompleteRead(b"", resp.length)
                     break
-                if len(buf) < 8 * 1024 * 1024:
-                    buf += data
-                try:
-                    if chunked:
-                        self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
-                    else:
-                        self.wfile.write(data)
-                    self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    client_gone = True
-                    break
-            if chunked and not client_gone:
+                received += len(data)
+                parser.feed(data)
+                phase = "client"
+                if chunked:
+                    self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
+                else:
+                    self.wfile.write(data)
+                self.wfile.flush()
+            phase = "client"
+            if chunked:
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
-        finally:
-            conn.close()
-        if client_gone:
+            complete = True
+        except Exception as e:
+            # 已发响应头后只能断开，不能再写 502 或成功的 chunked 结束符。
             self.close_connection = True
-
-        u = parse_usage(req_model, content_type, bytes(buf), encoding)
-        rec.update({"status": resp.status, "ms": int((time.time() - t0) * 1000), "model": u.get("model") or req_model,
-                    "ctx": u.get("ctx", 0), "cache_read": u.get("cache_read", 0), "cache_write": u.get("cache_write", 0),
-                    "out": u.get("out", 0), "think": u.get("think", 0), "parsed": bool(u.get("parsed")),
-                    "bytes": len(buf)})
-        rl = quota_headers(resp)
-        if rl:
-            rec["rl"] = rl
-        if not record:
-            return
-        with _lock:
-            _stats["calls"] += 1
-            if rec["parsed"]:
-                _stats["parsed"] += 1
-            if resp.status >= 400:
-                _stats["errors"] += 1
-        append_call(rec)
+            rec["error"] = ("%s_error: %s" % (phase, type(e).__name__) if response_started
+                            else redact_text(str(e))[:200])
+            if not response_started:
+                try:
+                    self._json(502, {"error": "vibegauge-proxy upstream error: %s" % type(e).__name__})
+                except OSError:
+                    pass
+        finally:
+            try:
+                if conn is not None:
+                    conn.close()
+            finally:
+                u = parser.finish(complete)
+                parse_error = u.pop("error", None)
+                rec.update(u)
+                rec["model"] = u.get("model") or req_model
+                rec.update({"ms": int((time.time() - t0) * 1000), "bytes": received, "complete": complete, "sent": sent})
+                if parse_error and "error" not in rec:
+                    rec["error"] = parse_error
+                if record:
+                    with _lock:
+                        _stats["calls"] += 1
+                        if rec["parsed"]:
+                            _stats["parsed"] += 1
+                        # 没找到 usage 之类的解析问题不算请求失败（embeddings 等本来就没有 usage）
+                        if rec["status"] >= 400 or not complete:
+                            _stats["errors"] += 1
+                    append_call(rec)
 
 
 # ---------------------------------------------------------------- 额度 / 余额探针
@@ -446,14 +616,14 @@ def _ms_to_s(v: Any) -> Optional[float]:
 def _iso_to_s(v: Any) -> Optional[float]:
     if not isinstance(v, str):
         return None
-    s = re.sub(r"\.\d+", "", v).replace("Z", "+0000")
-    s = re.sub(r"([+-]\d\d):(\d\d)$", r"\1\2", s)
-    for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S%z"):
-        try:
-            return time.mktime(time.strptime(s, fmt)) - time.timezone + (0 if "%z" in fmt else 0)
-        except ValueError:
-            continue
-    return None
+    try:
+        # Python 3.9 的 fromisoformat 尚不识别 Z；无时区的厂商时间按 UTC。
+        dt = datetime.fromisoformat(v.strip().replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (ValueError, OverflowError):
+        return None
 
 
 def probe_glm(hdrs):
@@ -587,18 +757,131 @@ def selftest() -> None:
     import contextlib
     import io
     import socket
+    import struct
     import tempfile
     from unittest.mock import patch
     global DIR, CALLS, QUOTA
     DIR = tempfile.mkdtemp(prefix="vibegauge-selftest-")
     CALLS, QUOTA = os.path.join(DIR, "api-calls.jsonl"), os.path.join(DIR, "api-quota.json")
 
+    responses_json = {"object": "response", "model": "responses-test", "status": "completed",
+                      "usage": {"input_tokens": 100, "input_tokens_details": {"cached_tokens": 60},
+                                "output_tokens": 20, "output_tokens_details": {"reasoning_tokens": 4}}}
+    gemini_json = {"modelVersion": "gemini-test", "usageMetadata": {
+        "promptTokenCount": 100, "cachedContentTokenCount": 60, "candidatesTokenCount": 20,
+        "thoughtsTokenCount": 30, "totalTokenCount": 150}}
+    initial_event = (b'data: {"type":"message_start","message":{"model":"glm-4.7",'
+                     b'"usage":{"input_tokens":10,"output_tokens":1}}}\n\n')
+    final_event = b'data: {"type":"message_delta","usage":{"output_tokens":999}}\n\n'
+    text_event = b'data: {"type":"content_block_delta","delta":{"text":"' + b"x" * 32768 + b'"}}\n\n'
+    large_size = len(initial_event) + 270 * len(text_event) + len(final_event)
+    assert large_size > 8 * 1024 * 1024
+    disconnect_release = threading.Event()
+    disconnect_done = threading.Event()
+
     class Mock(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         def log_message(self, *a): pass
+
+        def send_json(self, obj):
+            data = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def send_sse(self, chunks, encoding="", truncated=False):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Transfer-Encoding", "chunked")
+            if encoding:
+                self.send_header("Content-Encoding", encoding)
+            self.end_headers()
+            for data in chunks:
+                self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
+                self.wfile.flush()
+            if truncated:
+                self.close_connection = True
+            else:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+
+        def do_GET(self):
+            # 用真实本地 HTTP 响应驱动 probe_kimi_code 的 ISO 重置时间解析。
+            self.send_json({"usage": {"limit": 100, "used": 25, "resetTime": self.path[1:]}})
+
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             j = json.loads(body)
+            if self.path == "/v1/responses":
+                if j.get("stream"):
+                    event = ("event: response.completed\r\ndata: " + json.dumps({
+                        "type": "response.completed", "response": responses_json}) + "\r\n\r\n").encode()
+                    # 每个字节一个 HTTP chunk，覆盖字段与 CRLF 被 read1 拆开的边界。
+                    self.send_sse((event[i:i + 1] for i in range(len(event))))
+                else:
+                    self.send_json(responses_json)
+                return
+            if self.path == "/v1beta/models/gemini-test:generateContent":
+                self.send_json(gemini_json)
+                return
+            if self.path == "/v1beta/models/gemini-test:streamGenerateContent":
+                event = ("data: " + json.dumps(gemini_json) + "\n\n").encode()
+                self.send_sse([event, event])  # 累计快照重复出现也只记一次
+                return
+            if self.path in ("/large-sse", "/large-gzip-sse"):
+                def events():
+                    yield initial_event
+                    for _ in range(270):
+                        yield text_event
+                    yield final_event
+                if self.path == "/large-gzip-sse":
+                    def compressed():
+                        compressor = zlib.compressobj(wbits=16 + zlib.MAX_WBITS)
+                        for event in events():
+                            data = compressor.compress(event)
+                            if data:
+                                yield data
+                        yield compressor.flush()
+                    self.send_sse(compressed(), encoding="gzip")
+                else:
+                    self.send_sse(events())
+                return
+            if self.path == "/upstream-broken-chunk":
+                self.send_sse([initial_event], truncated=True)
+                return
+            if self.path == "/upstream-short-body":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(initial_event) + 500))
+                self.end_headers()
+                self.wfile.write(initial_event)
+                self.wfile.flush()
+                self.close_connection = True
+                return
+            if self.path == "/missing-final-usage":
+                self.send_sse([initial_event])
+                return
+            if self.path == "/oversized-event":
+                self.send_sse([initial_event, b'data: {"text":"',
+                               b"x" * UsageParser.EVENT_LIMIT, b'"}\n\n', final_event])
+                return
+            if self.path == "/client-disconnect":
+                def interrupted_events():
+                    yield initial_event
+                    assert disconnect_release.wait(5), "客户端断开用例未释放 mock"
+                    for _ in range(270):
+                        yield text_event
+                    yield final_event
+                try:
+                    self.send_sse(interrupted_events())
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # 客户端主动断开后，代理关闭上游连接是本用例的预期行为
+                finally:
+                    self.close_connection = True
+                    disconnect_done.set()
+                return
             if self.path == "/api/anthropic/v1/messages" and j.get("stream"):
                 events = [
                     'event: message_start\ndata: {"type":"message_start","message":{"model":"glm-4.7","usage":{"input_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":2,"output_tokens":1}}}\n\n',
@@ -757,7 +1040,155 @@ def selftest() -> None:
                            "x-ratelimit-reset-requests": "6m0s"}, o.get("rl")     # 只收限流头，别的头不收
     assert "rl" not in a, "上游没给限流头就不该有这个字段"
     assert _keys.get("127.0.0.1:%d" % mport, {}).get("authorization") == "Bearer test"   # 同一 host 后到的 key 覆盖
-    print("selftest OK: 流式/非流式 + 限流头 + 异常脱敏 + 来源/Host 校验 + 探针域名 + 文件权限, 记录", CALLS)
+
+    def records():
+        with _lock, open(CALLS, encoding="utf-8") as f:
+            return [json.loads(line) for line in f]
+
+    def await_record(previous, path):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            rows = records()
+            if len(rows) > previous:
+                assert len(rows) == previous + 1 and rows[-1]["path"] == path, rows
+                return rows[-1]
+            time.sleep(0.01)
+        raise AssertionError("请求结束未记账: " + path)
+
+    def call(path, stream=False, broken=False):
+        previous = len(records())
+        client = http.client.HTTPConnection("127.0.0.1", pport, timeout=10)
+        client.request("POST", "/http://127.0.0.1:%d%s" % (mport, path),
+                       body=json.dumps({"model": "request-model", "stream": stream}))
+        response = client.getresponse()
+        assert response.status == 200
+        size = 0
+        digest = hashlib.sha256()
+        read_error = False
+        try:
+            while True:
+                data = response.read(65536)
+                if not data:
+                    read_error = response.length not in (None, 0)
+                    break
+                size += len(data)
+                digest.update(data)
+        except http.client.IncompleteRead:
+            read_error = True
+        finally:
+            client.close()
+        assert read_error == broken, (path, read_error)
+        return await_record(previous, path), size, digest.hexdigest()
+
+    # Responses 的整包/完成事件：缓存与思考明细正确，out 不重复加 think。
+    for stream in (False, True):
+        rec, _, _ = call("/v1/responses", stream)
+        assert rec["model"] == "responses-test" and rec["ctx"] == 100 and rec["cache_read"] == 60, rec
+        assert rec["out"] == 20 and rec["think"] == 4 and rec["parsed"] and rec["complete"], rec
+        assert "error" not in rec, rec
+    # Gemini 输出总量包含思考；重复流式累计快照不得翻倍。
+    for method in ("generateContent", "streamGenerateContent"):
+        rec, _, _ = call("/v1beta/models/gemini-test:" + method, method.startswith("stream"))
+        assert rec["model"] == "gemini-test" and rec["ctx"] == 100 and rec["cache_read"] == 60, rec
+        assert rec["out"] == 50 and rec["think"] == 30 and rec["parsed"] and "error" not in rec, rec
+    # 上面的原有 Chat Completions 用例仍断言 out=20、think=4，不能变成 24。
+
+    expected_digest = hashlib.sha256(initial_event)
+    for _ in range(270):
+        expected_digest.update(text_event)
+    expected_digest.update(final_event)
+    rec, size, digest = call("/large-sse", True)
+    assert size == large_size and rec["bytes"] == large_size and digest == expected_digest.hexdigest(), rec
+    assert rec["ctx"] == 10 and rec["out"] == 999 and rec["parsed"] and "error" not in rec, rec
+    rec, _, _ = call("/large-gzip-sse", True)
+    assert rec["ctx"] == 10 and rec["out"] == 999 and rec["parsed"] and "error" not in rec, rec
+
+    # read1 抛异常及 Content-Length 提前 EOF：各自记一条，保留部分量并标错。
+    for path in ("/upstream-broken-chunk", "/upstream-short-body"):
+        rec, _, _ = call(path, True, broken=True)
+        assert rec["status"] == 200 and rec["out"] == 1 and rec["ctx"] == 10, rec
+        assert not rec["parsed"] and not rec["complete"] and rec["error"] == "upstream_error: IncompleteRead", rec
+    rec, _, _ = call("/missing-final-usage", True)
+    assert not rec["parsed"] and rec["out"] == 1 and rec["error"] == "final_usage_not_found", rec
+    rec, _, _ = call("/oversized-event", True)
+    assert not rec["parsed"] and rec["out"] == 999 and rec["error"] == "sse_event_too_large", rec
+
+    # 真实客户端在初始 usage 后 RST 断开，mock 随后继续发，验证写失败也只记一次。
+    previous = len(records())
+    with socket.create_connection(("127.0.0.1", pport), timeout=10) as sock:
+        body = b'{"stream":true}'
+        sock.sendall(("POST /http://127.0.0.1:%d/client-disconnect HTTP/1.1\r\n"
+                      "Host: 127.0.0.1:%d\r\nContent-Length: %d\r\n\r\n" % (mport, pport, len(body))).encode() + body)
+        response = http.client.HTTPResponse(sock)
+        response.begin()
+        assert response.status == 200 and response.read(len(initial_event)) == initial_event
+        response.close()
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    disconnect_release.set()
+    rec = await_record(previous, "/client-disconnect")
+    assert not rec["parsed"] and not rec["complete"] and rec["error"].startswith("client_error:"), rec
+    assert rec["ctx"] == 10 and rec["out"] == 1, rec
+    assert disconnect_done.wait(5), "客户端断开后，上游连接没有关闭"
+
+    # 分块、多行 data、UTF-8、CR/LF、gzip，以及有界缓存的确定性边界检查。
+    multiline = ('event: response.completed\r\ndata: {"type":"response.completed",\r\n'
+                 'data: "response":' + json.dumps(dict(responses_json, model="测试模型"), ensure_ascii=False)
+                 + '}\r\n\r\n').encode()
+    for payload, encoding in ((multiline, ""), (gzip.compress(multiline), "gzip")):
+        parser = UsageParser(None, "text/event-stream", encoding)
+        for value in payload:
+            parser.feed(bytes([value]))
+        u = parser.finish()
+        assert u["model"] == "测试模型" and u["out"] == 20 and u["parsed"], u
+    parser = UsageParser(None, "text/event-stream", "")
+    parser.feed(b'data: {"text":"')
+    for _ in range(270):
+        parser.feed(b"x" * 65536)
+        assert len(parser.buf) <= parser.EVENT_LIMIT and len(parser.event) <= parser.EVENT_LIMIT
+    parser.feed(b'"}\n\n' + final_event)
+    u = parser.finish()
+    assert u["out"] == 999 and not u["parsed"] and u["error"] == "sse_event_too_large", u
+    u = parse_usage(None, "text/event-stream", initial_event + final_event[:-2], "")
+    assert not u["parsed"] and u["error"] == "incomplete_sse_event", u
+    u = parse_usage(None, "text/event-stream", gzip.compress(initial_event + final_event)[:-8], "gzip")
+    assert not u["parsed"] and u["error"] == "incomplete_gzip", u
+
+    def local_quota(host, path, headers):
+        client = http.client.HTTPConnection("127.0.0.1", mport, timeout=10)
+        try:
+            client.request("GET", "/" + reset_time)
+            return json.loads(client.getresponse().read())
+        finally:
+            client.close()
+
+    # 同一 epoch 的 Z / 正负偏移 / 无时区值，在 UTC 和非 UTC 的本机时区均相同。
+    for tz in ("UTC0", "EST5EDT"):
+        try:
+            with patch.dict(os.environ, {"TZ": tz}):
+                time.tzset()
+                for reset_time, expected in (("2024-01-01T00:00:00Z", 1704067200),
+                                             ("2024-01-01T08:00:00+08:00", 1704067200),
+                                             ("2023-12-31T19:00:00-05:00", 1704067200),
+                                             ("2024-01-01T00:00:00", 1704067200),
+                                             ("2024-01-01T08:00:00.125+08:00", 1704067200.125)):
+                    with patch(__name__ + "._get_json", side_effect=local_quota):
+                        quota = probe_kimi_code({})
+                    assert quota["windows"]["5h"]["resets_at"] == expected, (tz, reset_time, quota)
+        finally:
+            time.tzset()
+    assert _iso_to_s(None) is None and _iso_to_s("not-a-date") is None
+    assert _iso_to_s("2024-01-01 00:00:00") == 1704067200
+    rows = records()
+    assert _stats["calls"] == len(rows) - 1, (rows, _stats)  # 排除权限测试的手工记录
+    assert _stats["parsed"] == sum(bool(row.get("parsed")) for row in rows), _stats
+    assert _stats["errors"] == sum(row.get("status", 0) >= 400 or not row.get("complete", True) for row in rows), _stats
+    # sent：连不上上游（URL 非法 / 拒连）的请求没到厂商；解析成功的一定已发出
+    assert any(row.get("sent") is False and row.get("status") == 502 for row in rows), rows
+    assert all(row.get("sent") is True for row in rows if row.get("parsed")), rows
+    with open(CALLS, encoding="utf-8") as f:
+        ledger = f.read()
+    assert "x" * 100 not in ledger and "test-key" not in ledger and '"usage"' not in ledger, "正文/凭据不得落盘"
+    print("selftest OK: Responses + Gemini 思考量 + >8MiB SSE/gzip + 流中断/客户端断开 + 时区 + 原有回归, 记录", CALLS)
     # 先停服务线程再退出：否则守护线程在解释器收尾时还握着 stderr 锁，
     # 会报 "Fatal Python error: _enter_buffered_busy"、退出码 134，CI 就红了（断言其实全过）
     proxy.shutdown(); mock.shutdown()

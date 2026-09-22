@@ -17,7 +17,7 @@ public struct NetworkTabView: View {
         let good = traceExits.filter { !$0.ip.isEmpty && $0.error.isEmpty }
         guard !good.isEmpty else { return L("出口暂不可用：查不到 AI trace", "Egress unavailable: no AI trace") }
         let groups = Dictionary(grouping: good, by: { "\($0.ip)|\($0.loc)" })
-        if groups.count == 1 { return L("\(good.count) 家 AI 同一出口 · \(good[0].loc.isEmpty ? "国家未知" : good[0].loc)", "\(good.count) AI tools share one egress · \(good[0].loc.isEmpty ? "country unknown" : good[0].loc)") }
+        if groups.count == 1 { return L("本 App 探测：\(good.count) 家 AI 同一出口 · \(good[0].loc.isEmpty ? "国家未知" : good[0].loc)", "As probed by this app: \(good.count) AI tools share one egress · \(good[0].loc.isEmpty ? "country unknown" : good[0].loc)") }
         let places = good.map { "\($0.name.replacingOccurrences(of: "/Codex", with: "")) \($0.loc.isEmpty ? L("未知", "unknown") : $0.loc)" }.joined(separator: " / ")
         return L("出口不一致：\(places) ⚠️", "Mismatched egress: \(places) ⚠️")
     }
@@ -100,6 +100,10 @@ public struct NetworkTabView: View {
                 }
             }
             if traceExits.allSatisfy({ $0.capturedAt == 0 }) { Text(L("等待后台采集…", "Waiting for background collection …")).font(.system(size: 9)).foregroundColor(.secondary) }
+            // 探测是 VibeGauge 自己发的：终端里的 CLI 另配了 HTTPS_PROXY 或被代理软件按进程分流时，实际出口可能不同
+            Text(L("以上是本 App 访问这些域名时的出口；终端里的 CLI 若另设代理或被按进程分流，实际出口可能不同",
+                   "Egress as seen by this app; CLIs with their own proxy settings or per-app routing may exit elsewhere"))
+                .font(.system(size: 8)).foregroundColor(.secondary.opacity(0.8)).fixedSize(horizontal: false, vertical: true)
         }
     }
 

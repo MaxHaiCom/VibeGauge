@@ -73,6 +73,11 @@ final class ProxyManager {
     }
 
     func install() throws {
+        // 没装 Xcode 命令行工具时 /usr/bin/python3 只是个占位程序，LaunchAgent 会一直起不来还反复重试
+        guard Self.pythonWorks() else {
+            throw NSError(domain: "VibeGauge", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                L("python3 不可用：请先在终端运行 xcode-select --install 安装命令行工具", "python3 is unavailable: run `xcode-select --install` in Terminal first")])
+        }
         try syncScript()
         let plist = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -98,6 +103,34 @@ final class ProxyManager {
         if rc != 0 {
             throw NSError(domain: "VibeGauge", code: Int(rc), userInfo: [NSLocalizedDescriptionKey: L("launchctl bootstrap 失败 rc=\(rc)，看 \(logPath)", "launchctl bootstrap failed (rc=\(rc)); see \(logPath)")])
         }
+        // launchctl 成功只说明任务注册了：等它真的在端口上应答才算装好（端口被占、脚本报错都会在这里暴露）。
+        // 应答的必须是刚起来的这个实例：运行了很久的是早就占着端口的另一个代理进程，本次安装其实没起来
+        var stale = false
+        for _ in 0..<15 {
+            if let h = health() {
+                if h.uptime < 30 { return }
+                stale = true
+            }
+            usleep(200_000)
+        }
+        if stale {
+            throw NSError(domain: "VibeGauge", code: 4, userInfo: [NSLocalizedDescriptionKey:
+                L("端口 \(port) 已被另一个代理进程占用（不是刚安装的这个），先结束它再装", "Port \(port) is held by another proxy process (not the one just installed); stop it and retry")])
+        }
+        throw NSError(domain: "VibeGauge", code: 3, userInfo: [NSLocalizedDescriptionKey:
+            L("代理已注册但没有在 127.0.0.1:\(port) 应答（端口被占用或启动报错），看 \(logPath)",
+              "Proxy registered but not answering on 127.0.0.1:\(port) (port in use or startup error); see \(logPath)")])
+    }
+
+    static func pythonWorks() -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        p.arguments = ["-c", "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)"]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
     }
 
     func uninstall() {
@@ -161,6 +194,10 @@ final class StatuslineBridge {
 
     func connect(_ tool: Tool) throws {
         lock.lock(); defer { lock.unlock() }
+        guard ProxyManager.pythonWorks() else {
+            throw NSError(domain: "VibeGauge", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                L("python3 不可用：请先在终端运行 xcode-select --install 安装命令行工具", "python3 is unavailable: run `xcode-select --install` in Terminal first")])
+        }
         try syncScript()
         try runScript(["--install", tool.rawValue])
     }

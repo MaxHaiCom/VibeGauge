@@ -251,7 +251,7 @@ public struct QuotaWindow: Equatable {
 
         var perHour: Double
         var basis: String
-        let recent = recentPctPerHour > 0 && recentSpanMinutes >= 10
+        let recent = recentSpanMinutes >= 10                   // 有 10 分钟以上的样本就用近期速度，哪怕是 0
         if recent {
             perHour = recentPctPerHour
             basis = L("近 \(recentSpanMinutes) 分钟", "last \(recentSpanMinutes)m")
@@ -541,7 +541,8 @@ public extension ScanReport {
                                       detail: String(format: L("剩余 %.0f GB / %.0f GB", "%.0f / %.0f GB free"), diskFreeGB, diskTotalGB), kind: .disk))
         }
 
-        return out.sorted { $0.margin != $1.margin ? $0.margin > $1.margin : $0.pct > $1.pct }
+        // 先比等级（危急 > 警告 > 正常），同级再比离线多近：磁盘 97%（危急）不能排在额度 90%（警告）后面
+        return out.sorted { ($0.level, $0.margin, $0.pct) > ($1.level, $1.margin, $1.pct) }
     }
 
     /// 最紧的那一条 —— 菜单栏图标画它
@@ -751,6 +752,54 @@ public final class ProcessScanner {
         ("meigen", L("Meigen 图像服务", "Meigen image service")),
         ("context7", L("Context7 检索服务", "Context7 retrieval service"))
     ]
+
+    /// 命令行脱敏后再给人看（自测输出会被贴进公开 Issue）：认证类参数的值、URL 里的账号密码、像 key 的长串一律打码
+    static func redactCommand(_ cmd: String) -> String {
+        let secretFlag = #"(?i)^--?[a-z0-9_-]*(key|token|secret|password|passwd|auth|credential)[a-z0-9_-]*$"#
+        var out: [String] = []
+        var hideNext = false
+        for raw in cmd.split(separator: " ", omittingEmptySubsequences: false).map(String.init) {
+            var t = raw
+            let bare = t.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
+            if hideNext {
+                t = "***"
+                // 「Authorization: Bearer <凭据>」是三个词：盖掉 Bearer / Basic 之后还要再盖下一个
+                hideNext = ["bearer", "basic", "token"].contains(bare)
+            }
+            else if t.range(of: secretFlag, options: .regularExpression) != nil { hideNext = true }
+            else if bare.hasPrefix("authorization") || bare.hasPrefix("x-api-key") || bare.hasPrefix("api-key:") {
+                // -H "Authorization: Bearer xxx" / Authorization:Bearer_xxx：冒号后面的全盖，值若在下一个词也盖
+                if let colon = t.firstIndex(of: ":") {
+                    let rest = t[t.index(after: colon)...]
+                    t = String(t[...colon]) + (rest.isEmpty ? "" : "***")
+                    hideNext = rest.isEmpty || ["bearer", "basic", "token"].contains(rest.lowercased())
+                } else { hideNext = true }
+            }
+            else if let eq = t.firstIndex(of: "="), String(t[..<eq]).range(of: #"(?i)(key|token|secret|password|passwd|auth|credential)"#, options: .regularExpression) != nil {
+                t = String(t[...eq]) + "***"
+            }
+            t = t.replacingOccurrences(of: #"://[^/@\s]+@"#, with: "://***@", options: .regularExpression)
+            t = t.replacingOccurrences(of: #"\b(sk|ghp|gho|xox[a-z]|glpat|AIza|AKIA)[A-Za-z0-9_\-]{8,}"#, with: "***", options: .regularExpression)
+            out.append(t)
+        }
+        return out.joined(separator: " ")
+    }
+
+    /// "The system has 25769803776 (1572864 pages with a page size of 16384)." → 16384
+    static func memoryPressurePageSize(_ output: String) -> Double? {
+        guard let r = output.range(of: #"page size of (\d+)"#, options: .regularExpression) else { return nil }
+        return Double(output[r].split(separator: " ").last ?? "")
+    }
+
+    /// 是不是 MCP 服务进程：脚本运行时（node / npm / python / uv）+ 明确的 MCP 特征。
+    /// 只在 ~/.npm/_npx 里不算 —— 用 npx 起的普通后台工具关掉终端后同样 ppid=1、不监听端口，被当孤儿杀掉就是误杀。
+    /// 官方服务端包是 @modelcontextprotocol/server-*（不含 "mcp" 子串），要单独认；
+    /// 但只认 server-：用官方 SDK 写的**客户端**程序路径里也有 @modelcontextprotocol/sdk，那不是该收割的东西。
+    static func isMCPServerCommand(_ lowerCmd: String, serviceKeys: [String] = []) -> Bool {
+        let runner = ["node", "npm", "python", "uv"].contains { lowerCmd.contains($0) }
+        let signature = (serviceKeys + ["mcp", "modelcontextprotocol/server-"]).contains { lowerCmd.contains($0) }
+        return runner && signature
+    }
 
     // MARK: 会话判定（用户交互终端 vs 子脚本/MCP）
 
@@ -979,8 +1028,10 @@ public final class ProcessScanner {
         lock.lock(); defer { lock.unlock() }
         var report = ScanReport()
 
-        // 1. memory_pressure
-        for line in execute("memory_pressure").components(separatedBy: "\n") {
+        // 1. memory_pressure（页大小从它自己的输出里读：Apple Silicon 16KB、Intel 4KB，写死会差 4 倍）
+        let pressureOut = execute("memory_pressure")
+        let pageBytes = Self.memoryPressurePageSize(pressureOut) ?? Double(getpagesize())
+        for line in pressureOut.components(separatedBy: "\n") {
             if line.contains("System-wide memory free percentage:") {
                 let parts = line.components(separatedBy: ":")
                 if parts.count > 1 {
@@ -990,7 +1041,7 @@ public final class ProcessScanner {
                 let parts = line.components(separatedBy: ":")
                 if parts.count > 1 {
                     let pages = Double(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0.0
-                    report.compressorGB = pages * 16384.0 / (1024.0 * 1024.0 * 1024.0)
+                    report.compressorGB = pages * pageBytes / (1024.0 * 1024.0 * 1024.0)
                 }
             }
         }
@@ -1048,15 +1099,12 @@ public final class ProcessScanner {
         // 8. 进程表 + 会话计数 + 活跃 MCP
         let procs = readProcs()
         let counts = countSessions(procs)
-        let allKeywords = serviceDefinitions.map { $0.key } + ["_npx", "mcp"]
-        func isRunner(_ lower: String) -> Bool {
-            lower.contains("node") || lower.contains("npm") || lower.contains("python") || lower.contains("uv")
-        }
+        let serviceKeys = serviceDefinitions.map { $0.key }
         for p in procs.values where p.ppid != 1 {
             let lower = p.cmd.lowercased()
             if ProcessScanner.isClaudeCLISession(cmd: p.cmd) || ProcessScanner.isCodexCLISession(cmd: p.cmd)
                 || ProcessScanner.isAgyCLISession(cmd: p.cmd) || ProcessScanner.isGrokCLISession(cmd: p.cmd) { continue }
-            if isRunner(lower) && allKeywords.contains(where: { lower.contains($0) }) {
+            if Self.isMCPServerCommand(lower, serviceKeys: serviceKeys) {
                 report.activeMCPProcessCount += 1
                 report.activeMCPTotalMemMB += p.memMB
             }
@@ -1069,7 +1117,7 @@ public final class ProcessScanner {
         var protectedList: [ProtectedProc] = []
         for (pid, p) in procs where p.ppid == 1 {
             let lower = p.cmd.lowercased()
-            guard isRunner(lower), allKeywords.contains(where: { lower.contains($0) }) else { continue }
+            guard Self.isMCPServerCommand(lower, serviceKeys: serviceKeys) else { continue }
             if listeningPids.contains(pid) {
                 protectedList.append(ProtectedProc(pid: pid, cmd: p.cmd, memMB: p.memMB, reason: L("在监听端口（可能还有客户端会连）", "Listening on a port (a client may connect)")))
                 continue
@@ -1302,7 +1350,9 @@ public final class ProcessScanner {
         }
     }
 
+    /// 套餐优先取会话日志里的 plan_type（不碰认证文件）；近两天没会话时才看 auth.json 的 id_token 声明兜底
     private func getCodexTier(sessionPlan: String) -> String {
+        if !sessionPlan.isEmpty { return ProcessScanner.codexPlanLabel(sessionPlan) }
         if let auth = readJSON("\(home)/.codex/auth.json") {
             if let idTok = (auth["tokens"] as? [String: Any])?["id_token"] as? String {
                 let segs = idTok.split(separator: ".")
@@ -1318,7 +1368,6 @@ public final class ProcessScanner {
                     }
                 }
             }
-            if !sessionPlan.isEmpty { return ProcessScanner.codexPlanLabel(sessionPlan) }
             let mode = auth["auth_mode"] as? String ?? ""
             if mode == "chatgpt" { return L("ChatGPT 登录", "ChatGPT sign-in") }
             if mode == "api_key" || auth["OPENAI_API_KEY"] != nil { return "API Key" }
@@ -1492,24 +1541,34 @@ public final class ProcessScanner {
         if let h = src.limitHit, h.at > (into.limitHit?.at ?? -1) { into.limitHit = h }
     }
 
-    /// 本机：近 7 天目录里 48h 内改过的会话文件，各取每桶最新；单文件按 mtime 缓存
-    private func readLocalCodex() -> CodexParse {
+    /// ~/.codex/sessions 下 window 秒内改过的会话文件（修改时间每次实时读）。
+    /// 按修改时间找、不按目录日期：`codex resume` 的旧会话会继续写进它创建那天的目录，只看最近几天的目录就漏了。
+    /// 候选集（7 天内改过的）60 秒刷新一次 —— 目录里常有上千个文件，不能每 8 秒全量遍历。
+    private var codexCandidates: (at: TimeInterval, paths: [String]) = (0, [])
+    private func codexSessionFiles(modifiedWithin window: TimeInterval) -> [(path: String, mtime: TimeInterval)] {
         let fm = FileManager.default
         let now = Date().timeIntervalSince1970
-        let df = DateFormatter()
-        df.dateFormat = "yyyy/MM/dd"
-        var files: [(path: String, mtime: TimeInterval)] = []
-        for back in 0..<7 {
-            let dir = "\(home)/.codex/sessions/\(df.string(from: Date(timeIntervalSinceNow: -Double(back) * 86400)))"
-            guard let names = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-            for n in names where n.hasSuffix(".jsonl") {
-                let p = "\(dir)/\(n)"
-                if let d = (try? fm.attributesOfItem(atPath: p))?[.modificationDate] as? Date,
-                   now - d.timeIntervalSince1970 < 48 * 3600 {
-                    files.append((p, d.timeIntervalSince1970))
+        if now - codexCandidates.at >= 60 {
+            var paths: [String] = []
+            let root = URL(fileURLWithPath: "\(home)/.codex/sessions")
+            if let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) {
+                for case let url as URL in en where url.pathExtension == "jsonl" {
+                    if let d = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                       now - d.timeIntervalSince1970 < 7 * 86400 { paths.append(url.path) }
                 }
             }
+            codexCandidates = (now, paths)
         }
+        return codexCandidates.paths.compactMap { path in
+            guard let d = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date,
+                  now - d.timeIntervalSince1970 < window else { return nil }
+            return (path, d.timeIntervalSince1970)
+        }
+    }
+
+    /// 本机：48h 内改过的会话文件，各取每桶最新；单文件按 mtime 缓存
+    private func readLocalCodex() -> CodexParse {
+        let files = codexSessionFiles(modifiedWithin: 48 * 3600)
         var merged = CodexParse()
         var seen = Set<String>()
         for f in files {
@@ -1923,8 +1982,13 @@ public final class ProcessScanner {
         let projectsDir = "\(home)/.claude/projects"
         let fm = FileManager.default
         guard let en = fm.enumerator(atPath: projectsDir) else {
+            // 没装 Claude Code：Claude 这边没东西，但只用 Codex 的人照样要看到按项目归因
             fileStates = [:]
-            return TokenStats()
+            var s = TokenStats()
+            var byProject: [String: ProjectUsage] = [:]
+            mergeCodexProjects(into: &byProject, startOfToday: Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
+            s.todayByProject = byProject.values.sorted { $0.ctx > $1.ctx }
+            return s
         }
 
         let horizon = now - 24.0 * 3600.0
@@ -1980,59 +2044,37 @@ public final class ProcessScanner {
     /// Codex 的今日用量按会话文件的 cwd 归并。口径与 codexUsageToday 一致：
     /// `total_token_usage` 是**该会话累计**，每个文件取最后一条非空的再相加。
     private func mergeCodexProjects(into byProject: inout [String: ProjectUsage], startOfToday: TimeInterval) {
-        let fm = FileManager.default
-        let df = DateFormatter()
-        df.dateFormat = "yyyy/MM/dd"
-        for back in 0...1 {
-            let dir = "\(home)/.codex/sessions/\(df.string(from: Date(timeIntervalSinceNow: -Double(back) * 86400)))"
-            guard let names = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-            for n in names where n.hasSuffix(".jsonl") {
-                let path = "\(dir)/\(n)"
-                guard let attrs = try? fm.attributesOfItem(atPath: path),
-                      let mod = attrs[.modificationDate] as? Date,
-                      mod.timeIntervalSince1970 >= startOfToday,
-                      let cwd = sessionCwd(of: path),
-                      let u = codexFileUsage(path: path) else { continue }
-                var p = byProject[cwd] ?? ProjectUsage(path: cwd)
-                p.turns += u.requests
-                p.ctx += u.ctx
-                p.out += u.out
-                p.think += u.think
-                if !p.clis.contains("Codex") { p.clis.append("Codex") }
-                byProject[cwd] = p
-            }
+        let now = Date().timeIntervalSince1970
+        for (path, _) in codexSessionFiles(modifiedWithin: now - startOfToday) {
+            guard let cwd = sessionCwd(of: path),
+                  let u = codexFileUsage(path: path, startOfToday: startOfToday) else { continue }
+            var p = byProject[cwd] ?? ProjectUsage(path: cwd)
+            p.turns += u.requests
+            p.ctx += u.ctx
+            p.out += u.out
+            p.think += u.think
+            if !p.clis.contains("Codex") { p.clis.append("Codex") }
+            byProject[cwd] = p
         }
     }
 
     // MARK: 各 CLI 今日用量
 
-    private var codexUsageCache: [String: (mtime: TimeInterval, usage: CLIUsage)] = [:]
+    private var codexUsageCache: [String: (mtime: TimeInterval, day: TimeInterval, usage: CLIUsage)] = [:]
 
     /// Codex：`token_count` 事件的 `info.total_token_usage` 是**该会话的累计值** → 每个会话文件取最后一条非空的，再跨文件相加。
-    /// 跨零点的会话会把昨天那部分也算进来（Codex 不按天分账，只能这样近似）。
+    /// 跨零点继续的会话：减掉零点前最后一条累计，只算今天的量。
     private func codexUsageToday(startOfToday: TimeInterval) -> CLIUsage {
         var u = CLIUsage(name: "Codex")
-        let fm = FileManager.default
-        let df = DateFormatter()
-        df.dateFormat = "yyyy/MM/dd"
         var seen = Set<String>()
-        for back in 0...1 {
-            let dir = "\(home)/.codex/sessions/\(df.string(from: Date(timeIntervalSinceNow: -Double(back) * 86400)))"
-            guard let names = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-            for n in names where n.hasSuffix(".jsonl") {
-                let path = "\(dir)/\(n)"
-                guard let attrs = try? fm.attributesOfItem(atPath: path),
-                      let mod = attrs[.modificationDate] as? Date else { continue }
-                let mtime = mod.timeIntervalSince1970
-                guard mtime >= startOfToday else { continue }
-                seen.insert(path)
-                guard let one = codexFileUsage(path: path, mtime: mtime) else { continue }
-                u.ctx += one.ctx
-                u.cacheRead += one.cacheRead
-                u.out += one.out
-                u.think += one.think
-                u.requests += one.requests
-            }
+        for (path, mtime) in codexSessionFiles(modifiedWithin: Date().timeIntervalSince1970 - startOfToday) {
+            seen.insert(path)
+            guard let one = codexFileUsage(path: path, mtime: mtime, startOfToday: startOfToday) else { continue }
+            u.ctx += one.ctx
+            u.cacheRead += one.cacheRead
+            u.out += one.out
+            u.think += one.think
+            u.requests += one.requests
         }
         codexUsageCache = codexUsageCache.filter { seen.contains($0.key) }
         if !u.hasTokens { u.note = L("今日无调用", "No calls today") }
@@ -2041,34 +2083,84 @@ public final class ProcessScanner {
 
     /// 单个 Codex 会话文件的累计用量（`total_token_usage` 是该会话累计 → 取最后一条非空的）。
     /// 按 CLI 汇总与按项目归因共用这一份，口径不会分叉。
-    private func codexFileUsage(path: String, mtime: TimeInterval? = nil) -> CLIUsage? {
+    /// 今天的量：total_token_usage 是**会话累计**，跨零点继续的会话要减掉零点前最后一条累计（见 codexPreMidnight）。
+    /// 请求数只数今天的 token_count 事件。
+    func codexFileUsage(path: String, mtime: TimeInterval? = nil,
+                                startOfToday: TimeInterval = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970) -> CLIUsage? {
         let mt = mtime ?? ((try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date)?.timeIntervalSince1970
         guard let mt = mt else { return nil }
-        if let c = codexUsageCache[path], c.mtime == mt { return c.usage }
+        if let c = codexUsageCache[path], c.mtime == mt, c.day == startOfToday { return c.usage }
         var acc = CLIUsage(name: "Codex")
         let text = readTail(path, maxBytes: 256 * 1024)
-        let lines = text.components(separatedBy: "\n")
-        for l in lines.reversed() where l.contains("\"type\":\"token_count\"") && !l.contains("\"info\":null") {
-            guard let data = l.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let info = findTokenInfo(json),
-                  let t = info["total_token_usage"] as? [String: Any] else { continue }
-            func n64(_ k: String) -> Int64 { Int64((t[k] as? NSNumber)?.intValue ?? 0) }
-            acc.ctx = n64("input_tokens")               // 已含 cached
-            acc.cacheRead = n64("cached_input_tokens")
-            acc.out = n64("output_tokens")
-            acc.think = n64("reasoning_output_tokens")
-            break
+        let events = text.components(separatedBy: "\n").compactMap(Self.codexTokenEvent)
+        if let last = events.last {
+            let base = codexPreMidnight(path: path, startOfToday: startOfToday)
+            acc.ctx = max(0, last.usage.ctx - base.ctx)               // input 已含 cached
+            acc.cacheRead = max(0, last.usage.cacheRead - base.cacheRead)
+            acc.out = max(0, last.usage.out - base.out)
+            acc.think = max(0, last.usage.think - base.think)
         }
-        acc.requests = lines.filter { $0.contains("\"type\":\"token_count\"") && !$0.contains("\"info\":null") }.count
-        codexUsageCache[path] = (mt, acc)
+        // 同一份累计快照会被重复写入（额度刷新时）：累计值变了才算一次请求
+        var prev: (Int64, Int64)? = nil
+        acc.requests = events.filter { e in
+            defer { prev = (e.usage.ctx, e.usage.out) }
+            return e.ts >= startOfToday && prev.map { $0 != (e.usage.ctx, e.usage.out) } ?? true
+        }.count
+        codexUsageCache[path] = (mt, startOfToday, acc)
         return acc
     }
 
-    private func findTokenInfo(_ x: Any) -> [String: Any]? {
+    /// 一行 token_count 事件 → (时刻, 会话累计)；不是这种行就 nil
+    static func codexTokenEvent(_ line: String) -> (ts: TimeInterval, usage: CLIUsage)? {
+        guard line.contains("\"type\":\"token_count\""), !line.contains("\"info\":null"),
+              let data = line.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let info = findTokenInfoStatic(json),
+              let t = info["total_token_usage"] as? [String: Any] else { return nil }
+        func n64(_ k: String) -> Int64 { Int64((t[k] as? NSNumber)?.intValue ?? 0) }
+        var u = CLIUsage(name: "Codex")
+        u.ctx = n64("input_tokens"); u.cacheRead = n64("cached_input_tokens")
+        u.out = n64("output_tokens"); u.think = n64("reasoning_output_tokens")
+        return (Fmt.parseISODate(json["timestamp"] as? String ?? "") ?? 0, u)
+    }
+
+    /// 零点前最后一条会话累计（跨零点继续的会话，今天的量要减掉它）。每个文件每天只找一次：
+    /// 会话今天才开始（第一行就在零点后）→ 0，不扫；否则分块扫整个文件，不整个读进内存。
+    private var codexBaseline: [String: (day: TimeInterval, usage: CLIUsage)] = [:]
+    private func codexPreMidnight(path: String, startOfToday: TimeInterval) -> CLIUsage {
+        if let b = codexBaseline[path], b.day == startOfToday { return b.usage }
+        var base = CLIUsage(name: "Codex")
+        guard let fh = FileHandle(forReadingAtPath: path) else { return base }
+        defer { try? fh.close() }
+        let head = String(decoding: (try? fh.read(upToCount: 4096)) ?? Data(), as: UTF8.self)
+        let firstTS = head.split(separator: "\n").first.flatMap { line -> TimeInterval? in
+            guard let d = String(line).data(using: .utf8), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
+            return Fmt.parseISODate(j["timestamp"] as? String ?? "")
+        }
+        // 首行（session_meta 常带整段指令，可能远超 4KB）读不出时间 → 不敢假设是今天开始的，老老实实扫一遍
+        if firstTS.map({ $0 < startOfToday }) ?? true {
+            try? fh.seek(toOffset: 0)
+            var carry = ""
+            scan: while let chunk = try? fh.read(upToCount: 1 << 20), !chunk.isEmpty {
+                let lines = (carry + String(decoding: chunk, as: UTF8.self)).components(separatedBy: "\n")
+                carry = lines.last ?? ""
+                for l in lines.dropLast() {
+                    guard let e = Self.codexTokenEvent(l) else { continue }
+                    if e.ts >= startOfToday { break scan }     // 事件按时间追加：过了零点就不用再往下读
+                    base = e.usage
+                }
+            }
+        }
+        codexBaseline[path] = (startOfToday, base)
+        return base
+    }
+
+    private func findTokenInfo(_ x: Any) -> [String: Any]? { Self.findTokenInfoStatic(x) }
+
+    static func findTokenInfoStatic(_ x: Any) -> [String: Any]? {
         guard let d = x as? [String: Any] else { return nil }
         if d["total_token_usage"] != nil { return d }
-        for v in d.values { if let r = findTokenInfo(v) { return r } }
+        for v in d.values { if let r = findTokenInfoStatic(v) { return r } }
         return nil
     }
 
@@ -2129,6 +2221,13 @@ public final class ProcessScanner {
         let ms: Int
         let key: String
         let rl: [String: String]
+        /// 响应完整转发完了（旧记录没有这个字段 → 当作完整）
+        var complete = true
+        /// 失败：4xx/5xx、没状态，或者流式传到一半断了（状态码仍是 200）
+        var failed: Bool { status >= 400 || status == 0 || !complete }
+        /// 请求已完整发给上游（代理新字段 sent）。连接阶段就失败的（DNS / 拒连）没到厂商，不占套餐额度；
+        /// 发出去之后才断的算到了 —— 估额度宁可偏高
+        var sent = true
     }
 
     /// 价目表：`~/.config/vibegauge/prices.json`，单位 = 每百万 token。
@@ -2247,7 +2346,10 @@ public final class ProcessScanner {
                        status: (j["status"] as? NSNumber)?.intValue ?? 0,
                        ms: (j["ms"] as? NSNumber)?.intValue ?? 0,
                        key: j["key"] as? String ?? "",
-                       rl: (j["rl"] as? [String: Any])?.compactMapValues { $0 as? String } ?? [:])
+                       rl: (j["rl"] as? [String: Any])?.compactMapValues { $0 as? String } ?? [:],
+                       // 旧版代理没有 complete / sent：它记本地失败时带 error 字段、状态码 502
+                       complete: (j["complete"] as? Bool) ?? !((j["status"] as? NSNumber)?.intValue == 502 && j["error"] != nil),
+                       sent: (j["sent"] as? Bool) ?? !((j["status"] as? NSNumber)?.intValue == 502 && j["error"] != nil))
     }
 
     /// api-calls.jsonl 也是 append-only：同样的 offset 增量 + 指纹识别重写；
@@ -2360,7 +2462,8 @@ public final class ProcessScanner {
     /// 每个额度窗口按时间记若干 (时刻, 已用%)，用来算近期速度。
     /// 键里带重置点 → 窗口一换就是新键，天然不会把上个窗口的样本混进来。
     /// 落盘 `~/.config/vibegauge/quota-samples.json`，重启不丢；只留 6 小时，文件几十 KB。
-    /// 另有 `final|<额度>` 键长期保存上周期终值（每个额度一笔），给「按作息」预测当先验。
+    /// 另有 `final2|<额度>` 键长期保存上周期终值（每个额度一笔），给「按作息」预测当先验。
+    /// （v1.1.0/1.1.1 用的 `final|` 没校验「最后观测离重置够近」，不再读，按普通过期样本清掉）
     private var qsamples: [String: [(t: TimeInterval, pct: Int)]] = [:]
     private var qsamplesLoaded = false
     private var qsamplesSavedAt: TimeInterval = 0
@@ -2402,21 +2505,24 @@ public final class ProcessScanner {
         samples.compactMap { k, arr -> (reset: TimeInterval, pct: Int)? in
             guard k.hasPrefix(rawKey + "@"), let r = Double(k.dropFirst(rawKey.count + 1)), r <= now,
                   let last = arr.last(where: { $0.t < r }) else { return nil }
+            // 最后一次观测离重置太远 → 那只是「当时用到多少」，不是终值（当先验会系统性偏低）
+            let maxGap: TimeInterval = rawKey.hasSuffix("5h") ? 1800 : 12 * 3600
+            guard r - last.t <= maxGap else { return nil }
             return (r, last.pct)
         }.max { $0.reset < $1.reset }
     }
 
-    /// 旧窗口的样本 6 小时后就清掉，清之前把终值挪到 final| 键下长期留着（每个额度只留最近一个）。
+    /// 旧窗口的样本 6 小时后就清掉，清之前把终值挪到 final2| 键下长期留着（每个额度只留最近一个）。
     /// 必须对**所有**额度一起归档：同一轮里先采的 5h 会顺手清掉过期的周样本，只归档自己的话周额度就丢了终值
     /// （合盖睡一晚跨过周重置就会碰上）。
     static func archiveFinals(_ samples: inout [String: [(t: TimeInterval, pct: Int)]], now: TimeInterval) {
         let raws = Set(samples.keys.compactMap { k -> String? in
-            guard !k.hasPrefix("final|"), let at = k.range(of: "@", options: .backwards) else { return nil }
+            guard !k.hasPrefix("final2|"), let at = k.range(of: "@", options: .backwards) else { return nil }
             return String(k[..<at.lowerBound])
         })
         for raw in raws {
-            if let fin = finishedCycle(samples, rawKey: raw, now: now), (samples["final|\(raw)"]?.last?.t ?? 0) < fin.reset {
-                samples["final|\(raw)"] = [(t: fin.reset, pct: fin.pct)]
+            if let fin = finishedCycle(samples, rawKey: raw, now: now), (samples["final2|\(raw)"]?.last?.t ?? 0) < fin.reset {
+                samples["final2|\(raw)"] = [(t: fin.reset, pct: fin.pct)]
             }
         }
     }
@@ -2426,26 +2532,28 @@ public final class ProcessScanner {
         guard let reset = w.resetsAt else { return }
         loadSamples()
         let key = "\(rawKey)@\(Int(reset))"
-        let pct = w.effectivePct(now: now)
         Self.archiveFinals(&qsamples, now: now)
-        let finalKey = "final|\(rawKey)"
+        let finalKey = "final2|\(rawKey)"
         // 只认紧挨着的几个周期：App 停了一个月再开，一个月前的终值没有参考价值
         if let f = qsamples[finalKey]?.last, f.t < reset, f.t > reset - 3 * w.windowSeconds { w.lastCyclePct = f.pct }
         var arr = qsamples[key] ?? []
-        if arr.last.map({ now - $0.t >= Self.sampleEvery }) ?? true {
-            arr.append((t: now, pct: pct))
+        // 样本时间 = 厂商数据自己的采集时间：同一份旧观测不能按扫描时间一遍遍记成「新样本」
+        let observed = min(now, w.capturedAt ?? now)
+        if arr.last.map({ observed - $0.t >= Self.sampleEvery }) ?? true {
+            arr.append((t: observed, pct: w.effectivePct(now: observed)))
             arr.removeAll { now - $0.t > Self.sampleKeep }
             qsamples[key] = arr
-            // 键会随窗口重置而变，老键留着没用 —— 顺手清掉超过保留期的整条（final| 终值除外）
-            qsamples = qsamples.filter { $0.key.hasPrefix("final|") || !($0.value.last.map { now - $0.t > Self.sampleKeep } ?? true) }
+            // 键会随窗口重置而变，老键留着没用 —— 顺手清掉超过保留期的整条（final2| 终值除外）
+            qsamples = qsamples.filter { $0.key.hasPrefix("final2|") || !($0.value.last.map { now - $0.t > Self.sampleKeep } ?? true) }
         }
-        // 近 1 小时内最老的样本 → 两点差。跨度不足 10 分钟就不算（噪声太大）
-        guard let oldest = arr.first(where: { now - $0.t <= 3600 }) else { return }
-        let spanSec = now - oldest.t
+        // 最新样本前 1 小时内最老的那个 → 两点差。跨度不足 10 分钟不算（噪声太大）；最新观测都超过 1 小时了也不算（不是「近期」）
+        guard let latest = arr.last, now - latest.t <= 3600,
+              let oldest = arr.first(where: { latest.t - $0.t <= 3600 }) else { return }
+        let spanSec = latest.t - oldest.t
         guard spanSec >= 600 else { return }
-        let delta = Double(pct - oldest.pct)
+        let delta = Double(latest.pct - oldest.pct)
         guard delta >= 0 else { return }                      // 只会涨；掉了说明数据源换了口径，别用
-        w.recentPctPerHour = delta / (spanSec / 3600)
+        w.recentPctPerHour = delta / (spanSec / 3600)         // 0 也是有效结论：最近一小时确实没用
         w.recentSpanMinutes = Int(spanSec / 60)
     }
 
@@ -2477,9 +2585,11 @@ public final class ProcessScanner {
         let proxied = url.hasPrefix(proxyPrefix)
         if proxied { url = String(url.dropFirst(proxyPrefix.count)) }
         // 取主机：可能是 https://host/path，也可能被代理前缀包成 http://127.0.0.1:18790/https://host/path
-        let host = url
+        let authority = url
             .replacingOccurrences(of: #"^https?://"#, with: "", options: .regularExpression)
             .split(separator: "/").first.map(String.init) ?? url
+        // https://user:password@host → 只要 host，账号密码不进面板
+        let host = authority.split(separator: "@").last.map(String.init) ?? authority
         guard !host.isEmpty, host.contains(".") || host.contains(":") else { return nil }
         return (name, host, proxied)
     }
@@ -2540,7 +2650,7 @@ public final class ProcessScanner {
         for c in apiCalls where c.ts >= startOfToday {
             var p = byHost[c.host] ?? APIProviderStatus(host: c.host, provider: c.provider)
             p.calls += 1
-            if c.status >= 400 || c.status == 0 { p.errors += 1 }
+            if c.failed { p.errors += 1 }
             if c.status == 429 { p.count429 += 1 }
             p.ctx += c.ctx
             p.cacheRead += c.cacheRead
@@ -2558,7 +2668,7 @@ public final class ProcessScanner {
             let fp = c.key.isEmpty ? L("无 key", "no key") : c.key
             var k = byKey[c.host]?[fp] ?? APIKeyUsage(fingerprint: fp)
             k.calls += 1
-            if c.status >= 400 || c.status == 0 { k.errors += 1 }
+            if c.failed { k.errors += 1 }
             k.ctx += c.ctx
             k.out += c.out
             k.lastTS = max(k.lastTS, c.ts)
@@ -2574,7 +2684,8 @@ public final class ProcessScanner {
         }
         for (host, v) in lastRL {
             guard now - v.t < 3600,                              // 一小时前的余量早就变了
-                  let q = Self.parseRateLimitHeaders(v.rl, now: now) else { continue }
+                  // 「6m 后重置」是相对那次响应说的，基准必须是记录时间，按扫描时间算重置点会一直往后推
+                  let q = Self.parseRateLimitHeaders(v.rl, now: v.t) else { continue }
             byHost[host]?.headerWindow = QuotaWindow(usedPct: q.usedPct, resetsAt: q.resetsAt, capturedAt: v.t)
             byHost[host]?.headerLabel = q.label
         }
@@ -2593,10 +2704,15 @@ public final class ProcessScanner {
         let plans = planLimits()
         if !plans.isEmpty {
             var stamps: [String: [TimeInterval]] = [:]       // provider → 各次调用时刻（31 天内）
-            for c in apiCalls { stamps[c.provider, default: []].append(c.ts) }
+            for c in apiCalls where c.sent { stamps[c.provider, default: []].append(c.ts) }
             for (key, plan) in plans {
-                guard let host = byHost.first(where: { $0.value.provider == key || $0.key == key })?.key,
-                      let ts = stamps[byHost[host]!.provider] else { continue }
+                var host = byHost.first(where: { $0.value.provider == key || $0.key == key })?.key
+                // 今天还没调用，但周 / 月窗口里还有用量：过了零点卡片不能消失
+                if host == nil, let last = apiCalls.last(where: { $0.provider == key || $0.host == key }) {
+                    host = last.host
+                    byHost[last.host] = APIProviderStatus(host: last.host, provider: last.provider)
+                }
+                guard let host, let ts = stamps[byHost[host]!.provider] else { continue }
                 byHost[host]?.plan = plan.label
                 byHost[host]?.quotaIsEstimate = true
                 let in5h = ts.filter { $0 >= now - 5 * 3600 }.count
@@ -2669,22 +2785,37 @@ public final class ProcessScanner {
     /// 面板上的快照最多 8 秒前，而 macOS 的 pid 会回绕复用 —— 直接按旧 pid 开枪有可能打到刚起来的别的进程。
     /// 复核：pid 仍存在、ppid 仍为 1、命令行与快照一致；任一不符就跳过。
     /// 先 SIGTERM，300ms 后仍存活的补 SIGKILL。
-    public func killProcesses(_ targets: [OrphanProc]) -> (killed: Int, skipped: Int, freedMB: Double) {
+    /// shouldProceed：发信号前最后确认一次（自动清理传「开关还开着吗」，手动清理不传）
+    public func killProcesses(_ targets: [OrphanProc], shouldProceed: (() -> Bool)? = nil) -> (killed: Int, skipped: Int, freedMB: Double) {
         if targets.isEmpty { return (0, 0, 0) }
         lock.lock()
         let live = readProcs()
         lock.unlock()
 
+        // 快照之后它可能开始监听端口了（有客户端要连）→ 这一轮放过。
+        // lsof 本身失败（空输出）就分不清谁在监听 → 这一轮一个都不动，宁可少杀
+        let lsofOut = execute("lsof -iTCP -sTCP:LISTEN -n -P")
+        guard !lsofOut.isEmpty else {
+            log.notice("kill skipped: lsof 无输出，无法复核监听端口")
+            return (0, targets.count, 0)
+        }
+        if let shouldProceed, !shouldProceed() { return (0, targets.count, 0) }
+        var listening = Set<Int>()
+        for line in lsofOut.components(separatedBy: "\n").dropFirst() {
+            let cols = line.split(whereSeparator: { $0.isWhitespace })
+            if cols.count >= 2, let pid = Int(cols[1]) { listening.insert(pid) }
+        }
         var confirmed: [OrphanProc] = []
         var skipped = 0
         for t in targets {
-            guard let p = live[t.pid], p.ppid == 1, p.cmd == t.cmd else {
+            guard let p = live[t.pid], p.ppid == 1, p.cmd == t.cmd, !listening.contains(t.pid) else {
                 skipped += 1
                 log.notice("kill skipped pid=\(t.pid) (已消失或 pid 被复用)")
                 continue
             }
             confirmed.append(t)
         }
+        if let shouldProceed, !shouldProceed() { return (0, targets.count, 0) }
         for t in confirmed { kill(pid_t(t.pid), SIGTERM) }
         usleep(300_000)
         lock.lock()
@@ -2698,7 +2829,13 @@ public final class ProcessScanner {
             }
             kill(pid_t(t.pid), SIGKILL)
         }
-        return (confirmed.count, skipped, confirmed.reduce(0.0) { $0 + $1.memMB })
+        // 按实际结果报：发了信号不等于退出了（权限不够 / 进程卡在内核里都可能还活着）
+        usleep(100_000)
+        lock.lock()
+        let after = readProcs()
+        lock.unlock()
+        let gone = confirmed.filter { t in after[t.pid].map { $0.cmd != t.cmd } ?? true }
+        return (gone.count, skipped + confirmed.count - gone.count, gone.reduce(0.0) { $0 + $1.memMB })
     }
 
     public func cleanNPXCache() -> Double {

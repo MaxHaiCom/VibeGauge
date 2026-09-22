@@ -97,6 +97,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func performSilentAutoClean(reason: String = "定时") {
+        // 三条触发路径都经过这里：唤醒后排队 60 秒的那次，期间用户可能已经把开关关了
+        guard isAutoCleanEnabled else { return }
         let now = Date().timeIntervalSince1970
         guard now - lastAutoCleanAt >= 300 else {
             log.debug("自动清理跳过（\(reason)）：距上次不足 5 分钟")
@@ -108,8 +110,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let report = ProcessScanner.shared.scan()
             // 静默清理更保守：只动「连续两次扫描都是孤儿」的，避开 CLI 正在重启 MCP 的瞬态
             let stable = ProcessScanner.shared.stableOrphans(report.orphans, minSeconds: 120)
-            if !stable.isEmpty {
-                let r = ProcessScanner.shared.killProcesses(stable)
+            // 扫描要几秒，发信号前再确认一次开关
+            if !stable.isEmpty, UserDefaults.standard.bool(forKey: "autoCleanEnabled") {
+                // 进入清理后还要等锁、查端口：发信号前再确认一次开关没被关掉
+                let r = ProcessScanner.shared.killProcesses(stable, shouldProceed: { UserDefaults.standard.bool(forKey: "autoCleanEnabled") })
                 DispatchQueue.main.async {
                     if r.killed > 0 {
                         self?.sendNotification(
@@ -323,7 +327,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let last = defaults.object(forKey: key) as? Double
             guard Self.shouldNotifyExit(lastAt: last, now: now) else { continue }
             defaults.set(now, forKey: key)
-            sendNotification(title: (event.isCountryChange ? "⛔️ " : "⚠️ ") + L("\(event.aiName) 出口变化", "\(event.aiName) egress changed"),
+            sendNotification(title: (event.isCountryChange ? "⛔️ " : "⚠️ ") + L("\(event.aiName) 出口变化（本 App 探测）", "\(event.aiName) egress changed (as probed by this app)"),
                              body: L("\(event.oldIP)（\(event.oldLoc)）→ \(event.newIP)（\(event.newLoc)）", "\(event.oldIP) (\(event.oldLoc)) → \(event.newIP) (\(event.newLoc))"))
         }
     }
@@ -351,8 +355,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for s in signals {
             let last = notifiedLevel[s.key] ?? 0
             if s.level > last {
-                // 同一条信号 4 小时内最多吼一次，避免在阈值上抖来抖去刷屏
-                if now - (notifiedAt[s.key] ?? 0) < Self.notifyCooldown { continue }
+                guard Self.shouldNotify(level: s.level, lastLevel: last, lastAt: notifiedAt[s.key] ?? 0, now: now) else { continue }
                 notifiedLevel[s.key] = s.level
                 notifiedAt[s.key] = now
                 dirty = true
@@ -369,6 +372,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private static let notifyCooldown: TimeInterval = 4 * 3600
+
+    /// 冷却只防「在警告线上抖来抖去」：从 0 重新升到警告，4 小时内只报一次；
+    /// 危急（不管是从警告升上来，还是回落后直接冲上去）立刻报，不受冷却限制
+    static func shouldNotify(level: Int, lastLevel: Int, lastAt: TimeInterval, now: TimeInterval) -> Bool {
+        guard level > lastLevel else { return false }
+        return lastLevel > 0 || level >= 2 || now - lastAt >= notifyCooldown
+    }
     private let notifyStateKey = "vg.notifyState"       // [key: "level|lastAt"]
 
     private func loadNotifyState() {

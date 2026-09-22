@@ -250,12 +250,22 @@ def statusline_of(settings: dict):
 def install(tool: str) -> str:
     path = settings_path(tool)
 
+    bpath = path + ".vibegauge-backup"
+
     def change(settings, raw):
         sl = statusline_of(settings)
         if sl and MARK in str(sl.get("command", "")):
+            # 已连接：顺手把旧版本留下的 0644 备份收紧
+            if os.path.isfile(bpath) and not os.path.islink(bpath):
+                os.chmod(bpath, 0o600)
             return None, "already"
         if raw is not None:
-            with open(path + ".vibegauge-backup", "wb") as f:
+            # settings.json 里可能有 env 凭据：备份一律 0600。先删旧文件再以 0600 新建 ——
+            # 不跟随软链接，也没有「先写内容后改权限」的窗口
+            if os.path.lexists(bpath):
+                os.unlink(bpath)
+            fd = os.open(bpath, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as f:
                 f.write(raw)
         private_dir()
         write_json(state_path(tool), {"original": sl.get("command") if sl else None, "original_statusLine": sl})
@@ -318,7 +328,9 @@ def selftest() -> None:
         s = load_settings(cpath)
         assert MARK in s["statusLine"]["command"] and s["statusLine"]["padding"] == 1
         assert list(s.keys()) == ["theme", "statusLine", "zeta"], "别打乱用户配置的键顺序"
-        assert os.path.exists(cpath + ".vibegauge-backup")
+        assert os.stat(cpath + ".vibegauge-backup").st_mode & 0o777 == 0o600, "原文件 0644 的备份也要收成 0600"
+        os.chmod(cpath + ".vibegauge-backup", 0o644)            # 模拟旧版本留下的宽权限备份
+        assert install("claude") == "already" and os.stat(cpath + ".vibegauge-backup").st_mode & 0o777 == 0o600
         payload = {"model": "opus", "rate_limits": {"five_hour": {"used_percentage": 21, "resets_at": 1790092800},
                                                     "seven_day": {"used_percentage": 52, "resets_at": 1790456400}}}
         assert run_as_statusline("claude", payload).strip() == "ORIG opus"

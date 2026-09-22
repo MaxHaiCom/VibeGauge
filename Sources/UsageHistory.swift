@@ -470,12 +470,14 @@ public final class UsageHistory {
         result.hasPriceTable = !price.isEmpty
         result.priceCurrency = price.currency
         for (source, totals) in result.totals {
+            // 总成本和总 token 同一口径：经代理的调用多半已在 CLI 日志里，只算各自来源，不进总数
+            let inTotal = !Self.isProxySource(source)
             for (model, usage) in totals.models {
                 if let cost = price.cost(model: model, ctx: usage.ctx, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, out: usage.out) {
-                    result.cost = (result.cost ?? 0) + cost
+                    if inTotal { result.cost = (result.cost ?? 0) + cost }
                     result.costBySource[source, default: 0] += cost
                 } else {
-                    result.unpricedModels += 1
+                    if inTotal { result.unpricedModels += 1 }
                     result.unpricedBySource[source, default: 0] += 1
                 }
             }

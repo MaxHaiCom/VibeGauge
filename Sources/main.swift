@@ -36,6 +36,56 @@ if CommandLine.arguments.contains("--selftest") {
     precondition(Fmt.parseISODate("2026-09-17T09:07:45.133Z") != nil)           // claude 3 位
     precondition(Fmt.parseISODate("2026-09-17T03:14:39Z") != nil)               // 无小数
 
+    precondition(ProcessScanner.memoryPressurePageSize("The system has 8589934592 (2097152 pages with a page size of 4096).") == 4096, "Intel 4KB 页")
+    precondition(ProcessScanner.memoryPressurePageSize("The system has 25769803776 (1572864 pages with a page size of 16384).") == 16384)
+    precondition(ProcessScanner.memoryPressurePageSize("garbage") == nil)
+
+    // Codex 跨零点：total_token_usage 是会话累计，今天只算零点后新增的；请求数只数今天的事件
+    do {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("vg-codex-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let midnight = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+        func ev(_ t: TimeInterval, _ input: Int, _ out: Int) -> String {
+            #"{"timestamp":"\#(iso.string(from: Date(timeIntervalSince1970: t)))","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":\#(input),"cached_input_tokens":0,"output_tokens":\#(out),"reasoning_output_tokens":0}}}}"#
+        }
+        let meta = #"{"timestamp":"\#(iso.string(from: Date(timeIntervalSince1970: midnight - 3600)))","type":"session_meta","payload":{}}"#
+        let resumed = tmp.appendingPathComponent("resumed.jsonl")
+        try? ([meta, ev(midnight - 1800, 100, 10), ev(midnight + 600, 130, 14), ""].joined(separator: "\n")).write(to: resumed, atomically: true, encoding: .utf8)
+        let r = ProcessScanner.shared.codexFileUsage(path: resumed.path, startOfToday: midnight)!
+        precondition(r.ctx == 30 && r.out == 4 && r.requests == 1, "跨零点只算今天：\(r.ctx)/\(r.out)/\(r.requests)")
+        let fresh = tmp.appendingPathComponent("fresh.jsonl")
+        try? ([ev(midnight + 60, 50, 5), ev(midnight + 120, 80, 9), ""].joined(separator: "\n")).write(to: fresh, atomically: true, encoding: .utf8)
+        let f = ProcessScanner.shared.codexFileUsage(path: fresh.path, startOfToday: midnight)!
+        precondition(f.ctx == 80 && f.out == 9 && f.requests == 2, "今天才开始的会话：全算")
+        // 首行超过 4KB（读不出开始时间）也要找到零点前基线；重复写入的同一份快照不算新请求
+        let bigMeta = #"{"timestamp":"\#(iso.string(from: Date(timeIntervalSince1970: midnight - 3600)))","type":"session_meta","payload":{"instructions":"\#(String(repeating: "x", count: 6000))"}}"#
+        let big = tmp.appendingPathComponent("big.jsonl")
+        try? ([bigMeta, ev(midnight - 1800, 100, 10), ev(midnight + 600, 130, 14), ev(midnight + 601, 130, 14), ""].joined(separator: "\n")).write(to: big, atomically: true, encoding: .utf8)
+        let b = ProcessScanner.shared.codexFileUsage(path: big.path, startOfToday: midnight)!
+        precondition(b.ctx == 30 && b.requests == 1, "大首行 + 重复快照：\(b.ctx)/\(b.requests)")
+    }
+
+    // 命令行脱敏：自测输出会被贴进公开 Issue
+    precondition(ProcessScanner.redactCommand("node srv.js --api-key sk-abc123 --port 3000") == "node srv.js --api-key *** --port 3000")
+    precondition(ProcessScanner.redactCommand("python x.py --token=abcd TOKEN_X=1") == "python x.py --token=*** TOKEN_X=***")
+    precondition(ProcessScanner.redactCommand("curl https://me:pw@host.example/api") == "curl https://***@host.example/api")
+    precondition(ProcessScanner.redactCommand("run sk-ant-FAKEabcdefgh ghp_FAKE12345678") == "run *** ***")
+    precondition(ProcessScanner.redactCommand("curl -H Authorization: Bearer abc.def https://x") == "curl -H Authorization: *** *** https://x")
+    precondition(ProcessScanner.redactCommand("node a.js --header Authorization:Bearer_abc") == "node a.js --header Authorization:***")
+    precondition(ProcessScanner.redactCommand("curl -H x-api-key: abc123 https://x") == "curl -H x-api-key: *** https://x")
+    precondition(ProcessScanner.redactCommand("node /users/x/.npm/_npx/ab/mcp-server.js") == "node /users/x/.npm/_npx/ab/mcp-server.js", "普通路径不动")
+    precondition(ProcessScanner.parseBaseURLLine("export OPENAI_BASE_URL=https://me:pw@api.example.com/v1", proxyPrefix: "http://127.0.0.1:18790/")?.host == "api.example.com")
+
+    // MCP 判定：只在 _npx 里的普通后台工具不算（以前会被当孤儿杀）；官方 @modelcontextprotocol 包要认
+    precondition(!ProcessScanner.isMCPServerCommand("node /users/x/.npm/_npx/ab12/node_modules/.bin/vite build --watch"))
+    precondition(!ProcessScanner.isMCPServerCommand("python -m uvicorn app:main"))
+    precondition(ProcessScanner.isMCPServerCommand("node /users/x/.npm/_npx/ab12/node_modules/@modelcontextprotocol/server-memory/dist/index.js"))
+    precondition(!ProcessScanner.isMCPServerCommand("node /users/x/app/node_modules/@modelcontextprotocol/sdk/dist/client/index.js"), "SDK 客户端不是 MCP 服务")
+    precondition(ProcessScanner.isMCPServerCommand("npm exec chrome-devtools-mcp@latest"))
+    precondition(ProcessScanner.isMCPServerCommand("node /users/x/lib/context7/index.js", serviceKeys: ["context7"]))
+
     // 探测只看可执行文件路径：别人 grep 这些名字不该算"在跑"
     precondition(ProcessScanner.isClaudeCLISession(cmd: "claude --resume abc"))
     precondition(!ProcessScanner.isClaudeCLISession(cmd: "/bin/zsh -c ps -ax | grep claude"))
@@ -96,6 +146,21 @@ if CommandLine.arguments.contains("--selftest") {
         let old = ProcessScanner.rollingWindow([now - 6 * 3600], seconds: 5 * 3600, limit: 1200, now: now)!
         precondition(old.usedPct == 0, "窗口外的调用不该算")
         precondition(ProcessScanner.rollingWindow(stamps, seconds: 3600, limit: 0, now: now) == nil, "没填上限就不估")
+    }
+
+    // 阈值通知：警告升危急立刻报；从 0 重新越线 4 小时内只报一次
+    precondition(AppDelegate.shouldNotify(level: 2, lastLevel: 1, lastAt: now - 60, now: now), "升到危急不受冷却")
+    precondition(!AppDelegate.shouldNotify(level: 1, lastLevel: 0, lastAt: now - 3600, now: now), "抖回来又越线：冷却中")
+    precondition(AppDelegate.shouldNotify(level: 2, lastLevel: 0, lastAt: now - 3600, now: now), "90%→70%→97%：危急不受冷却")
+    precondition(AppDelegate.shouldNotify(level: 1, lastLevel: 0, lastAt: now - 5 * 3600, now: now))
+    precondition(!AppDelegate.shouldNotify(level: 1, lastLevel: 1, lastAt: 0, now: now))
+    do {
+        var s = ScanReport()
+        s.totalMemoryGB = 64; s.freePercentage = 50
+        s.diskTotalGB = 1000; s.diskFreeGB = 30; s.diskFreePct = 3                 // 磁盘 97%：危急
+        s.detectedLLMs = [DetectedLLMRuntime(name: "Claude", isRunning: true, tier: "Max", detail: "",
+                                             sevenDay: QuotaWindow(usedPct: 90, resetsAt: now + 86400, capturedAt: now))]   // 90%：警告
+        precondition(s.tightest?.short == L("磁盘", "Disk") && s.tightest?.level == 2, "危急排在警告前面：\(String(describing: s.tightest))")
     }
 
     // 内存吃紧才立刻收割，且 5 分钟内不重复
@@ -277,11 +342,17 @@ if CommandLine.arguments.contains("--selftest") {
         precondition(fin.reset == 1000 && fin.pct == 72, "实际 \(fin)")
         precondition(ProcessScanner.finishedCycle(samples, rawKey: "Claude|w", now: 1500) != nil)
         precondition(ProcessScanner.finishedCycle(samples, rawKey: "Claude|w", now: 999) == nil, "还没到重置点")
+        // 最后一次观测离重置 2 天：那不是终值，不当先验
+        precondition(ProcessScanner.finishedCycle(["Codex|w@500000": [(t: 500000.0 - 2 * 86400, pct: 40)]], rawKey: "Codex|w", now: 600000) == nil)
+        // 最近一小时确实没用（近期速度 0）：5h 按 0 外推，不退回窗口平均
+        var idle = QuotaWindow(usedPct: 40, resetsAt: now + 2 * 3600, capturedAt: now, windowSeconds: 5 * 3600)
+        idle.recentPctPerHour = 0; idle.recentSpanMinutes = 50
+        precondition(idle.burn(now: now)?.projectedAtReset == 40 && idle.burn(now: now)?.isRecent == true)
         // 合盖一晚跨过周重置：一次归档把周和 5h 的终值都存下，之后清掉过期样本也不丢
         var all = samples
         ProcessScanner.archiveFinals(&all, now: 1500)
-        precondition(all["final|Claude|w"]?.last?.pct == 72 && all["final|Claude|5h"]?.last?.pct == 99)
-        precondition(all["final|Claude|w"]?.last?.t == 1000)
+        precondition(all["final2|Claude|w"]?.last?.pct == 72 && all["final2|Claude|5h"]?.last?.pct == 99)
+        precondition(all["final2|Claude|w"]?.last?.t == 1000)
     }
 
     // 会话日志保留期硬下限 7 天（本工具自己要读近两天的文件算额度）
@@ -317,13 +388,17 @@ if CommandLine.arguments.contains("--selftest") {
         precondition(rate(prev: UInt64(0), cur: 1, dt: 0) == nil)
         precondition(rate(prev: UInt64(0), cur: 1, dt: .infinity) == nil)
         precondition(rate(prev: Int64(-1), cur: 1, dt: 2) == nil)
-        precondition(ipv6Verdict(traceIP: "149.119.151.8", httpStatus: 200).blocked)  // IPv4 映射：走隧道，不是泄漏
-        precondition(!ipv6Verdict(traceIP: "240e:390::1", httpStatus: 200).blocked)
-        precondition(ipv6Verdict(traceIP: nil, httpStatus: 0).blocked)
-        precondition(!ipv6Verdict(traceIP: nil, httpStatus: 200).blocked)
+        precondition(ipv6Verdict(traceIP: "149.119.151.8", httpStatus: 200).blocked == true)  // IPv4 映射：走隧道，不是泄漏
+        precondition(ipv6Verdict(traceIP: "240e:390::1", httpStatus: 200).blocked == false)
+        precondition(ipv6Verdict(traceIP: nil, httpStatus: 0, curlExit: 7).blocked == true, "IPv4 通、IPv6 连不上 = 被挡住")
+        precondition(ipv6Verdict(traceIP: nil, httpStatus: 0, curlExit: 28).blocked == true)
+        precondition(ipv6Verdict(traceIP: nil, httpStatus: 0, curlExit: 60, curlError: "SSL certificate problem").blocked == nil, "证书错误不是阻断")
+        precondition(ipv6Verdict(traceIP: nil, httpStatus: 0, curlExit: 7, ipv4Reachable: false).blocked == nil, "断网不能显示成检查通过")
+        precondition(ipv6Verdict(traceIP: nil, httpStatus: 200).blocked == false)
         precondition(dnsVerdict([]) == .unknown)
         precondition(dnsVerdict(["192.0.2.1"]) == .unknown)
-        precondition(dnsVerdict(["198.18.0.1", "127.0.0.1"]) == .proxyOK)
+        precondition(dnsVerdict(["198.18.0.1"]) == .proxyOK)
+        precondition(dnsVerdict(["127.0.0.1"]) == .unknown, "本机解析器可能转发给运营商：判断不了")
         precondition(dnsVerdict(["198.19.255.254"]) == .proxyOK)
         precondition(dnsVerdict(["198.20.0.1"]) == .unknown)
         precondition(dnsVerdict(["198.18.0.999"]) == .unknown)
@@ -481,10 +556,13 @@ if CommandLine.arguments.contains("--selftest") {
         // 人工测试价目表只作用于临时目录中的 fixture 模型，不提供任何生产默认价格。
         try write(".config/vibegauge/prices.json", try line(["_currency": "TEST", "fixture-priced": ["in": 1, "cache_read": 2, "cache_write": 3, "out": 4]]))
         collector.scanNowForTesting(); snap = collector.snapshot()
-        precondition(abs((snap.cost ?? -1) - 0.000594) < 1e-10 && snap.unpricedModels == 2)
+        // 总成本不含经代理的来源（同一请求已在 CLI 日志里），代理来源仍单独计价
+        let apiCost = snap.costBySource.filter { UsageHistory.isProxySource($0.key) }.values.reduce(0, +)
+        precondition(apiCost > 0 && abs((snap.cost ?? -1) - (0.000594 - apiCost)) < 1e-10, "cost=\(snap.cost ?? -1) api=\(apiCost)")
+        precondition(snap.unpricedModels == 1 && snap.unpricedBySource["API · Fixture B"] == 1, "未定价计数与总成本同口径")
         try write(".config/vibegauge/prices.json", try line(["_currency": "TEST", "fixture-priced": ["in": 2, "cache_read": 4, "cache_write": 6, "out": 8]]))
         collector.scanNowForTesting()
-        precondition(abs((collector.snapshot().cost ?? -1) - 0.001188) < 1e-10)
+        precondition(abs((collector.snapshot().cost ?? -1) - (0.001188 - 2 * apiCost)) < 1e-10)
         let added = try claude("fixture-3", after, 7, 1)
         let split = added.index(added.startIndex, offsetBy: added.count / 2)
         try write(ca, String(added[..<split]), append: true)
@@ -514,9 +592,9 @@ if CommandLine.arguments.contains("--selftest") {
     print(L("孤儿 \(r.totalOrphanCount) 个 \(Int(r.totalOrphanMemMB)) MB: ", "Orphans \(r.totalOrphanCount), \(Int(r.totalOrphanMemMB)) MB: ") + r.orphanedGroups.map { "\($0.serviceName)x\($0.processCount)" }.joined(separator: ", "))
     if !r.orphans.isEmpty || !r.protected.isEmpty {
         print(L("--- 会被清理的（逐条）---", "--- To be reaped (each) ---"))
-        for o in r.orphans { print(String(format: "  pid %-7d %5.0f MB  %@", o.pid, o.memMB, String(o.cmd.prefix(90)))) }
+        for o in r.orphans { print(String(format: "  pid %-7d %5.0f MB  %@", o.pid, o.memMB, String(ProcessScanner.redactCommand(o.cmd).prefix(90)))) }
         print(L("--- 规则放过的（原因）---", "--- Protected by rules (reason) ---"))
-        for p in r.protected { print(String(format: "  pid %-7d %5.0f MB  [%@]  %@", p.pid, p.memMB, p.reason, String(p.cmd.prefix(70)))) }
+        for p in r.protected { print(String(format: "  pid %-7d %5.0f MB  [%@]  %@", p.pid, p.memMB, p.reason, String(ProcessScanner.redactCommand(p.cmd).prefix(70)))) }
     }
     print(String(format: L("--- 磁盘：AI 工具目录合计 %.2f GB，可清理（%d 天前的会话记录）%.2f GB ---", "--- Disk: AI tool directories %.2f GB, reclaimable (sessions older than %d days) %.2f GB ---"),
                  r.diskTotalAIGB, ProcessScanner.shared.logRetentionDays, r.purgeableMB / 1024))
