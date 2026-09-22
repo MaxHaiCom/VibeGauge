@@ -113,8 +113,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 DispatchQueue.main.async {
                     if r.killed > 0 {
                         self?.sendNotification(
-                            title: "VibeGauge 内存优化",
-                            body: "已静默清理 \(r.killed) 个断链 AI 进程，回收 \(String(format: "%.0f", r.freedMB)) MB 内存。" + (r.skipped > 0 ? "（\(r.skipped) 个已自行退出，跳过）" : "")
+                            title: L("VibeGauge 内存优化", "VibeGauge memory optimization"),
+                            body: L("已静默清理 \(r.killed) 个断链 AI 进程，回收 \(String(format: "%.0f", r.freedMB)) MB 内存。", "Quietly reaped \(r.killed) orphaned AI processes, freeing \(String(format: "%.0f", r.freedMB)) MB.") + (r.skipped > 0 ? L("（\(r.skipped) 个已自行退出，跳过）", " (\(r.skipped) already exited; skipped)") : "")
                         )
                     }
                     self?.updateStatus()
@@ -285,7 +285,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.attributedTitle = NSAttributedString(string: "")
 
         let signals = report.pressures
-        button.toolTip = (["VibeGauge · 内存可用 \(report.freePercentage)%", "—— 以下为已用 %（越高越紧）——"]
+        button.toolTip = ([L("VibeGauge · 内存可用 \(report.freePercentage)%", "VibeGauge · \(report.freePercentage)% memory free"), L("—— 以下为已用 %（越高越紧）——", "— below: % used (higher is tighter) —")]
                           + signals.prefix(8).map { "\($0.short)  \($0.pct)%" + ($0.level > 0 ? "  ⚠︎" : "") }).joined(separator: "\n")
         evaluateThresholds(signals)
     }
@@ -322,8 +322,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let last = defaults.object(forKey: key) as? Double
             guard Self.shouldNotifyExit(lastAt: last, now: now) else { continue }
             defaults.set(now, forKey: key)
-            sendNotification(title: (event.isCountryChange ? "⛔️ " : "⚠️ ") + "\(event.aiName) 出口变化",
-                             body: "\(event.oldIP)（\(event.oldLoc)）→ \(event.newIP)（\(event.newLoc)）")
+            sendNotification(title: (event.isCountryChange ? "⛔️ " : "⚠️ ") + L("\(event.aiName) 出口变化", "\(event.aiName) egress changed"),
+                             body: L("\(event.oldIP)（\(event.oldLoc)）→ \(event.newIP)（\(event.newLoc)）", "\(event.oldIP) (\(event.oldLoc)) → \(event.newIP) (\(event.newLoc))"))
         }
     }
 
@@ -443,7 +443,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let quitItem = NSMenuItem(title: "退出 VibeGauge", action: #selector(quitAction), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: L("退出 VibeGauge", "Quit VibeGauge"), action: #selector(quitAction), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
     }
@@ -471,8 +471,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let r = ProcessScanner.shared.killProcesses(targets)
             DispatchQueue.main.async {
                 self?.sendNotification(
-                    title: "清理完成",
-                    body: "已释放 \(r.killed) 个断链 AI 进程，回收 \(String(format: "%.0f", r.freedMB)) MB 内存。" + (r.skipped > 0 ? "（\(r.skipped) 个已自行退出或 pid 变化，已跳过）" : "")
+                    title: L("清理完成", "Cleanup complete"),
+                    body: L("已释放 \(r.killed) 个断链 AI 进程，回收 \(String(format: "%.0f", r.freedMB)) MB 内存。", "Freed \(String(format: "%.0f", r.freedMB)) MB by reaping \(r.killed) orphaned AI processes.") + (r.skipped > 0 ? L("（\(r.skipped) 个已自行退出或 pid 变化，已跳过）", " (\(r.skipped) already exited or changed pid; skipped)") : "")
                 )
                 self?.updateStatus()
             }
@@ -488,15 +488,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard totalFiles > 0 else { return }
 
         let alert = NSAlert()
-        alert.messageText = "清理 \(days) 天前的会话记录？"
+        alert.messageText = L("清理 \(days) 天前的会话记录？", "Clean session records older than \(days) days?")
         alert.informativeText = items.map {
-            String(format: "· %@：%d 个文件 %.0f MB\n  %@", $0.label, $0.oldFiles, $0.oldMB, $0.note)
+            String(format: L("· %@：%d 个文件 %.0f MB\n  %@", "· %@: %d files %.0f MB\n  %@"), $0.label, $0.oldFiles, $0.oldMB, $0.note)
         }.joined(separator: "\n")
-        + String(format: "\n\n合计 %d 个文件 %.2f GB，移入废纸篓（可恢复）。\n近 %d 天的一个都不动。",
+        + String(format: L("\n\n合计 %d 个文件 %.2f GB，移入废纸篓（可恢复）。\n近 %d 天的一个都不动。", "\n\nTotal: %d files, %.2f GB, moved to Trash (recoverable).\nFiles newer than %d days are untouched."),
                  totalFiles, totalMB / 1024, days)
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "移入废纸篓")
-        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: L("移入废纸篓", "Move to Trash"))
+        alert.addButton(withTitle: L("取消", "Cancel"))
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
@@ -504,9 +504,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let r = ProcessScanner.shared.purgeOldSessionLogs(olderThanDays: days)
             DispatchQueue.main.async {
                 self?.sendNotification(
-                    title: "会话记录已清理",
-                    body: String(format: "%d 个文件、%.2f GB 已移入废纸篓。", r.files, r.freedMB / 1024)
-                        + (r.failed > 0 ? "（\(r.failed) 个失败，多半是权限）" : "")
+                    title: L("会话记录已清理", "Session records cleaned"),
+                    body: String(format: L("%d 个文件、%.2f GB 已移入废纸篓。", "%d files, %.2f GB moved to Trash."), r.files, r.freedMB / 1024)
+                        + (r.failed > 0 ? L("（\(r.failed) 个失败，多半是权限）", " (\(r.failed) failed, likely permissions)") : "")
                 )
                 self?.updateStatus()
             }
@@ -518,8 +518,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let freedMB = ProcessScanner.shared.cleanNPXCache()
             DispatchQueue.main.async {
                 self?.sendNotification(
-                    title: "NPX 缓存已清理",
-                    body: "已清空 ~/.npm/_npx 目录，释放约 \(String(format: "%.1f", freedMB)) MB 磁盘空间。"
+                    title: L("NPX 缓存已清理", "NPX cache cleaned"),
+                    body: L("已清空 ~/.npm/_npx 目录，释放约 \(String(format: "%.1f", freedMB)) MB 磁盘空间。", "Cleared ~/.npm/_npx and freed about \(String(format: "%.1f", freedMB)) MB of disk space.")
                 )
                 self?.updateStatus()
             }
@@ -528,10 +528,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func installProxy() {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            var msg = "已安装并启动，前缀 \(ProxyManager.shared.prefix)，登录自启。"
-            do { try ProxyManager.shared.install() } catch { msg = "安装失败：\(error.localizedDescription)" }
+            var msg = L("已安装并启动，前缀 \(ProxyManager.shared.prefix)，登录自启。", "Installed and started; prefix \(ProxyManager.shared.prefix); starts at login.")
+            do { try ProxyManager.shared.install() } catch { msg = L("安装失败：\(error.localizedDescription)", "Installation failed: \(error.localizedDescription)") }
             DispatchQueue.main.async {
-                self?.sendNotification(title: "API 记账代理", body: msg)
+                self?.sendNotification(title: L("API 记账代理", "API accounting proxy"), body: msg)
                 self?.updateStatus()
             }
         }
@@ -541,7 +541,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             ProxyManager.shared.uninstall()
             DispatchQueue.main.async {
-                self?.sendNotification(title: "API 记账代理", body: "已停止并卸载。记账文件保留在 ~/.config/vibegauge/。")
+                self?.sendNotification(title: L("API 记账代理", "API accounting proxy"), body: L("已停止并卸载。记账文件保留在 ~/.config/vibegauge/。", "Stopped and uninstalled. Accounting files remain in ~/.config/vibegauge/."))
                 self?.updateStatus()
             }
         }

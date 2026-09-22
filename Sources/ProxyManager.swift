@@ -51,7 +51,7 @@ final class ProxyManager {
     @discardableResult
     private func syncScript() throws -> Bool {
         guard let src = bundledScript else {
-            throw NSError(domain: "VibeGauge", code: 1, userInfo: [NSLocalizedDescriptionKey: "App 包里没有 vibegauge-proxy.py（build.sh 没拷？）"])
+            throw NSError(domain: "VibeGauge", code: 1, userInfo: [NSLocalizedDescriptionKey: L("App 包里没有 vibegauge-proxy.py（build.sh 没拷？）", "vibegauge-proxy.py is missing from the app bundle (was it omitted by build.sh?)")])
         }
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
@@ -96,7 +96,7 @@ final class ProxyManager {
         _ = launchctl(["bootout", "gui/\(getuid())/\(label)"])          // 已有就先卸，忽略失败
         let rc = launchctl(["bootstrap", "gui/\(getuid())", plistPath])
         if rc != 0 {
-            throw NSError(domain: "VibeGauge", code: Int(rc), userInfo: [NSLocalizedDescriptionKey: "launchctl bootstrap 失败 rc=\(rc)，看 \(logPath)"])
+            throw NSError(domain: "VibeGauge", code: Int(rc), userInfo: [NSLocalizedDescriptionKey: L("launchctl bootstrap 失败 rc=\(rc)，看 \(logPath)", "launchctl bootstrap failed (rc=\(rc)); see \(logPath)")])
         }
     }
 

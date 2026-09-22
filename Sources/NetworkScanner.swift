@@ -66,12 +66,20 @@ public enum DNSLeakVerdict: String, Equatable {
     case domesticWarning = "DNS 可能漏到国内 ⚠️"
     case proxyOK = "DNS 走代理内核 ✓"
     case unknown = "DNS 查不到（本机 resolver 无法判断）"
+
+    public var localizedDescription: String {
+        switch self {
+        case .domesticWarning: return L("DNS 可能漏到国内 ⚠️", "DNS may leak to a domestic resolver ⚠️")
+        case .proxyOK: return L("DNS 走代理内核 ✓", "DNS uses the proxy core ✓")
+        case .unknown: return L("DNS 查不到（本机 resolver 无法判断）", "DNS unavailable (cannot determine from local resolver)")
+        }
+    }
 }
 
 public struct LeakCheckStatus: Equatable {
     public var ipv6Blocked: Bool?
     public var ipv6Country = ""
-    public var ipv6Message = "未检测"
+    public var ipv6Message = L("未检测", "Not checked")
     public var dnsVerdict: DNSLeakVerdict = .unknown
     public var checkedAt: TimeInterval = 0
 }
@@ -150,9 +158,9 @@ public func dnsVerdict(_ nameservers: [String]) -> DNSLeakVerdict {
 /// 请求实际走 IPv4 进代理隧道 —— 只有 trace 回显的出口 IP 本身是 IPv6，才说明 IPv6 真的绕过了隧道。
 public func ipv6Verdict(traceIP: String?, httpStatus: Int) -> (blocked: Bool, message: String) {
     if let ip = traceIP {
-        return ip.contains(":") ? (false, "IPv6 可直连（可能绕过代理隧道）⚠️") : (true, "无 IPv6 出口（探测走 IPv4 进隧道）✓")
+        return ip.contains(":") ? (false, L("IPv6 可直连（可能绕过代理隧道）⚠️", "IPv6 is directly reachable (may bypass the proxy tunnel) ⚠️")) : (true, L("无 IPv6 出口（探测走 IPv4 进隧道）✓", "No IPv6 egress (probe used IPv4 through the tunnel) ✓"))
     }
-    return httpStatus > 0 ? (false, "IPv6 可直连（响应无 trace）⚠️") : (true, "IPv6 出站已阻断 ✓")
+    return httpStatus > 0 ? (false, L("IPv6 可直连（响应无 trace）⚠️", "IPv6 is directly reachable (response had no trace) ⚠️")) : (true, L("IPv6 出站已阻断 ✓", "IPv6 egress blocked ✓"))
 }
 
 public func exitChange(previous: AIExitStatus, current: AIExitStatus) -> ExitChangeEvent? {
@@ -350,10 +358,10 @@ public final class NetworkScanner {
     private func applyGeminiConnections(_ proxy: ProxyKernelStatus) {
         let connection = proxy.connections.first(where: { $0.name == "Gemini" })
         let message: String
-        if !proxy.error.isEmpty { message = "查不到出口：代理连接表不可用" }
-        else if connection?.count ?? 0 == 0 { message = "无活动连接，查不到出口" }
-        else if connection?.chains.isEmpty != false { message = "有活动连接，但连接表未提供出站链路" }
-        else { message = "走出站：" + connection!.chains.joined(separator: "、") }
+        if !proxy.error.isEmpty { message = L("查不到出口：代理连接表不可用", "Egress unavailable: proxy connection table unavailable") }
+        else if connection?.count ?? 0 == 0 { message = L("无活动连接，查不到出口", "No active connections; egress unavailable") }
+        else if connection?.chains.isEmpty != false { message = L("有活动连接，但连接表未提供出站链路", "Active connections, but no egress chain in the connection table") }
+        else { message = L("走出站：", "Egress: ") + connection!.chains.joined(separator: L("、", ", ")) }
         lock.lock(); defer { lock.unlock() }
         guard let i = snapshotCache.aiExits.firstIndex(where: { $0.id == "gemini" }) else { return }
         snapshotCache.aiExits[i].error = message
@@ -366,17 +374,17 @@ public final class NetworkScanner {
         let started = Date().timeIntervalSince1970
         do {
             let text = try request(target.url, timeout: 8, headers: ["Connection": "close"])
-            guard let trace = parseTrace(text) else { status.error = "响应缺少有效的 ip / loc / colo 字段"; return status }
+            guard let trace = parseTrace(text) else { status.error = L("响应缺少有效的 ip / loc / colo 字段", "Response is missing valid ip / loc / colo fields"); return status }
             status.ip = trace.ip; status.loc = trace.loc; status.colo = trace.colo
             status.latencyMS = max(0, Int(((Date().timeIntervalSince1970 - started) * 1000).rounded()))
             status.capturedAt = Date().timeIntervalSince1970
-        } catch { status.error = "请求失败：\(error.localizedDescription)" }
+        } catch { status.error = L("请求失败：\(error.localizedDescription)", "Request failed: \(error.localizedDescription)") }
         return status
     }
 
     private func probeProxy() -> ProxyKernelStatus {
         var result = ProxyKernelStatus()
-        guard let base = clashBaseURL() else { result.error = "未检测到代理内核（clash API 未开或端口不对）"; return result }
+        guard let base = clashBaseURL() else { result.error = L("未检测到代理内核（clash API 未开或端口不对）", "Proxy core not found (Clash API unavailable or wrong port)"); return result }
         do {
             let version = try jsonRequest(base, path: "/version")
             guard let versionText = (version["version"] as? String).flatMap({ $0.isEmpty ? nil : $0 }) ?? (version["meta"] as? String).flatMap({ $0.isEmpty ? nil : $0 }) else { throw ScanError.invalidResponse }
@@ -392,7 +400,7 @@ public final class NetworkScanner {
             let connections = try jsonRequest(base, path: "/connections")
             guard let parsed = NetworkScanner.parseConnections(connections) else { throw ScanError.invalidResponse }
             result.connections = parsed
-        } catch { result.error = "未检测到代理内核（clash API 未开或端口不对）" }
+        } catch { result.error = L("未检测到代理内核（clash API 未开或端口不对）", "Proxy core not found (Clash API unavailable or wrong port)") }
         return result
     }
 
@@ -445,7 +453,7 @@ public final class NetworkScanner {
             let name = wifi.components(separatedBy: ":").dropFirst().joined(separator: ":").trimmingCharacters(in: .whitespacesAndNewlines)
             // 没连 Wi-Fi 时输出里没有冒号（"You are not associated…"），不能一律说成权限问题
             if !name.isEmpty, !name.localizedCaseInsensitiveContains("error") { local.wifiName = name }
-            else { local.wifiName = wifi.contains("not associated") ? "未连接 Wi-Fi" : "查不到（可能需定位权限）" }
+            else { local.wifiName = wifi.contains("not associated") ? L("未连接 Wi-Fi", "Wi-Fi not connected") : L("查不到（可能需定位权限）", "Unavailable (location permission may be required)") }
         }
         let dns = execute("/usr/sbin/scutil", ["--dns"], timeout: 3)
         local.dnsServers = NetworkScanner.parseDNS(dns)
@@ -594,7 +602,7 @@ public final class NetworkScanner {
         return try result.get()
     }
 
-    private enum ScanError: LocalizedError { case timeout, invalidResponse, http(Int); var errorDescription: String? { switch self { case .timeout: return "请求超时"; case .invalidResponse: return "响应格式不正确"; case .http(let code): return "HTTP \(code)" } } }
+    private enum ScanError: LocalizedError { case timeout, invalidResponse, http(Int); var errorDescription: String? { switch self { case .timeout: return L("请求超时", "Request timed out"); case .invalidResponse: return L("响应格式不正确", "Invalid response"); case .http(let code): return "HTTP \(code)" } } }
     private final class RequestResult {
         let lock = NSLock()
         var value: Result<Data, Error>?

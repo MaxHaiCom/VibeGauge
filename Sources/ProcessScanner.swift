@@ -1,6 +1,10 @@
 import Foundation
 import os
 
+/// 界面双语：系统首选语言是中文 → 中文，否则英文。
+let isChineseUI: Bool = Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
+@inline(__always) func L(_ zh: String, _ en: String) -> String { isChineseUI ? zh : en }
+
 // MARK: - 数据模型
 
 /// 一个候选孤儿进程：带完整命令行，供杀之前核对与在面板上预览
@@ -100,7 +104,7 @@ public struct Burn: Equatable {
     public let exhaustAt: TimeInterval?
     /// 这个速度是怎么来的（界面要说清口径）："近 42 分钟" / "本窗口均"
     public let basis: String
-    public var isRecent: Bool { basis.hasPrefix("近") }
+    public var isRecent: Bool { basis.hasPrefix(L("近", "last")) }
 }
 
 public struct QuotaWindow: Equatable {
@@ -143,11 +147,11 @@ public struct QuotaWindow: Equatable {
         var basis: String
         if recentPctPerHour > 0, recentSpanMinutes >= 10 {
             perHour = recentPctPerHour
-            basis = "近 \(recentSpanMinutes) 分钟"
+            basis = L("近 \(recentSpanMinutes) 分钟", "last \(recentSpanMinutes)m")
         } else {
             guard elapsed >= 900, pct > 0 else { return nil }
             perHour = pct / (elapsed / 3600)
-            basis = "本窗口均"
+            basis = L("本窗口均", "window average")
         }
         let projected = pct + perHour * (remaining / 3600)
         let exhaust: TimeInterval? = projected >= 100 && perHour > 0 ? now + (100 - pct) / perHour * 3600 : nil
@@ -315,7 +319,7 @@ public struct ScanReport {
     public var compressorGB: Double = 0.0
 
     // 硬件与发热负载
-    public var thermalStateString: String = "正常"
+    public var thermalStateString: String = L("正常", "Normal")
     public var loadAvg1m: Double = 0.0
     public var loadAvg5m: Double = 0.0
     public var diskFreeGB: Double = 0.0
@@ -394,37 +398,38 @@ public extension ScanReport {
     var pressures: [PressureSignal] {
         var out: [PressureSignal] = []
 
-        func addQuota(_ w: QuotaWindow?, _ platform: String, _ pool: String) {
+        func addQuota(_ w: QuotaWindow?, _ platform: String, _ pool: String, keyPool: String? = nil) {
             guard let w = w else { return }
             let pct = w.effectivePct()
-            var detail = "已用 \(pct)%"
-            if let c = Fmt.countdown(to: w.resetsAt) { detail += " · 重置 \(c)" }
+            var detail = L("已用 \(pct)%", "\(pct)% used")
+            if let c = Fmt.countdown(to: w.resetsAt) { detail += L(" · 重置 \(c)", " · resets \(c)") }
             let stamp = w.resetsAt.map { String(Int($0)) } ?? "na"
-            out.append(PressureSignal(key: "quota:\(platform):\(pool)@\(stamp)",
+            out.append(PressureSignal(key: "quota:\(platform):\(keyPool ?? pool)@\(stamp)",
                                       short: "\(platform) \(pool)", pct: pct, detail: detail, kind: .quota))
         }
 
         for l in detectedLLMs {
             addQuota(l.fiveHour, l.name, "5h")
-            addQuota(l.sevenDay, l.name, "周")
-            let sec = l.secondaryPoolName.isEmpty ? "副池" : l.secondaryPoolName
-            addQuota(l.secondaryFiveHour, l.name, "\(sec) 5h")
-            addQuota(l.secondarySevenDay, l.name, "\(sec) 周")
+            addQuota(l.sevenDay, l.name, L("周", "weekly"), keyPool: "周")
+            let sec = l.secondaryPoolName.isEmpty ? L("副池", "Secondary") : (l.secondaryPoolName == "三方" ? L("三方", "Third-party") : l.secondaryPoolName)
+            let secKey = l.secondaryPoolName.isEmpty ? "副池" : l.secondaryPoolName
+            addQuota(l.secondaryFiveHour, l.name, "\(sec) 5h", keyPool: "\(secKey) 5h")
+            addQuota(l.secondarySevenDay, l.name, "\(sec) \(L("周", "weekly"))", keyPool: "\(secKey) 周")
             for s in l.subQuotas { addQuota(s.window, l.name, s.name) }
         }
         for p in api.providers {
             addQuota(p.fiveHour, p.provider, "5h")
-            addQuota(p.sevenDay, p.provider, "周")
+            addQuota(p.sevenDay, p.provider, L("周", "weekly"), keyPool: "周")
         }
 
         if totalMemoryGB > 0 {
-            out.append(PressureSignal(key: "mem", short: "内存", pct: max(0, 100 - freePercentage),
-                                      detail: String(format: "已用 %.1f / %.1f GB · swap %.2f GB",
+            out.append(PressureSignal(key: "mem", short: L("内存", "Memory"), pct: max(0, 100 - freePercentage),
+                                      detail: String(format: L("已用 %.1f / %.1f GB · swap %.2f GB", "%.1f / %.1f GB used · swap %.2f GB"),
                                                      usedMemoryGB, totalMemoryGB, swapUsedGB), kind: .memory))
         }
         if diskTotalGB > 0 {
-            out.append(PressureSignal(key: "disk", short: "磁盘", pct: Int((100.0 - diskFreePct).rounded()),
-                                      detail: String(format: "剩余 %.0f GB / %.0f GB", diskFreeGB, diskTotalGB), kind: .disk))
+            out.append(PressureSignal(key: "disk", short: L("磁盘", "Disk"), pct: Int((100.0 - diskFreePct).rounded()),
+                                      detail: String(format: L("剩余 %.0f GB / %.0f GB", "%.0f / %.0f GB free"), diskFreeGB, diskTotalGB), kind: .disk))
         }
 
         return out.sorted { $0.margin != $1.margin ? $0.margin > $1.margin : $0.pct > $1.pct }
@@ -476,7 +481,7 @@ public enum Fmt {
     public static func countdown(to resetsAt: TimeInterval?, now: TimeInterval = Date().timeIntervalSince1970) -> String? {
         guard let r = resetsAt else { return nil }
         let secs = Int(r - now)
-        if secs <= 0 { return "已重置" }
+        if secs <= 0 { return L("已重置", "Reset") }
         let m = secs / 60
         if m < 60 { return "\(m)m" }
         let h = m / 60
@@ -496,10 +501,10 @@ public enum Fmt {
 
     /// 紧凑相对时间（卡片脚注用）："刚刚" / "12m前" / "16h前" / "3d前"
     public static func agoShort(_ secs: Int) -> String {
-        if secs < 60 { return "刚刚" }
-        if secs < 3600 { return "\(secs / 60)m前" }
-        if secs < 86400 { return "\(secs / 3600)h前" }
-        return "\(secs / 86400)d前"
+        if secs < 60 { return L("刚刚", "just now") }
+        if secs < 3600 { return L("\(secs / 60)m前", "\(secs / 60)m ago") }
+        if secs < 86400 { return L("\(secs / 3600)h前", "\(secs / 3600)h ago") }
+        return L("\(secs / 86400)d前", "\(secs / 86400)d ago")
     }
 
     private static let usageResetFormatter: DateFormatter = {
@@ -539,10 +544,10 @@ public enum Fmt {
 
     /// 相对时间："刚刚" / "35秒前" / "12分钟前" / "3小时前"
     public static func ago(_ secs: Int) -> String {
-        if secs < 8 { return "刚刚" }
-        if secs < 60 { return "\(secs)秒前" }
-        if secs < 3600 { return "\(secs / 60)分钟前" }
-        return "\(secs / 3600)小时前"
+        if secs < 8 { return L("刚刚", "just now") }
+        if secs < 60 { return L("\(secs)秒前", "\(secs)s ago") }
+        if secs < 3600 { return L("\(secs / 60)分钟前", "\(secs / 60)m ago") }
+        return L("\(secs / 3600)小时前", "\(secs / 3600)h ago")
     }
 }
 
@@ -628,14 +633,14 @@ public final class ProcessScanner {
     ]
 
     private let serviceDefinitions: [(key: String, name: String)] = [
-        ("apple-docs", "Apple Docs 接口服务"),
-        ("chrome-devtools", "Chrome DevTools 自动化插件"),
-        ("notebooklm", "NotebookLM 交互插件"),
-        ("xcodebuildmcp", "Xcode 构建工具插件"),
-        ("mcpvault", "Obsidian Vault 插件"),
-        ("magicuidesign", "Magic UI 设计工具"),
-        ("meigen", "Meigen 图像服务"),
-        ("context7", "Context7 检索服务")
+        ("apple-docs", L("Apple Docs 接口服务", "Apple Docs service")),
+        ("chrome-devtools", L("Chrome DevTools 自动化插件", "Chrome DevTools automation")),
+        ("notebooklm", L("NotebookLM 交互插件", "NotebookLM integration")),
+        ("xcodebuildmcp", L("Xcode 构建工具插件", "Xcode build tool")),
+        ("mcpvault", L("Obsidian Vault 插件", "Obsidian Vault plugin")),
+        ("magicuidesign", L("Magic UI 设计工具", "Magic UI design tool")),
+        ("meigen", L("Meigen 图像服务", "Meigen image service")),
+        ("context7", L("Context7 检索服务", "Context7 retrieval service"))
     ]
 
     // MARK: 会话判定（用户交互终端 vs 子脚本/MCP）
@@ -898,11 +903,11 @@ public final class ProcessScanner {
 
         // 4. 发热与负载
         switch ProcessInfo.processInfo.thermalState {
-        case .nominal: report.thermalStateString = "正常"
-        case .fair: report.thermalStateString = "微热"
-        case .serious: report.thermalStateString = "较高 (可能降频)"
-        case .critical: report.thermalStateString = "严重过热"
-        @unknown default: report.thermalStateString = "正常"
+        case .nominal: report.thermalStateString = L("正常", "Normal")
+        case .fair: report.thermalStateString = L("微热", "Warm")
+        case .serious: report.thermalStateString = L("较高 (可能降频)", "High (may throttle)")
+        case .critical: report.thermalStateString = L("严重过热", "Critical heat")
+        @unknown default: report.thermalStateString = L("正常", "Normal")
         }
         var loadavg = [Double](repeating: 0.0, count: 3)
         getloadavg(&loadavg, 3)
@@ -957,15 +962,15 @@ public final class ProcessScanner {
             let lower = p.cmd.lowercased()
             guard isRunner(lower), allKeywords.contains(where: { lower.contains($0) }) else { continue }
             if listeningPids.contains(pid) {
-                protectedList.append(ProtectedProc(pid: pid, cmd: p.cmd, memMB: p.memMB, reason: "在监听端口（可能还有客户端会连）"))
+                protectedList.append(ProtectedProc(pid: pid, cmd: p.cmd, memMB: p.memMB, reason: L("在监听端口（可能还有客户端会连）", "Listening on a port (a client may connect)")))
                 continue
             }
             if let hit = whitelist.first(where: { p.cmd.contains($0) }) {
-                protectedList.append(ProtectedProc(pid: pid, cmd: p.cmd, memMB: p.memMB, reason: "白名单：\(hit)"))
+                protectedList.append(ProtectedProc(pid: pid, cmd: p.cmd, memMB: p.memMB, reason: L("白名单：\(hit)", "Allowlisted: \(hit)")))
                 continue
             }
             if let hit = launchdTokens.first(where: { p.cmd.contains($0.token) }) {
-                protectedList.append(ProtectedProc(pid: pid, cmd: p.cmd, memMB: p.memMB, reason: "launchd 托管：\(hit.label)"))
+                protectedList.append(ProtectedProc(pid: pid, cmd: p.cmd, memMB: p.memMB, reason: L("launchd 托管：\(hit.label)", "launchd-managed: \(hit.label)")))
                 continue
             }
             orphanRoots.insert(pid)
@@ -983,7 +988,7 @@ public final class ProcessScanner {
         for pid in allOrphans {
             guard let p = procs[pid] else { continue }
             let lower = p.cmd.lowercased()
-            let name = serviceDefinitions.first(where: { lower.contains($0.key) })?.name ?? "其他已退出 AI 进程"
+            let name = serviceDefinitions.first(where: { lower.contains($0.key) })?.name ?? L("其他已退出 AI 进程", "Other exited AI process")
             var g = groupMap[name, default: (0, 0.0, [])]
             g.count += 1
             g.mem += p.memMB
@@ -995,7 +1000,7 @@ public final class ProcessScanner {
         report.orphans = allOrphans.compactMap { pid -> OrphanProc? in
             guard let p = procs[pid] else { return nil }
             let lower = p.cmd.lowercased()
-            let name = serviceDefinitions.first(where: { lower.contains($0.key) })?.name ?? "其他已退出 AI 进程"
+            let name = serviceDefinitions.first(where: { lower.contains($0.key) })?.name ?? L("其他已退出 AI 进程", "Other exited AI process")
             return OrphanProc(pid: pid, cmd: p.cmd, memMB: p.memMB, service: name)
         }.sorted { $0.memMB > $1.memMB }
         report.allOrphanPids = Array(allOrphans)
@@ -1039,19 +1044,19 @@ public final class ProcessScanner {
     /// 绝不放进来的：sqlite 运行库（删了工具会坏）、plugins/skills（是安装的东西）、
     /// generated_images/downloads（是用户资产）。这些只统计、不提供按钮。
     private var purgeableDirs: [(path: String, label: String, note: String)] {
-        [("\(home)/.codex/sessions", "Codex 会话记录", "删掉就不能 --resume 这些旧会话"),
-         ("\(home)/.grok/sessions", "Grok 会话记录", "删掉就不能回看这些旧会话"),
-         ("\(home)/.claude/projects", "Claude 会话记录", "删掉就不能 --resume / --continue 这些旧会话")]
+        [("\(home)/.codex/sessions", L("Codex 会话记录", "Codex sessions"), L("删掉就不能 --resume 这些旧会话", "Deleting prevents --resume for these sessions")),
+         ("\(home)/.grok/sessions", L("Grok 会话记录", "Grok sessions"), L("删掉就不能回看这些旧会话", "Deleting removes access to these past sessions")),
+         ("\(home)/.claude/projects", L("Claude 会话记录", "Claude sessions"), L("删掉就不能 --resume / --continue 这些旧会话", "Deleting prevents --resume / --continue for these sessions"))]
     }
 
     /// 只统计不清理的大块（让用户自己判断，而不是我们替他删）
     private var reportOnlyPaths: [(path: String, label: String, note: String)] {
-        [("\(home)/.codex/logs_2.sqlite", "Codex 日志库", "运行时数据库，删了会弄坏 Codex"),
-         ("\(home)/.codex/thread_history_1.sqlite", "Codex 会话库", "运行时数据库，删了会弄坏 Codex"),
-         ("\(home)/.codex/generated_images", "Codex 生成的图片", "你的产物，自己决定"),
-         ("\(home)/.grok/downloads", "Grok 下载", "你的产物，自己决定"),
-         ("\(home)/.codex/plugins", "Codex 插件", "装上的东西，不是缓存"),
-         ("\(home)/.claude/plugins", "Claude 插件", "装上的东西，不是缓存")]
+        [("\(home)/.codex/logs_2.sqlite", L("Codex 日志库", "Codex log database"), L("运行时数据库，删了会弄坏 Codex", "Runtime database; deleting breaks Codex")),
+         ("\(home)/.codex/thread_history_1.sqlite", L("Codex 会话库", "Codex session database"), L("运行时数据库，删了会弄坏 Codex", "Runtime database; deleting breaks Codex")),
+         ("\(home)/.codex/generated_images", L("Codex 生成的图片", "Codex generated images"), L("你的产物，自己决定", "Your assets; decide yourself")),
+         ("\(home)/.grok/downloads", L("Grok 下载", "Grok downloads"), L("你的产物，自己决定", "Your assets; decide yourself")),
+         ("\(home)/.codex/plugins", L("Codex 插件", "Codex plugins"), L("装上的东西，不是缓存", "Installed content, not a cache")),
+         ("\(home)/.claude/plugins", L("Claude 插件", "Claude plugins"), L("装上的东西，不是缓存", "Installed content, not a cache"))]
     }
 
     private var diskCache: (at: TimeInterval, items: [DiskItem], totalGB: Double)? = nil
@@ -1165,11 +1170,11 @@ public final class ProcessScanner {
             let orgType = (oa["organizationType"] as? String ?? "").lowercased()          // e.g. claude_max
             if orgType.contains("max") { return "Max" }
             if orgType.contains("pro") { return "Pro" }
-            if (oa["billingType"] as? String ?? "").contains("subscription") { return "订阅" }
-            return "已登录"
+            if (oa["billingType"] as? String ?? "").contains("subscription") { return L("订阅", "Subscription") }
+            return L("已登录", "Signed in")
         }
         if env["ANTHROPIC_API_KEY"] != nil { return "API Key" }
-        return "未登录"
+        return L("未登录", "Not signed in")
     }
 
     /// OpenAI JWT 里的 chatgpt_plan_type → 展示名。没有 "5x" 这种档位，那是 Claude 的叫法。
@@ -1206,22 +1211,22 @@ public final class ProcessScanner {
             }
             if !sessionPlan.isEmpty { return ProcessScanner.codexPlanLabel(sessionPlan) }
             let mode = auth["auth_mode"] as? String ?? ""
-            if mode == "chatgpt" { return "ChatGPT 登录" }
+            if mode == "chatgpt" { return L("ChatGPT 登录", "ChatGPT sign-in") }
             if mode == "api_key" || auth["OPENAI_API_KEY"] != nil { return "API Key" }
         }
         if env["OPENAI_API_KEY"] != nil { return "API Key" }
-        return "未登录"
+        return L("未登录", "Not signed in")
     }
 
     /// Antigravity 本地没有套餐字段；新版 agy 连 token 文件都不落盘了 → 能拉到额度就是登录态
     private func getGeminiTier(hasQuota: Bool) -> String {
         if let tok = readJSON("\(home)/.gemini/antigravity-cli/antigravity-oauth-token") {
             let method = (tok["auth_method"] as? String ?? "").lowercased()
-            return method == "consumer" ? "个人 OAuth" : "OAuth"
+            return method == "consumer" ? L("个人 OAuth", "Personal OAuth") : "OAuth"
         }
-        if hasQuota { return "已登录" }
+        if hasQuota { return L("已登录", "Signed in") }
         if env["GEMINI_API_KEY"] != nil { return "API Key" }
-        return "未登录"
+        return L("未登录", "Not signed in")
     }
 
     /// 直接用 grok 自己缓存的 subscription_tier_display（形如 "X Premium+" / "SuperGrok"），原样显示不改写
@@ -1236,11 +1241,11 @@ public final class ProcessScanner {
         }
         if let auth = readJSON("\(home)/.grok/auth.json") {
             for v in auth.values {
-                if let d = v as? [String: Any], d["auth_mode"] as? String == "oidc" { return "已登录" }
+                if let d = v as? [String: Any], d["auth_mode"] as? String == "oidc" { return L("已登录", "Signed in") }
             }
         }
         if env["XAI_API_KEY"] != nil || env["GROK_API_KEY"] != nil { return "API Key" }
-        return "未登录"
+        return L("未登录", "Not signed in")
     }
 
     // MARK: 额度（全部带 resets_at + 采集时间）
@@ -1545,13 +1550,13 @@ public final class ProcessScanner {
         var d = PlatformDetail()
         d.sourceFiles = ["~/.claude.json", "~/.claude/claude-usage.json", "~/.claude/projects/*.jsonl"]
         if let oa = readJSON("\(home)/.claude.json")?["oauthAccount"] as? [String: Any] {
-            if let v = oa["organizationRateLimitTier"] as? String { d.rows.append(("限速档位字段", v)) }
-            if let v = oa["organizationType"] as? String { d.rows.append(("组织类型", v)) }
-            if let v = oa["billingType"] as? String { d.rows.append(("计费方式", v)) }
-            if let v = oa["organizationRole"] as? String { d.rows.append(("角色", v)) }
-            if let b = oa["hasExtraUsageEnabled"] as? Bool { d.rows.append(("额外用量", b ? "已开启" : "未开启")) }
+            if let v = oa["organizationRateLimitTier"] as? String { d.rows.append((L("限速档位字段", "Rate-limit tier field"), v)) }
+            if let v = oa["organizationType"] as? String { d.rows.append((L("组织类型", "Organization type"), v)) }
+            if let v = oa["billingType"] as? String { d.rows.append((L("计费方式", "Billing type"), v)) }
+            if let v = oa["organizationRole"] as? String { d.rows.append((L("角色", "Role"), v)) }
+            if let b = oa["hasExtraUsageEnabled"] as? Bool { d.rows.append((L("额外用量", "Extra usage"), b ? L("已开启", "Enabled") : L("未开启", "Disabled"))) }
             if let v = oa["subscriptionCreatedAt"] as? String, let t = Fmt.parseISODate(v) {
-                d.rows.append(("订阅开始", Fmt.dateText(t) + "（\(Int((Date().timeIntervalSince1970 - t) / 86400)) 天前）"))
+                d.rows.append((L("订阅开始", "Subscription started"), L("\(Fmt.dateText(t))（\(Int((Date().timeIntervalSince1970 - t) / 86400)) 天前）", "\(Fmt.dateText(t)) (\(Int((Date().timeIntervalSince1970 - t) / 86400))d ago)")))
             }
         }
         d.sessions = sessionInfos(c, .claude)
@@ -1571,22 +1576,22 @@ public final class ProcessScanner {
                 if let data = Data(base64Encoded: payload),
                    let p = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let a = p["https://api.openai.com/auth"] as? [String: Any] {
-                    if let v = a["chatgpt_plan_type"] as? String { d.rows.append(("套餐字段", v)) }
+                    if let v = a["chatgpt_plan_type"] as? String { d.rows.append((L("套餐字段", "Plan field"), v)) }
                     if let v = a["chatgpt_subscription_active_until"] as? String, let t = Fmt.parseISODate(v) {
                         let left = Int((t - Date().timeIntervalSince1970) / 86400)
-                        d.rows.append(("订阅有效期至", Fmt.dateText(t) + "（还剩 \(left) 天）"))
+                        d.rows.append((L("订阅有效期至", "Subscription active until"), L("\(Fmt.dateText(t))（还剩 \(left) 天）", "\(Fmt.dateText(t)) (\(left)d left)")))
                     }
                 }
             }
-            if let mode = auth["auth_mode"] as? String { d.rows.append(("鉴权方式", mode)) }
+            if let mode = auth["auth_mode"] as? String { d.rows.append((L("鉴权方式", "Auth method"), mode)) }
         }
         if !codexRemoteHost.isEmpty {
             remoteLock.lock(); let ok = remoteCodex.ok; let at = remoteCodex.at; remoteLock.unlock()
-            d.rows.append(("远程合并主机", "\(codexRemoteHost) · " + (ok ? "已连上（\(Fmt.agoShort(Int(Date().timeIntervalSince1970 - at))) 拉取）" : "未连上")))
+            d.rows.append((L("远程合并主机", "Remote merge host"), "\(codexRemoteHost) · " + (ok ? L("已连上（\(Fmt.agoShort(Int(Date().timeIntervalSince1970 - at))) 拉取）", "connected (fetched \(Fmt.agoShort(Int(Date().timeIntervalSince1970 - at))))") : L("未连上", "not connected"))))
         }
         for (id, b) in buckets.sorted(by: { $0.key < $1.key }) where id != "codex" {
             let label = b.name.isEmpty ? id : b.name
-            if let w = b.weekly { d.extraPools.append(("\(label) 周", w)) }
+            if let w = b.weekly { d.extraPools.append(("\(label) \(L("周", "weekly"))", w)) }
             if let w = b.fiveHour { d.extraPools.append(("\(label) 5H", w)) }
         }
         d.sessions = sessionInfos(c, .codex)
@@ -1597,12 +1602,12 @@ public final class ProcessScanner {
         var d = PlatformDetail()
         d.sourceFiles = ["~/.gemini/antigravity-cli/", "~/.cache/agy-hud/quota_cache.json"]
         if let st = readJSON("\(home)/.gemini/antigravity-cli/settings.json"), let m = st["model"] as? String {
-            d.rows.append(("默认模型", m))
+            d.rows.append((L("默认模型", "Default model"), m))
         }
         if let tok = readJSON("\(home)/.gemini/antigravity-cli/antigravity-oauth-token"), let m = tok["auth_method"] as? String {
-            d.rows.append(("鉴权方式", m))
+            d.rows.append((L("鉴权方式", "Auth method"), m))
         }
-        d.rows.append(("三方池说明", "只有跑 Claude/GPT 模型时才会刷新；耗尽后无法再刷，只能等重置"))
+        d.rows.append((L("三方池说明", "Third-party pool"), L("只有跑 Claude/GPT 模型时才会刷新；耗尽后无法再刷，只能等重置", "Refreshes only when running Claude/GPT models; once exhausted, wait for reset")))
         d.sessions = sessionInfos(c, .agy)
         return d
     }
@@ -1615,10 +1620,10 @@ public final class ProcessScanner {
            let pData = payloadStr.data(using: .utf8),
            let pJson = try? JSONSerialization.jsonObject(with: pData) as? [String: Any],
            let settings = pJson["settings"] as? [String: Any] {
-            if let v = settings["subscription_tier_display"] as? String { d.rows.append(("订阅档位（服务端原值）", v)) }
-            if let v = pJson["grok_version"] as? String { d.rows.append(("CLI 版本", v)) }
+            if let v = settings["subscription_tier_display"] as? String { d.rows.append((L("订阅档位（服务端原值）", "Subscription tier (server value)"), v)) }
+            if let v = pJson["grok_version"] as? String { d.rows.append((L("CLI 版本", "CLI version"), v)) }
         }
-        d.rows.append(("额度来源", "grok 自己的 billing 日志，不必产生对话就会刷"))
+        d.rows.append((L("额度来源", "Quota source"), L("grok 自己的 billing 日志，不必产生对话就会刷", "Grok billing logs; refreshes without a conversation")))
         d.sessions = sessionInfos(c, .grok)
         return d
     }
@@ -1631,11 +1636,11 @@ public final class ProcessScanner {
         if c.claude > 0 || fm.fileExists(atPath: "\(home)/.claude.json") {
             let q = readClaudeQuota()
             list.append(DetectedLLMRuntime(
-                name: "Claude", isRunning: c.claude > 0, tier: getClaudeTier(), detail: "\(c.claude) 会话",
+                name: "Claude", isRunning: c.claude > 0, tier: getClaudeTier(), detail: L("\(c.claude) 会话", "\(c.claude) sessions"),
                 fiveHour: q.fiveHour, sevenDay: q.sevenDay,
                 secondaryPoolName: q.extraName, secondaryFiveHour: q.extra5h, secondarySevenDay: q.extraW,
                 isFullWidth: !q.extraName.isEmpty,
-                quotaSubtitle: "Anthropic · 无额度数据 (状态栏未截获)",
+                quotaSubtitle: L("Anthropic · 无额度数据 (状态栏未截获)", "Anthropic · no quota data (status not captured)"),
                 platformDetail: claudeDetail(c)
             ))
         }
@@ -1651,9 +1656,9 @@ public final class ProcessScanner {
                 name: "Codex",
                 isRunning: c.codex > 0,
                 tier: getCodexTier(sessionPlan: q.plan),
-                detail: "\(c.codex) 会话",
+                detail: L("\(c.codex) 会话", "\(c.codex) sessions"),
                 fiveHour: q.primary?.fiveHour, sevenDay: q.primary?.weekly,
-                quotaSubtitle: (hasRemote && !q.remoteOK) ? "OpenAI · 无额度数据 (\(codexRemoteHost) 未连上)" : "OpenAI · 无额度数据 (近两日无 session)",
+                quotaSubtitle: (hasRemote && !q.remoteOK) ? L("OpenAI · 无额度数据 (\(codexRemoteHost) 未连上)", "OpenAI · no quota data (\(codexRemoteHost) not connected)") : L("OpenAI · 无额度数据 (近两日无 session)", "OpenAI · no quota data (no session in the last 2 days)"),
                 platformDetail: codexDetail(c, snapshot: q, buckets: allBuckets)
             ))
         }
@@ -1663,11 +1668,11 @@ public final class ProcessScanner {
             let q = readGeminiQuota()
             let hasAny = q.native5h != nil || q.nativeW != nil || q.tp5h != nil || q.tpW != nil
             list.append(DetectedLLMRuntime(
-                name: "Gemini", isRunning: c.agy > 0, tier: getGeminiTier(hasQuota: hasAny), detail: "\(c.agy) 会话",
+                name: "Gemini", isRunning: c.agy > 0, tier: getGeminiTier(hasQuota: hasAny), detail: L("\(c.agy) 会话", "\(c.agy) sessions"),
                 fiveHour: q.native5h, sevenDay: q.nativeW,
                 secondaryPoolName: "三方", secondaryFiveHour: q.tp5h, secondarySevenDay: q.tpW,
                 isFullWidth: hasAny,
-                quotaSubtitle: "Antigravity · 无额度数据 (agy-hud 未刷新)",
+                quotaSubtitle: L("Antigravity · 无额度数据 (agy-hud 未刷新)", "Antigravity · no quota data (agy-hud not refreshed)"),
                 platformDetail: geminiDetail(c)
             ))
         }
@@ -1676,11 +1681,11 @@ public final class ProcessScanner {
         if c.grok > 0 || fm.fileExists(atPath: "\(home)/.grok/auth.json") {
             let q = readGrokQuota()
             var tier = getGrokTier()
-            if (tier == "已登录" || tier == "未登录"), !q.tier.isEmpty { tier = q.tier }
+            if (tier == L("已登录", "Signed in") || tier == L("未登录", "Not signed in")), !q.tier.isEmpty { tier = q.tier }
             list.append(DetectedLLMRuntime(
-                name: "Grok", isRunning: c.grok > 0, tier: tier, detail: "\(c.grok) 会话",
+                name: "Grok", isRunning: c.grok > 0, tier: tier, detail: L("\(c.grok) 会话", "\(c.grok) sessions"),
                 sevenDay: q.weekly,
-                quotaSubtitle: "xAI · 无额度数据 (grok 未跑过)",
+                quotaSubtitle: L("xAI · 无额度数据 (grok 未跑过)", "xAI · no quota data (grok has not run)"),
                 platformDetail: grokDetail(c)
             ))
         }
@@ -1689,16 +1694,16 @@ public final class ProcessScanner {
         if c.ollama {
             let o = probeOllama()
             list.append(DetectedLLMRuntime(
-                name: "Ollama", isRunning: o.count > 0, tier: "本地", detail: "\(o.count) 模型", quotaSubtitle: o.sub
+                name: "Ollama", isRunning: o.count > 0, tier: L("本地", "Local"), detail: L("\(o.count) 模型", "\(o.count) models"), quotaSubtitle: o.sub
             ))
         }
 
         if c.cursor {
-            list.append(DetectedLLMRuntime(name: "Cursor", isRunning: true, tier: "", detail: "运行中", quotaSubtitle: "IDE 进程在线 · 本地无档位/额度数据"))
+            list.append(DetectedLLMRuntime(name: "Cursor", isRunning: true, tier: "", detail: L("运行中", "Running"), quotaSubtitle: L("IDE 进程在线 · 本地无档位/额度数据", "IDE process online · no local tier/quota data")))
         }
 
         if c.lmStudio {
-            list.append(DetectedLLMRuntime(name: "LM Studio", isRunning: true, tier: "本地", detail: "运行中", quotaSubtitle: "端侧运行 · 0 额度消耗"))
+            list.append(DetectedLLMRuntime(name: "LM Studio", isRunning: true, tier: L("本地", "Local"), detail: L("运行中", "Running"), quotaSubtitle: L("端侧运行 · 0 额度消耗", "Runs locally · 0 quota used")))
         }
 
         return list
@@ -1708,7 +1713,7 @@ public final class ProcessScanner {
         let now = Date().timeIntervalSince1970
         if let c = ollamaCache, now - c.at < 10 { return (c.count, c.sub) }
         // 结果放独立加锁的盒子：超时后迟到的回调只写盒子，不与扫描线程的读竞争
-        final class Box { let lock = NSLock(); var count = 0; var sub = "端侧运行 · 无已加载模型" }
+        final class Box { let lock = NSLock(); var count = 0; var sub = L("端侧运行 · 无已加载模型", "Runs locally · no loaded models") }
         let box = Box()
         if let url = URL(string: "http://127.0.0.1:11434/api/ps") {
             var request = URLRequest(url: url)
@@ -1720,7 +1725,7 @@ public final class ProcessScanner {
                    let models = json["models"] as? [[String: Any]], !models.isEmpty {
                     box.lock.lock()
                     box.count = models.count
-                    box.sub = "已加载: " + models.compactMap { $0["name"] as? String }.joined(separator: ", ")
+                    box.sub = L("已加载: ", "Loaded: ") + models.compactMap { $0["name"] as? String }.joined(separator: ", ")
                     box.lock.unlock()
                 }
                 sema.signal()
@@ -1905,7 +1910,7 @@ public final class ProcessScanner {
             }
         }
         codexUsageCache = codexUsageCache.filter { seen.contains($0.key) }
-        if !u.hasTokens { u.note = "今日无调用" }
+        if !u.hasTokens { u.note = L("今日无调用", "No calls today") }
         return u
     }
 
@@ -1948,7 +1953,7 @@ public final class ProcessScanner {
         let fm = FileManager.default
         let root = "\(home)/.grok/sessions"
         guard let dirs = try? fm.contentsOfDirectory(atPath: root) else {
-            u.note = "本地无 token 统计"
+            u.note = L("本地无 token 统计", "No local token stats")
             return u
         }
         for d in dirs {
@@ -1962,7 +1967,7 @@ public final class ProcessScanner {
                 u.turns += (j["turnCount"] as? NSNumber)?.intValue ?? 0
             }
         }
-        u.note = u.turns > 0 ? "本地无 token 统计，仅轮次" : "今日无调用"
+        u.note = u.turns > 0 ? L("本地无 token 统计，仅轮次", "No local token stats; turns only") : L("今日无调用", "No calls today")
         return u
     }
 
@@ -1975,10 +1980,10 @@ public final class ProcessScanner {
         claudeRow.cacheRead = claude.todayCacheRead
         claudeRow.out = claude.todayOutput
         claudeRow.think = claude.todayThinking
-        if !claudeRow.hasTokens { claudeRow.note = "今日无调用" }
+        if !claudeRow.hasTokens { claudeRow.note = L("今日无调用", "No calls today") }
 
         var gemini = CLIUsage(name: "Gemini")
-        gemini.note = "本地无 token 统计（额度见上）"      // conversations 是 SQLite，无 token 字段
+        gemini.note = L("本地无 token 统计（额度见上）", "No local token stats (see quota above)")      // conversations 是 SQLite，无 token 字段
 
         return [claudeRow, codexUsageToday(startOfToday: startOfToday), grokUsageToday(startOfToday: startOfToday), gemini]
     }
@@ -2192,7 +2197,7 @@ public final class ProcessScanner {
             // 族名里去掉噪声词，剩下 requests/tokens 这类才有信息量
             let name = family.split(separator: "-").filter { !["x", "anthropic", "ratelimit", "rate", "openai"].contains($0) }
                 .joined(separator: "-")
-            let label = name.isEmpty ? "限流" : name
+            let label = name.isEmpty ? L("限流", "rate limit") : name
             if best == nil || used > best!.usedPct { best = (max(0, min(100, used)), reset, label) }
         }
         return best
@@ -2342,10 +2347,10 @@ public final class ProcessScanner {
     private func balanceText(_ d: [String: Any]) -> String {
         let cur = (d["currency"] as? String ?? "").uppercased()
         let sym = cur == "CNY" ? "¥" : (cur == "USD" ? "$" : (cur.isEmpty ? "" : cur + " "))
-        if let b = (d["balance"] as? NSNumber)?.doubleValue { return String(format: "余额 %@%.2f", sym, b) }
+        if let b = (d["balance"] as? NSNumber)?.doubleValue { return String(format: L("余额 %@%.2f", "%@%.2f balance"), sym, b) }
         if let u = (d["usage"] as? NSNumber)?.doubleValue {
-            if let l = (d["limit"] as? NSNumber)?.doubleValue { return String(format: "已用 %@%.2f / %@%.2f", sym, u, sym, l) }
-            return String(format: "已用 %@%.2f", sym, u)
+            if let l = (d["limit"] as? NSNumber)?.doubleValue { return String(format: L("已用 %@%.2f / %@%.2f", "%@%.2f / %@%.2f used"), sym, u, sym, l) }
+            return String(format: L("已用 %@%.2f", "%@%.2f used"), sym, u)
         }
         return ""
     }
@@ -2392,7 +2397,7 @@ public final class ProcessScanner {
 
             if c.ms > 0 { latency[c.host, default: []].append(c.ms) }
 
-            let fp = c.key.isEmpty ? "无 key" : c.key
+            let fp = c.key.isEmpty ? L("无 key", "no key") : c.key
             var k = byKey[c.host]?[fp] ?? APIKeyUsage(fingerprint: fp)
             k.calls += 1
             if c.status >= 400 || c.status == 0 { k.errors += 1 }
@@ -2437,8 +2442,8 @@ public final class ProcessScanner {
                 byHost[host]?.plan = plan.label
                 byHost[host]?.quotaIsEstimate = true
                 let in5h = ts.filter { $0 >= now - 5 * 3600 }.count
-                byHost[host]?.estimateNote = plan.five > 0 ? "本机记账 \(in5h) 次 / \(plan.five)" : "本机记账 \(in5h) 次"
-                byHost[host]?.planLimitText = "5h \(plan.five) · 周 \(plan.weekly) · 月 \(plan.monthly) 次"
+                byHost[host]?.estimateNote = plan.five > 0 ? L("本机记账 \(in5h) 次 / \(plan.five)", "\(in5h) locally logged / \(plan.five) requests") : L("本机记账 \(in5h) 次", "\(in5h) locally logged")
+                byHost[host]?.planLimitText = L("5h \(plan.five) · 周 \(plan.weekly) · 月 \(plan.monthly) 次", "5h \(plan.five) · weekly \(plan.weekly) · monthly \(plan.monthly) requests")
                 byHost[host]?.fiveHour = Self.rollingWindow(ts, seconds: 5 * 3600, limit: plan.five, now: now)
                 byHost[host]?.sevenDay = Self.rollingWindow(ts, seconds: 7 * 86400, limit: plan.weekly, now: now)
                 byHost[host]?.monthly = Self.rollingWindow(ts, seconds: 30 * 86400, limit: plan.monthly, now: now)

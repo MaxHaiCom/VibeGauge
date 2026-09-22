@@ -4,16 +4,16 @@ import Cocoa
 if CommandLine.arguments.contains("--install-proxy") {
     do {
         try ProxyManager.shared.install()
-        print("已安装并启动：\(ProxyManager.shared.prefix)  日志 \(ProxyManager.shared.logPath)")
+        print(L("已安装并启动：\(ProxyManager.shared.prefix)  日志 \(ProxyManager.shared.logPath)", "Installed and started: \(ProxyManager.shared.prefix)  log \(ProxyManager.shared.logPath)"))
     } catch {
-        print("安装失败：\(error.localizedDescription)")
+        print(L("安装失败：\(error.localizedDescription)", "Installation failed: \(error.localizedDescription)"))
         exit(1)
     }
     exit(0)
 }
 if CommandLine.arguments.contains("--uninstall-proxy") {
     ProxyManager.shared.uninstall()
-    print("已卸载")
+    print(L("已卸载", "Uninstalled"))
     exit(0)
 }
 
@@ -31,7 +31,7 @@ if CommandLine.arguments.contains("--selftest") {
     precondition(Fmt.countdown(to: now + 90, now: now) == "1m")
     precondition(Fmt.countdown(to: now + 6540, now: now) == "1h49m")
     precondition(Fmt.countdown(to: now + 2 * 86400 + 10 * 3600, now: now) == "2d10h")
-    precondition(Fmt.countdown(to: now - 5, now: now) == "已重置")
+    precondition(Fmt.countdown(to: now - 5, now: now) == L("已重置", "Reset"))
     precondition(Fmt.parseISODate("2026-09-19T10:34:27.346461+00:00") != nil)   // grok 6 位小数秒
     precondition(Fmt.parseISODate("2026-09-17T09:07:45.133Z") != nil)           // claude 3 位
     precondition(Fmt.parseISODate("2026-09-17T03:14:39Z") != nil)               // 无小数
@@ -55,13 +55,13 @@ if CommandLine.arguments.contains("--selftest") {
         s.diskTotalGB = 1000; s.diskFreeGB = 500; s.diskFreePct = 50   // 已用 50%，线 90 → margin -40
         s.detectedLLMs = [DetectedLLMRuntime(name: "Claude", isRunning: true, tier: "Max", detail: "",
                                              fiveHour: QuotaWindow(usedPct: 55, resetsAt: now + 3600, capturedAt: now))]
-        precondition(s.tightest?.short == "内存", "60% 内存该压住 55% 额度（离线更近）")
+        precondition(s.tightest?.short == L("内存", "Memory"), "60% 内存该压住 55% 额度（离线更近）")
         precondition(s.tightest?.level == 0)
         s.detectedLLMs[0].fiveHour = QuotaWindow(usedPct: 82, resetsAt: now + 3600, capturedAt: now)
         precondition(s.tightest?.short == "Claude 5h" && s.tightest?.level == 1, "额度 82% 越线 → 最紧且报警")
         s.detectedLLMs[0].fiveHour = QuotaWindow(usedPct: 99, resetsAt: now - 1, capturedAt: now)
         precondition(s.pressures.first(where: { $0.short == "Claude 5h" })?.pct == 0, "过了重置点的旧值不许再报警")
-        precondition(s.pressures.contains { $0.short == "磁盘" })
+        precondition(s.pressures.contains { $0.short == L("磁盘", "Disk") })
     }
 
     // 百分位取最近秩：p95 一定落在某次真实调用上
@@ -183,13 +183,13 @@ if CommandLine.arguments.contains("--selftest") {
         var hot = QuotaWindow(usedPct: 20, resetsAt: now + 4 * 3600, capturedAt: now, windowSeconds: 5 * 3600)
         hot.recentPctPerHour = 60; hot.recentSpanMinutes = 30
         let hb = hot.burn(now: now)!
-        precondition(hb.isRecent && hb.basis == "近 30 分钟")
+        precondition(hb.isRecent && hb.basis == L("近 30 分钟", "last 30m"))
         precondition(hb.projectedAtReset == 260, "20 + 60*4 = 260，实际 \(hb.projectedAtReset)")
         precondition(hb.exhaustAt != nil && abs(hb.exhaustAt! - (now + 80.0 / 60 * 3600)) < 60)
         // 跨度不足 10 分钟 → 噪声太大，退回窗口均速
         var noisy = QuotaWindow(usedPct: 20, resetsAt: now + 4 * 3600, capturedAt: now, windowSeconds: 5 * 3600)
         noisy.recentPctPerHour = 60; noisy.recentSpanMinutes = 3
-        precondition(noisy.burn(now: now)!.basis == "本窗口均")
+        precondition(noisy.burn(now: now)!.basis == L("本窗口均", "window average"))
         // 有近期速度时，窗口刚开头也能算（不必等满 15 分钟）
         var early = QuotaWindow(usedPct: 2, resetsAt: now + 17_700, capturedAt: now, windowSeconds: 5 * 3600)
         early.recentPctPerHour = 12; early.recentSpanMinutes = 15
@@ -319,7 +319,8 @@ if CommandLine.arguments.contains("--selftest") {
         var updated = a; updated.usage.out = 20
         let merged = UsageHistory.deduplicateClaude(["file-a": [a, updated], "file-b": [updated]])
         precondition(merged.count == 1 && merged[a.id]?.usage.out == 20)
-        precondition(Fmt.tokens(10_000) == "1.0 万" && Fmt.tokens(100_000_000) == "1.00 亿")
+        precondition(Fmt.tokens(10_000) == L("1.0 万", "10.0k") && Fmt.tokens(100_000_000) == L("1.00 亿", "100.0M"))
+        precondition(Fmt.tokens(2_350_000_000) == L("23.50 亿", "2.35B") && Fmt.tokens(9_999) == "9999")
     }
 
     // 临时目录覆盖真实增量路径：重启、跨文件去重、追加半行、重写、模型成本重算。
@@ -417,87 +418,88 @@ if CommandLine.arguments.contains("--selftest") {
     let t0 = Date()
     let r = ProcessScanner.shared.scan(refreshRemote: false)
     let t1 = Date()
-    print(String(format: "scan 耗时 %.0f ms", t1.timeIntervalSince(t0) * 1000))
-    print(String(format: "内存 可用%d%%  已用 %.1f/%.1f GB  swap %.2f GB  压缩 %.2f GB", r.freePercentage, r.usedMemoryGB, r.totalMemoryGB, r.swapUsedGB, r.compressorGB))
-    print(String(format: "磁盘 剩余 %.1f/%.1f GB  负载 %.2f  NPX %.0f MB  MCP %d 进程 %.0f MB", r.diskFreeGB, r.diskTotalGB, r.loadAvg1m, r.npxCacheMB, r.activeMCPProcessCount, r.activeMCPTotalMemMB))
-    print("孤儿 \(r.totalOrphanCount) 个 \(Int(r.totalOrphanMemMB)) MB: " + r.orphanedGroups.map { "\($0.serviceName)x\($0.processCount)" }.joined(separator: ", "))
+    print(String(format: L("scan 耗时 %.0f ms", "scan: %.0f ms"), t1.timeIntervalSince(t0) * 1000))
+    print(String(format: L("内存 可用%d%%  已用 %.1f/%.1f GB  swap %.2f GB  压缩 %.2f GB", "Memory free %d%%  used %.1f/%.1f GB  swap %.2f GB  compressed %.2f GB"), r.freePercentage, r.usedMemoryGB, r.totalMemoryGB, r.swapUsedGB, r.compressorGB))
+    print(String(format: L("磁盘 剩余 %.1f/%.1f GB  负载 %.2f  NPX %.0f MB  MCP %d 进程 %.0f MB", "Disk free %.1f/%.1f GB  load %.2f  NPX %.0f MB  MCP %d processes %.0f MB"), r.diskFreeGB, r.diskTotalGB, r.loadAvg1m, r.npxCacheMB, r.activeMCPProcessCount, r.activeMCPTotalMemMB))
+    print(L("孤儿 \(r.totalOrphanCount) 个 \(Int(r.totalOrphanMemMB)) MB: ", "Orphans \(r.totalOrphanCount), \(Int(r.totalOrphanMemMB)) MB: ") + r.orphanedGroups.map { "\($0.serviceName)x\($0.processCount)" }.joined(separator: ", "))
     if !r.orphans.isEmpty || !r.protected.isEmpty {
-        print("--- 会被清理的（逐条）---")
+        print(L("--- 会被清理的（逐条）---", "--- To be reaped (each) ---"))
         for o in r.orphans { print(String(format: "  pid %-7d %5.0f MB  %@", o.pid, o.memMB, String(o.cmd.prefix(90)))) }
-        print("--- 规则放过的（原因）---")
+        print(L("--- 规则放过的（原因）---", "--- Protected by rules (reason) ---"))
         for p in r.protected { print(String(format: "  pid %-7d %5.0f MB  [%@]  %@", p.pid, p.memMB, p.reason, String(p.cmd.prefix(70)))) }
     }
-    print(String(format: "--- 磁盘：AI 工具目录合计 %.2f GB，可清理（%d 天前的会话记录）%.2f GB ---",
+    print(String(format: L("--- 磁盘：AI 工具目录合计 %.2f GB，可清理（%d 天前的会话记录）%.2f GB ---", "--- Disk: AI tool directories %.2f GB, reclaimable (sessions older than %d days) %.2f GB ---"),
                  r.diskTotalAIGB, ProcessScanner.shared.logRetentionDays, r.purgeableMB / 1024))
     for d in r.disk {
-        print(String(format: "  %@ %-16@ %7.0f MB (%d 文件)%@  %@", d.purgeable ? "🧹" : "🔒", d.label, d.totalMB, d.files,
-                     d.purgeable ? String(format: "  其中旧 %.0f MB/%d 个", d.oldMB, d.oldFiles) : "", d.note))
+        print(String(format: L("  %@ %-16@ %7.0f MB (%d 文件)%@  %@", "  %@ %-16@ %7.0f MB (%d files)%@  %@"), d.purgeable ? "🧹" : "🔒", d.label, d.totalMB, d.files,
+                     d.purgeable ? String(format: L("  其中旧 %.0f MB/%d 个", "  old %.0f MB/%d"), d.oldMB, d.oldFiles) : "", d.note))
     }
-    print("--- 压力信号（图标画第一条）---")
+    print(L("--- 压力信号（图标画第一条）---", "--- Pressure signals (first is shown in the icon) ---"))
     for s in r.pressures.prefix(8) {
-        print(String(format: "  %-16@ %3d%%  线 %d/%d  margin %+d  level %d  %@", s.short, s.pct, s.warn, s.crit, s.margin, s.level, s.detail))
+        print(String(format: L("  %-16@ %3d%%  线 %d/%d  margin %+d  level %d  %@", "  %-16@ %3d%%  thresholds %d/%d  margin %+d  level %d  %@"), s.short, s.pct, s.warn, s.crit, s.margin, s.level, s.detail))
     }
-    print("--- 平台 ---")
+    print(L("--- 平台 ---", "--- Platforms ---"))
     func w(_ label: String, _ q: QuotaWindow?) -> String {
         guard let q = q else { return "" }
         let reset = Fmt.countdown(to: q.resetsAt, now: now) ?? "?"
         let age = q.ageSeconds(now: now).map { Fmt.ago($0) } ?? "?"
         let burn = q.burn(now: now).map {
-            String(format: ", %.1f%%/h→重置时 %d%%%@", $0.pctPerHour, $0.projectedAtReset,
-                   $0.exhaustAt.flatMap { Fmt.countdown(to: $0, now: now) }.map { " ⚡\($0)后打满" } ?? "")
+            String(format: L(", %.1f%%/h→重置时 %d%%%@", ", %.1f%%/h → %d%% at reset%@"), $0.pctPerHour, $0.projectedAtReset,
+                   $0.exhaustAt.flatMap { Fmt.countdown(to: $0, now: now) }.map { L(" ⚡\($0)后打满", " ⚡full in \($0)") } ?? "")
         } ?? ""
-        return "  \(label)=\(q.effectivePct(now: now))%(raw \(q.usedPct), 重置 \(reset), 采集 \(age)\(burn))"
+        return L("  \(label)=\(q.effectivePct(now: now))%(raw \(q.usedPct), 重置 \(reset), 采集 \(age)\(burn))", "  \(label)=\(q.effectivePct(now: now))% (raw \(q.usedPct), resets \(reset), captured \(age)\(burn))")
     }
     for l in r.detectedLLMs {
-        print("\(l.isRunning ? "●" : "○") \(l.name) [\(l.tier)] \(l.detail)" + w("5H", l.fiveHour) + w("W", l.sevenDay) + w("\(l.secondaryPoolName)5H", l.secondaryFiveHour) + w("\(l.secondaryPoolName)W", l.secondarySevenDay) + (l.hasQuota ? "" : "  | \(l.quotaSubtitle)"))
+        let secondaryPool = l.secondaryPoolName == "三方" ? L("三方", "Third-party") : l.secondaryPoolName
+        print("\(l.isRunning ? "●" : "○") \(l.name) [\(l.tier)] \(l.detail)" + w("5H", l.fiveHour) + w("W", l.sevenDay) + w("\(secondaryPool)5H", l.secondaryFiveHour) + w("\(secondaryPool)W", l.secondarySevenDay) + (l.hasQuota ? "" : "  | \(l.quotaSubtitle)"))
     }
     let rs = ProcessScanner.shared.codexRemoteStatus()
-    print("Codex 远程 \(rs.host): \(rs.ok ? "已连上" : "未连上") · \(rs.ageSeconds)s 前拉取")
+    print(L("Codex 远程 \(rs.host): \(rs.ok ? "已连上" : "未连上") · \(rs.ageSeconds)s 前拉取", "Codex remote \(rs.host): \(rs.ok ? "connected" : "not connected") · fetched \(rs.ageSeconds)s ago"))
     let a = r.api
     let cov = a.coverage
-    print("--- 记账覆盖 \(cov.proxiedCount)/\(cov.entries.count) 处走代理 ---")
+    print(L("--- 记账覆盖 \(cov.proxiedCount)/\(cov.entries.count) 处走代理 ---", "--- Accounting coverage: \(cov.proxiedCount)/\(cov.entries.count) via proxy ---"))
     for e in cov.entries { print("  \(e.proxied ? "✓" : "✗") \(e.name) → \(e.host)  (\(e.file):\(e.line))") }
-    print("--- API 代理 --- 安装=\(a.installed) 运行=\(a.running) 端口=\(a.port) 启动后调用=\(a.callsSinceStart)")
-    print("  价目表: " + (a.hasPriceTable ? "已配置 \(a.priceAsOf)" : "未配置（~/.config/vibegauge/prices.json）"))
+    print(L("--- API 代理 --- 安装=\(a.installed) 运行=\(a.running) 端口=\(a.port) 启动后调用=\(a.callsSinceStart)", "--- API proxy --- installed=\(a.installed) running=\(a.running) port=\(a.port) calls since start=\(a.callsSinceStart)"))
+    print(L("  价目表: ", "  Price table: ") + (a.hasPriceTable ? L("已配置 \(a.priceAsOf)", "configured \(a.priceAsOf)") : L("未配置（~/.config/vibegauge/prices.json）", "not configured (~/.config/vibegauge/prices.json)")))
     for p in a.providers {
-        print("  \(p.provider) [\(p.host)] 今日 \(p.calls) 次 ctx \(p.ctx) cache \(p.cacheRead) out \(p.out) think \(p.think) 模型 \(p.models.joined(separator: ",")) \(p.plan) \(p.balanceText) \(p.fiveHour.map { "5H \($0.usedPct)%" } ?? "") \(p.sevenDay.map { "W \($0.usedPct)%" } ?? "") \(p.monthly.map { "M \($0.usedPct)%" } ?? "") \(p.quotaError)")
-        print(String(format: "    延迟 p50 %@ p95 %@ 最慢 %@ · 错误 %d(%.1f%%) 429 %d · 花费 %@ · key %@",
+        print(L("  \(p.provider) [\(p.host)] 今日 \(p.calls) 次 ctx \(p.ctx) cache \(p.cacheRead) out \(p.out) think \(p.think) 模型 \(p.models.joined(separator: ",")) \(p.plan) \(p.balanceText) \(p.fiveHour.map { "5H \($0.usedPct)%" } ?? "") \(p.sevenDay.map { "W \($0.usedPct)%" } ?? "") \(p.monthly.map { "M \($0.usedPct)%" } ?? "") \(p.quotaError)", "  \(p.provider) [\(p.host)] today \(p.calls) calls ctx \(p.ctx) cache \(p.cacheRead) out \(p.out) think \(p.think) models \(p.models.joined(separator: ",")) \(p.plan) \(p.balanceText) \(p.fiveHour.map { "5H \($0.usedPct)%" } ?? "") \(p.sevenDay.map { "W \($0.usedPct)%" } ?? "") \(p.monthly.map { "M \($0.usedPct)%" } ?? "") \(p.quotaError)"))
+        print(String(format: L("    延迟 p50 %@ p95 %@ 最慢 %@ · 错误 %d(%.1f%%) 429 %d · 花费 %@ · key %@", "    latency p50 %@ p95 %@ slowest %@ · errors %d (%.1f%%) 429 %d · cost %@ · keys %@"),
                      Fmt.ms(p.p50ms), Fmt.ms(p.p95ms), Fmt.ms(p.maxms), p.errors, p.errorRate, p.count429,
                      p.cost.map { String(format: "%.4f %@", $0, p.costCurrency) } ?? "—",
                      p.keys.map { "\($0.fingerprint):\($0.calls)" }.joined(separator: " ")))
-        if let hw = p.headerWindow { print("    限流头: \(p.headerLabel) 已用 \(hw.usedPct)% 重置 \(Fmt.countdown(to: hw.resetsAt, now: now) ?? "?")") }
-        if p.quotaIsEstimate { print("    额度=估算 · \(p.estimateNote) · 上限 \(p.planLimitText)") }
+        if let hw = p.headerWindow { print(L("    限流头: \(p.headerLabel) 已用 \(hw.usedPct)% 重置 \(Fmt.countdown(to: hw.resetsAt, now: now) ?? "?")", "    rate-limit headers: \(p.headerLabel) \(hw.usedPct)% used, resets \(Fmt.countdown(to: hw.resetsAt, now: now) ?? "?" )")) }
+        if p.quotaIsEstimate { print(L("    额度=估算 · \(p.estimateNote) · 上限 \(p.planLimitText)", "    quota=estimated · \(p.estimateNote) · limit \(p.planLimitText)")) }
     }
     print("--- Token ---")
     let t = r.tokens
-    print(String(format: "今日 %d 次调用  上下文 %lld  缓存读 %lld  命中 %.1f%%  输出 %lld  思考 %lld", t.todayTurns, t.todayContext, t.todayCacheRead, t.todayCacheHitRate, t.todayOutput, t.todayThinking))
+    print(String(format: L("今日 %d 次调用  上下文 %lld  缓存读 %lld  命中 %.1f%%  输出 %lld  思考 %lld", "Today %d calls  context %lld  cache read %lld  hit %.1f%%  output %lld  reasoning %lld"), t.todayTurns, t.todayContext, t.todayCacheRead, t.todayCacheHitRate, t.todayOutput, t.todayThinking))
     for i in t.recentInteractions {
         print(String(format: "  %@ %@  ctx %d  out %d  think %d  hit %.1f%%  [%@]", Fmt.modelDisplayName(i.model), Fmt.ago(Int(now - i.timestamp)), i.contextTokens, i.outputTokens, i.thinkingTokens, i.cacheHitRate, i.id))
     }
-    print("--- 今日按项目归因 ---")
+    print(L("--- 今日按项目归因 ---", "--- Today by project ---"))
     for p in t.todayByProject.prefix(8) {
-        print(String(format: "  %-28@ %5d 轮  ctx %-10lld out %-8lld  [%@]", p.name, p.turns, p.ctx, p.out, p.clis.joined(separator: "+")))
+        print(String(format: L("  %-28@ %5d 轮  ctx %-10lld out %-8lld  [%@]", "  %-28@ %5d turns  ctx %-10lld out %-8lld  [%@]"), p.name, p.turns, p.ctx, p.out, p.clis.joined(separator: "+")))
     }
-    print("--- 各 CLI 今日用量 ---")
+    print(L("--- 各 CLI 今日用量 ---", "--- Today's CLI usage ---"))
     for u in r.cliUsage {
         if u.hasTokens {
-            print(String(format: "  %@: ctx %lld  cache %lld  out %lld  think %lld  %d 次  命中 %.1f%%", u.name, u.ctx, u.cacheRead, u.out, u.think, u.requests, u.cacheHitRate))
+            print(String(format: L("  %@: ctx %lld  cache %lld  out %lld  think %lld  %d 次  命中 %.1f%%", "  %@: ctx %lld  cache %lld  out %lld  reasoning %lld  %d calls  hit %.1f%%"), u.name, u.ctx, u.cacheRead, u.out, u.think, u.requests, u.cacheHitRate))
         } else {
-            print("  \(u.name): \(u.turns) 轮 · \(u.note)")
+            print(L("  \(u.name): \(u.turns) 轮 · \(u.note)", "  \(u.name): \(u.turns) turns · \(u.note)"))
         }
     }
 
     let t2 = Date()
     _ = ProcessScanner.shared.scanTokens()
     _ = ProcessScanner.shared.scanActiveLLMs()
-    print(String(format: "二次轻量刷新耗时 %.0f ms (ticker 每秒跑的就是这个)", Date().timeIntervalSince(t2) * 1000))
+    print(String(format: L("二次轻量刷新耗时 %.0f ms (ticker 每秒跑的就是这个)", "Second light refresh: %.0f ms (this is what the 1s ticker runs)"), Date().timeIntervalSince(t2) * 1000))
     let historyDeadline = Date().addingTimeInterval(600)
     var progressAt = Date.distantPast
     while UsageHistory.shared.snapshot().capturedAt == 0 || NetworkScanner.shared.snapshot().capturedAt == 0 {
         precondition(Date() < historyDeadline, "后台首次采集超时，不能把未完成汇总标为通过")
         if Date().timeIntervalSince(progressAt) > 15 {
             let progress = UsageHistory.shared.snapshot()
-            print("历史汇总进度：\(progress.processedFiles)/\(progress.totalFiles) 文件")
+            print(L("历史汇总进度：\(progress.processedFiles)/\(progress.totalFiles) 文件", "History progress: \(progress.processedFiles)/\(progress.totalFiles) files"))
             progressAt = Date()
         }
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
@@ -505,35 +507,35 @@ if CommandLine.arguments.contains("--selftest") {
     func maskedIP(_ ip: String) -> String {
         if ip.contains(":") { return ip.split(separator: ":").prefix(2).joined(separator: ":") + ":x:x" }
         let parts = ip.split(separator: ".")
-        return parts.count == 4 ? parts.prefix(2).joined(separator: ".") + ".x.x" : "查不到"
+        return parts.count == 4 ? parts.prefix(2).joined(separator: ".") + ".x.x" : L("查不到", "Unavailable")
     }
     precondition(maskedIP("192.0.2.7") == "192.0.x.x")
     let network = NetworkScanner.shared.snapshot()
-    print("--- 网络 ---")
+    print(L("--- 网络 ---", "--- Network ---"))
     for item in network.aiExits where !item.isGemini {
         if item.error.isEmpty {
             print("\(item.name): \(maskedIP(item.ip)) · \(item.loc) · \(item.colo) · \(item.latencyMS)ms")
-        } else { print("\(item.name): 查不到 · \(item.error)") }
+        } else { print(L("\(item.name): 查不到 · \(item.error)", "\(item.name): unavailable · \(item.error)")) }
     }
     let gemini = network.proxy.connections.first { $0.name == "Gemini" }
-    print("Gemini: " + (!network.proxy.error.isEmpty ? "查不到出口：代理连接表不可用" : ((gemini?.count ?? 0) > 0 ? "\(gemini!.count) 个活动连接 · 出站链路 \(gemini!.chains.count) 条" : "无活动连接，查不到出口")))
-    print("代理内核: " + (network.proxy.error.isEmpty ? "\(network.proxy.version) · \(network.proxy.groups.count) 个分组" : network.proxy.error))
-    print("本机: \(network.local.interfaceName.isEmpty ? "查不到接口" : network.local.interfaceName) · 网关 \(maskedIP(network.local.gateway)) · IPv4 \(maskedIP(network.local.ipv4))")
+    print(L("Gemini: ", "Gemini: ") + (!network.proxy.error.isEmpty ? L("查不到出口：代理连接表不可用", "Egress unavailable: proxy connection table unavailable") : ((gemini?.count ?? 0) > 0 ? L("\(gemini!.count) 个活动连接 · 出站链路 \(gemini!.chains.count) 条", "\(gemini!.count) active connections · \(gemini!.chains.count) egress chains") : L("无活动连接，查不到出口", "No active connections; egress unavailable"))))
+    print(L("代理内核: ", "Proxy core: ") + (network.proxy.error.isEmpty ? "\(network.proxy.version) · \(network.proxy.groups.count) \(L("个分组", "groups"))" : network.proxy.error))
+    print(L("本机: \(network.local.interfaceName.isEmpty ? "查不到接口" : network.local.interfaceName) · 网关 \(maskedIP(network.local.gateway)) · IPv4 \(maskedIP(network.local.ipv4))", "Local: \(network.local.interfaceName.isEmpty ? "interface unavailable" : network.local.interfaceName) · gateway \(maskedIP(network.local.gateway)) · IPv4 \(maskedIP(network.local.ipv4))"))
     print("IPv6: \(network.leak.ipv6Message)" + (network.leak.ipv6Country.isEmpty ? "" : " · \(network.leak.ipv6Country)"))
-    print("DNS: \(network.leak.dnsVerdict.rawValue)")
+    print("DNS: \(network.leak.dnsVerdict.localizedDescription)")
     let history = UsageHistory.shared.snapshot()
-    print("--- 统计 ---")
-    print("已处理 \(history.processedFiles)/\(history.totalFiles) 文件 · 自 \(history.earliestDate ?? "查不到最早日期") · \(history.activeDays) 个活跃日")
-    print("累计 token \(history.tokenTotal) · 输入 \(history.ctx) · 缓存读 \(history.cacheRead) · 输出 \(history.aggregate.out)")
-    print("缓存命中率 " + (history.cacheHitRate.map { String(format: "%.2f%%", $0 * 100) } ?? "查不到：无输入用量"))
+    print(L("--- 统计 ---", "--- Stats ---"))
+    print(L("已处理 \(history.processedFiles)/\(history.totalFiles) 文件 · 自 \(history.earliestDate ?? "查不到最早日期") · \(history.activeDays) 个活跃日", "Processed \(history.processedFiles)/\(history.totalFiles) files · since \(history.earliestDate ?? "earliest date unavailable") · \(history.activeDays) active days"))
+    print(L("累计 token \(history.tokenTotal) · 输入 \(history.ctx) · 缓存读 \(history.cacheRead) · 输出 \(history.aggregate.out)", "Total tokens \(history.tokenTotal) · input \(history.ctx) · cache read \(history.cacheRead) · output \(history.aggregate.out)"))
+    print(L("缓存命中率 ", "Cache hit rate ") + (history.cacheHitRate.map { String(format: "%.2f%%", $0 * 100) } ?? L("查不到：无输入用量", "Unavailable: no input usage")))
     for source in ["Claude", "Codex"] {
-        if let total = history.totals[source] { print("\(source): \(total.tokenTotal) token · \(total.turns) 请求 · \(total.sessions) 会话") }
-        else { print("\(source): 未检测到有效用量记录") }
+        if let total = history.totals[source] { print(L("\(source): \(total.tokenTotal) token · \(total.turns) 请求 · \(total.sessions) 会话", "\(source): \(total.tokenTotal) tokens · \(total.turns) requests · \(total.sessions) sessions")) }
+        else { print(L("\(source): 未检测到有效用量记录", "\(source): no valid usage records")) }
     }
-    print("API 上游 \(history.totals.keys.filter { $0.hasPrefix("API · ") }.count) 个 · 累计差口径 \(history.cumulativeTurns) 次 · 跳过不完整记录 \(history.skippedRecords) 条")
-    print("API 等价成本: " + (history.hasPriceTable ? (history.cost.map { String(format: "%.4f %@", $0, history.priceCurrency) } ?? "未定价") + (history.unpricedModels > 0 ? " · 部分模型未定价" : "") : "未配置价目表"))
-    if !history.error.isEmpty { print("汇总说明：\(history.error)") }
-    print("新增纯函数、Tab 迁移和增量缓存自测通过")
+    print(L("API 上游 \(history.totals.keys.filter { $0.hasPrefix("API · ") }.count) 个 · 累计差口径 \(history.cumulativeTurns) 次 · 跳过不完整记录 \(history.skippedRecords) 条", "API upstreams \(history.totals.keys.filter { $0.hasPrefix("API · ") }.count) · cumulative-delta records \(history.cumulativeTurns) · skipped incomplete records \(history.skippedRecords)"))
+    print(L("API 等价成本: ", "API-equivalent cost: ") + (history.hasPriceTable ? (history.cost.map { String(format: "%.4f %@", $0, history.priceCurrency) } ?? L("未定价", "unpriced")) + (history.unpricedModels > 0 ? L(" · 部分模型未定价", " · some models unpriced") : "") : L("未配置价目表", "price table not configured")))
+    if !history.error.isEmpty { print(L("汇总说明：\(history.error)", "Summary: \(history.error)")) }
+    print(L("新增纯函数、Tab 迁移和增量缓存自测通过", "Pure functions, tab migration, and incremental cache self-tests passed"))
     exit(0)
 }
 

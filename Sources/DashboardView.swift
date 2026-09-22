@@ -184,31 +184,31 @@ public struct DashboardView: View {
             var tokens = ""
             if p.calls > 0 {
                 let models = p.models.prefix(2).joined(separator: " / ") + (p.models.count > 2 ? " …" : "")
-                tokens = "\(models) · 上下文 \(formatTokens(p.ctx)) · 输出 \(formatTokens(p.out))" + (p.ctx > 0 ? String(format: " · 命中 %.0f%%", p.cacheHitRate) : "")
+                tokens = "\(models)" + L(" · 上下文 \(formatTokens(p.ctx)) · 输出 \(formatTokens(p.out))", " · context \(formatTokens(p.ctx)) · output \(formatTokens(p.out))") + (p.ctx > 0 ? String(format: L(" · 命中 %.0f%%", " · %.0f%% hit"), p.cacheHitRate) : "")
             }
             // 上游在真实调用里给了限流头 → 拿来当余量显示（被动，不额外发请求）
             var headerLine = ""
             if let hw = p.headerWindow {
                 let pct = hw.effectivePct(now: nowTS)
-                headerLine = "限流 \(p.headerLabel) 已用 \(pct)%"
-                if let c = Fmt.countdown(to: hw.resetsAt, now: nowTS) { headerLine += " · 重置 \(c)" }
+                headerLine = L("限流 \(p.headerLabel) 已用 \(pct)%", "Rate limit \(p.headerLabel): \(pct)% used")
+                if let c = Fmt.countdown(to: hw.resetsAt, now: nowTS) { headerLine += L(" · 重置 \(c)", " · resets \(c)") }
             }
             let sub: String
             if !headerLine.isEmpty, p.balanceText.isEmpty, p.fiveHour == nil { sub = headerLine }
             else if !p.balanceText.isEmpty { sub = p.balanceText }
-            else if !p.quotaError.isEmpty { sub = "额度: " + String(p.quotaError.prefix(24)) }   // 如"当前用户不存在coding plan"
-            else { sub = p.calls > 0 ? "无额度接口 · 只记调用" : "今日无调用" }
+            else if !p.quotaError.isEmpty { sub = L("额度: ", "Quota: ") + String(p.quotaError.prefix(24)) }   // 如"当前用户不存在coding plan"
+            else { sub = p.calls > 0 ? L("无额度接口 · 只记调用", "No quota API · calls only") : L("今日无调用", "No calls today") }
 
             // 第四行：延迟 + 错误 + 花费，都从记账文件里已有的字段算，没有就不写
             var obs: [String] = []
             if p.p95ms > 0 { obs.append("p50 \(Fmt.ms(p.p50ms)) · p95 \(Fmt.ms(p.p95ms))") }
-            if p.errors > 0 { obs.append(String(format: "%d 错(%.0f%%)", p.errors, p.errorRate) + (p.count429 > 0 ? " 含 \(p.count429) 限流" : "")) }
+            if p.errors > 0 { obs.append(String(format: L("%d 错(%.0f%%)", "%d errors (%.0f%%)"), p.errors, p.errorRate) + (p.count429 > 0 ? L(" 含 \(p.count429) 限流", " incl. \(p.count429) rate-limited") : "")) }
             if let c = p.cost { obs.append(money(c, p.costCurrency)) }
             return DetectedLLMRuntime(
-                name: p.provider, isRunning: nowTS - p.lastTS < 120, tier: p.plan.isEmpty ? "API Key" : p.plan, detail: "\(p.calls) 次",
+                name: p.provider, isRunning: nowTS - p.lastTS < 120, tier: p.plan.isEmpty ? "API Key" : p.plan, detail: L("\(p.calls) 次", "\(p.calls) calls"),
                 fiveHour: p.fiveHour, sevenDay: p.sevenDay, quotaSubtitle: sub,
                 extraLine: tokens, extraLine2: obs.joined(separator: " · "),
-                quotaNote: p.quotaIsEstimate ? "估算 · " + p.estimateNote : "",
+                quotaNote: p.quotaIsEstimate ? L("估算 · ", "Estimated · ") + p.estimateNote : "",
                 platformDetail: apiDetail(p)
             )
         }
@@ -222,45 +222,45 @@ public struct DashboardView: View {
     /// API 上游的详情页：把记账文件能证明的都列出来（延迟分位 / 错误 / 按 key 分账 / 模型）
     private func apiDetail(_ p: APIProviderStatus) -> PlatformDetail {
         var d = PlatformDetail()
-        d.rows.append(("上游主机", p.host))
-        if !p.plan.isEmpty { d.rows.append(("套餐", p.plan)) }
-        d.rows.append(("今日调用", "\(p.calls) 次"))
+        d.rows.append((L("上游主机", "Upstream host"), p.host))
+        if !p.plan.isEmpty { d.rows.append((L("套餐", "Plan"), p.plan)) }
+        d.rows.append((L("今日调用", "Today's calls"), L("\(p.calls) 次", "\(p.calls)")))
         if p.p95ms > 0 {
-            d.rows.append(("延迟 p50 / p95", "\(Fmt.ms(p.p50ms)) / \(Fmt.ms(p.p95ms))"))
-            d.rows.append(("最慢一次", Fmt.ms(p.maxms)))
+            d.rows.append((L("延迟 p50 / p95", "Latency p50 / p95"), "\(Fmt.ms(p.p50ms)) / \(Fmt.ms(p.p95ms))"))
+            d.rows.append((L("最慢一次", "Slowest"), Fmt.ms(p.maxms)))
         }
-        d.rows.append(("错误率", p.calls > 0 ? String(format: "%.1f%%（%d / %d）", p.errorRate, p.errors, p.calls) : "—"))
-        if p.count429 > 0 { d.rows.append(("429 限流", "\(p.count429) 次")) }
+        d.rows.append((L("错误率", "Error rate"), p.calls > 0 ? String(format: L("%.1f%%（%d / %d）", "%.1f%% (%d / %d)"), p.errorRate, p.errors, p.calls) : "—"))
+        if p.count429 > 0 { d.rows.append((L("429 限流", "429 rate-limited"), L("\(p.count429) 次", "\(p.count429)"))) }
         if p.ctx > 0 {
-            d.rows.append(("输入 / 输出", "\(formatTokens(p.ctx)) / \(formatTokens(p.out))"))
-            d.rows.append(("缓存命中", String(format: "%.0f%%（读 %@）", p.cacheHitRate, formatTokens(p.cacheRead))))
+            d.rows.append((L("输入 / 输出", "Input / output"), "\(formatTokens(p.ctx)) / \(formatTokens(p.out))"))
+            d.rows.append((L("缓存命中", "Cache hit rate"), String(format: L("%.0f%%（读 %@）", "%.0f%% (read %@)"), p.cacheHitRate, formatTokens(p.cacheRead))))
         }
         if p.quotaIsEstimate {
-            d.rows.append(("额度口径", "估算：本机记账请求数 ÷ 套餐上限"))
-            d.rows.append(("套餐上限", p.planLimitText))
-            d.rows.append(("估算底数", p.estimateNote))
-            d.rows.append(("注意", "走代理之外的调用算不进来，会偏低"))
+            d.rows.append((L("额度口径", "Quota basis"), L("估算：本机记账请求数 ÷ 套餐上限", "Estimated: locally logged requests ÷ plan limit")))
+            d.rows.append((L("套餐上限", "Plan limit"), p.planLimitText))
+            d.rows.append((L("估算底数", "Estimate basis"), p.estimateNote))
+            d.rows.append((L("注意", "Note"), L("走代理之外的调用算不进来，会偏低", "Calls outside the proxy are not counted; the estimate may be low")))
         }
         if let m = p.monthly {
-            d.rows.append(("月窗口", "\(m.effectivePct(now: nowTS))%" + (Fmt.countdown(to: m.resetsAt, now: nowTS).map { " · 重置 \($0)" } ?? "")))
+            d.rows.append((L("月窗口", "Monthly window"), "\(m.effectivePct(now: nowTS))%" + (Fmt.countdown(to: m.resetsAt, now: nowTS).map { L(" · 重置 \($0)", " · resets \($0)") } ?? "")))
         }
         if let c = p.cost {
-            d.rows.append(("今日花费（估）", money(c, p.costCurrency) + (currentAPI.priceAsOf.isEmpty ? "" : " · 价目表 \(currentAPI.priceAsOf)")))
+            d.rows.append((L("今日花费（估）", "Today's cost (estimated)"), money(c, p.costCurrency) + (currentAPI.priceAsOf.isEmpty ? "" : L(" · 价目表 \(currentAPI.priceAsOf)", " · price table \(currentAPI.priceAsOf)"))))
         } else if p.calls > 0 {
-            d.rows.append(("今日花费", currentAPI.hasPriceTable ? "该模型不在价目表里" : "未配置价目表"))
+            d.rows.append((L("今日花费", "Today's cost"), currentAPI.hasPriceTable ? L("该模型不在价目表里", "Model not in price table") : L("未配置价目表", "Price table not configured")))
         }
         if let hw = p.headerWindow {
-            var v = "已用 \(hw.effectivePct(now: nowTS))%（按 \(p.headerLabel)）"
-            if let c = Fmt.countdown(to: hw.resetsAt, now: nowTS) { v += " · 重置 \(c)" }
-            if let age = hw.ageSeconds(now: nowTS) { v += " · 取自 \(Fmt.agoShort(age))的调用" }
-            d.rows.append(("限流余量（响应头）", v))
+            var v = L("已用 \(hw.effectivePct(now: nowTS))%（按 \(p.headerLabel)）", "\(hw.effectivePct(now: nowTS))% used (from \(p.headerLabel))")
+            if let c = Fmt.countdown(to: hw.resetsAt, now: nowTS) { v += L(" · 重置 \(c)", " · resets \(c)") }
+            if let age = hw.ageSeconds(now: nowTS) { v += L(" · 取自 \(Fmt.agoShort(age))的调用", " · from a call \(Fmt.agoShort(age))") }
+            d.rows.append((L("限流余量（响应头）", "Rate-limit headroom (response headers)"), v))
         }
-        if !p.models.isEmpty { d.rows.append(("模型", p.models.joined(separator: ", "))) }
-        if !p.balanceText.isEmpty { d.rows.append(("余额", p.balanceText)) }
-        if !p.quotaError.isEmpty { d.rows.append(("额度接口", p.quotaError)) }
+        if !p.models.isEmpty { d.rows.append((L("模型", "Models"), p.models.joined(separator: ", "))) }
+        if !p.balanceText.isEmpty { d.rows.append((L("余额", "Balance"), p.balanceText)) }
+        if !p.quotaError.isEmpty { d.rows.append((L("额度接口", "Quota API"), p.quotaError)) }
         for k in p.keys {
-            var v = "\(k.calls) 次"
-            if k.errors > 0 { v += " · \(k.errors) 错" }
+            var v = L("\(k.calls) 次", "\(k.calls)")
+            if k.errors > 0 { v += L(" · \(k.errors) 错", " · \(k.errors) errors") }
             if k.ctx > 0 { v += " · \(formatTokens(k.ctx))→\(formatTokens(k.out))" }
             if let c = k.cost { v += " · " + money(c, p.costCurrency) }
             d.rows.append(("key \(k.fingerprint)", v))
@@ -281,9 +281,13 @@ public struct DashboardView: View {
 
     private func tierColor(_ tier: String) -> Color {
         if tier.contains("API") { return .blue }
-        if tier.contains("本地") { return .purple }
-        if tier.isEmpty || tier.contains("未登录") { return .secondary }
+        if tier.contains(L("本地", "Local")) { return .purple }
+        if tier.isEmpty || tier.contains(L("未登录", "Not signed in")) { return .secondary }
         return .green
+    }
+
+    private func secondaryPoolDisplay(_ name: String) -> String {
+        name == "三方" ? L("三方", "Third-party") : name
     }
 
     /// 0% 绿 → 100% 红 连续渐变。平方让曲线后段变色更快：
@@ -321,15 +325,7 @@ public struct DashboardView: View {
         return groups
     }
 
-    private func formatTokens(_ count: Int64) -> String {
-        if count >= 100_000_000 {
-            return String(format: "%.2f 亿", Double(count) / 100_000_000.0)
-        } else if count >= 10_000 {
-            return String(format: "%.1f 万", Double(count) / 10_000.0)
-        } else {
-            return "\(count)"
-        }
-    }
+    private func formatTokens(_ count: Int64) -> String { Fmt.tokens(count) }
 
     private func formatTokensInt(_ count: Int) -> String {
         formatTokens(Int64(count))
@@ -372,7 +368,7 @@ public struct DashboardView: View {
                     Button(action: { withAnimation(.easeInOut(duration: 0.15)) { drillDown = nil } }) {
                         HStack(spacing: 3) {
                             Image(systemName: "chevron.left").font(.system(size: 9, weight: .bold))
-                            Text("返回").font(.system(size: 10, weight: .medium))
+                            Text(L("返回", "Back")).font(.system(size: 10, weight: .medium))
                         }
                         .foregroundColor(.blue)
                     }
@@ -382,17 +378,17 @@ public struct DashboardView: View {
                     Spacer()
                 } else {
                     Picker("", selection: $tab) {
-                        Text("订阅").tag(0)
+                        Text(L("订阅", "Plans")).tag(0)
                         Text("API").tag(1)
-                        Text("统计").tag(2)
-                        Text("网络").tag(3)
-                        Text("系统").tag(4)
+                        Text(L("统计", "Stats")).tag(2)
+                        Text(L("网络", "Network")).tag(3)
+                        Text(L("系统", "System")).tag(4)
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .controlSize(.small)
                     .frame(width: 222)
-                    .help("也可以在面板上用触控板左右滑动切换")
+                    .help(L("也可以在面板上用触控板左右滑动切换", "Swipe left or right on the trackpad to switch tabs"))
 
                     Spacer()
 
@@ -405,7 +401,7 @@ public struct DashboardView: View {
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("重新扫描")
+                .help(L("重新扫描", "Rescan"))
             }
 
             SwipeScroll(
@@ -454,11 +450,11 @@ public struct DashboardView: View {
         let active = currentLLMs.filter { $0.isRunning }.count
         let calls = currentAPI.providers.reduce(0) { $0 + $1.calls }
         switch tab {
-        case 1: return "今日 \(calls) 次"
-        case 2: return history.isScanning ? "汇总中" : "\(history.activeDays) 活跃天"
-        case 3: return "\(network.aiExits.filter { !$0.isGemini && !$0.ip.isEmpty && $0.error.isEmpty }.count)/4 出口"
-        case 4: return "\(active) 平台活跃"
-        default: return "内存可用 \(report.freePercentage)%"
+        case 1: return L("今日 \(calls) 次", "\(calls) today")
+        case 2: return history.isScanning ? L("汇总中", "Summarizing") : L("\(history.activeDays) 活跃天", "\(history.activeDays) active days")
+        case 3: return L("\(network.aiExits.filter { !$0.isGemini && !$0.ip.isEmpty && $0.error.isEmpty }.count)/4 出口", "\(network.aiExits.filter { !$0.isGemini && !$0.ip.isEmpty && $0.error.isEmpty }.count)/4 egress")
+        case 4: return L("\(active) 平台活跃", "\(active) platforms active")
+        default: return L("内存可用 \(report.freePercentage)%", "\(report.freePercentage)% memory free")
         }
     }
 
@@ -474,25 +470,25 @@ public struct DashboardView: View {
     private var hardwareSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("系统物理硬件")
+                Text(L("系统物理硬件", "Hardware"))
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.secondary)
                 Spacer()
-                Text("发热: \(report.thermalStateString)")
+                Text(L("发热: \(report.thermalStateString)", "Thermal: \(report.thermalStateString)"))
                     .font(.system(size: 9.5, weight: .medium))
-                    .foregroundColor(report.thermalStateString == "正常" ? .secondary : .orange)
+                    .foregroundColor(report.thermalStateString == L("正常", "Normal") ? .secondary : .orange)
             }
 
             // 内存
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("内存")
+                    Text(L("内存", "Memory"))
                         .font(.system(size: 11, weight: .medium))
                     Spacer()
-                    Text(String(format: "已用 %.1f / %.1f GB", report.usedMemoryGB, report.totalMemoryGB))
+                    Text(String(format: L("已用 %.1f / %.1f GB", "%.1f / %.1f GB used"), report.usedMemoryGB, report.totalMemoryGB))
                         .font(.system(size: 10.5))
                         .foregroundColor(.secondary)
-                    Text("\(report.freePercentage)% 可用")
+                    Text(L("\(report.freePercentage)% 可用", "\(report.freePercentage)% free"))
                         .font(.system(size: 9.5, weight: .bold))
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1.5)
@@ -521,7 +517,7 @@ public struct DashboardView: View {
                     let swapStr = report.swapUsedGB > 1.0
                         ? String(format: "%.2f GB", report.swapUsedGB)
                         : "\(Int(report.swapUsedGB * 1024)) MB"
-                    Text("压缩池 \(compStr)")
+                    Text(L("压缩池 \(compStr)", "Compressed \(compStr)"))
                     Text("·")
                     Text("Swap \(swapStr)")
                 }
@@ -532,10 +528,10 @@ public struct DashboardView: View {
             // 磁盘
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text("磁盘")
+                    Text(L("磁盘", "Disk"))
                         .font(.system(size: 11, weight: .medium))
                     Spacer()
-                    Text(String(format: "剩余 %.1f GB / %.1f GB (%.0f%%)", report.diskFreeGB, report.diskTotalGB, report.diskFreePct))
+                    Text(String(format: L("剩余 %.1f GB / %.1f GB (%.0f%%)", "%.1f / %.1f GB free (%.0f%%)"), report.diskFreeGB, report.diskTotalGB, report.diskFreePct))
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                 }
@@ -554,7 +550,7 @@ public struct DashboardView: View {
                 .frame(height: 5)
 
                 HStack {
-                    Text(String(format: "CPU 负载: %.2f (1m) · %.2f (5m)", report.loadAvg1m, report.loadAvg5m))
+                    Text(String(format: L("CPU 负载: %.2f (1m) · %.2f (5m)", "CPU load: %.2f (1m) · %.2f (5m)"), report.loadAvg1m, report.loadAvg5m))
                     Spacer()
                 }
                 .font(.system(size: 9))
@@ -569,9 +565,9 @@ public struct DashboardView: View {
                     ? String(format: "%.1f GB", report.activeMCPTotalMemMB / 1024.0)
                     : "\(Int(report.activeMCPTotalMemMB)) MB"
                 HStack(spacing: 3) {
-                    Text("活跃 MCP:")
+                    Text(L("活跃 MCP:", "Active MCP:"))
                         .foregroundColor(.secondary)
-                    Text("\(report.activeMCPProcessCount) 进程 (\(mcpMemStr))")
+                    Text(L("\(report.activeMCPProcessCount) 进程 (\(mcpMemStr))", "\(report.activeMCPProcessCount) processes (\(mcpMemStr))"))
                         .foregroundColor(.primary)
                 }
                 Spacer()
@@ -579,7 +575,7 @@ public struct DashboardView: View {
                     ? String(format: "%.1f GB", report.npxCacheMB / 1024.0)
                     : "\(Int(report.npxCacheMB)) MB"
                 HStack(spacing: 3) {
-                    Text("NPX 缓存:")
+                    Text(L("NPX 缓存:", "NPX cache:"))
                         .foregroundColor(.secondary)
                     Text(npxStr)
                         .foregroundColor(.primary)
@@ -589,14 +585,14 @@ public struct DashboardView: View {
 
             if report.totalOrphanCount > 0 {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("断链孤儿 \(report.totalOrphanCount) 个 · \(Int(report.totalOrphanMemMB)) MB")
+                    Text(L("断链孤儿 \(report.totalOrphanCount) 个 · \(Int(report.totalOrphanMemMB)) MB", "\(report.totalOrphanCount) orphaned processes · \(Int(report.totalOrphanMemMB)) MB"))
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(.orange)
                     ForEach(report.orphanedGroups) { g in
                         HStack {
                             Text(g.serviceName)
                             Spacer()
-                            Text("\(g.processCount) 个 · \(Int(g.totalMemMB)) MB")
+                            Text(L("\(g.processCount) 个 · \(Int(g.totalMemMB)) MB", "\(g.processCount) · \(Int(g.totalMemMB)) MB"))
                         }
                         .font(.system(size: 8.5))
                         .foregroundColor(.secondary)
@@ -614,7 +610,7 @@ public struct DashboardView: View {
     private var aiSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("AI 运行与大模型")
+                Text(L("AI 运行与大模型", "AI runtimes & models"))
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.secondary)
                 Spacer()
@@ -623,7 +619,7 @@ public struct DashboardView: View {
                     Circle()
                         .fill(activeCount > 0 ? Color.green : Color.secondary.opacity(0.4))
                         .frame(width: 5, height: 5)
-                    Text("\(activeCount) 个平台活跃")
+                    Text(L("\(activeCount) 个平台活跃", "\(activeCount) platforms active"))
                         .font(.system(size: 9.5, weight: .medium))
                         .foregroundColor(.secondary)
                 }
@@ -651,14 +647,14 @@ public struct DashboardView: View {
             // 今日 Token 与 Prompt Cache
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
-                    Text("今日上下文 · Claude Code")
+                    Text(L("今日上下文 · Claude Code", "Today's context · Claude Code"))
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.secondary)
                     Text(formatTokens(currentTokens.todayContext))
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundColor(.primary)
                     Spacer()
-                    Text(String(format: "缓存率 %.1f%%", currentTokens.todayCacheHitRate))
+                    Text(String(format: L("缓存率 %.1f%%", "Cache %.1f%%"), currentTokens.todayCacheHitRate))
                         .font(.system(size: 9.5, weight: .semibold))
                         .foregroundColor(currentTokens.todayCacheHitRate >= 80 ? .green : .secondary)
                         .padding(.horizontal, 5)
@@ -681,11 +677,11 @@ public struct DashboardView: View {
                 .frame(height: 4)
 
                 HStack {
-                    Text("总生成 \(formatTokens(currentTokens.todayOutput)) (思考 \(formatTokens(currentTokens.todayThinking)))")
+                    Text(L("总生成 \(formatTokens(currentTokens.todayOutput)) (思考 \(formatTokens(currentTokens.todayThinking)))", "Output \(formatTokens(currentTokens.todayOutput)) (reasoning \(formatTokens(currentTokens.todayThinking)))"))
                         .font(.system(size: 8.5))
                         .foregroundColor(.secondary)
                     Spacer()
-                    Text("今日 \(currentTokens.todayTurns) 次调用")
+                    Text(L("今日 \(currentTokens.todayTurns) 次调用", "\(currentTokens.todayTurns) calls today"))
                         .font(.system(size: 8.5, weight: .medium))
                         .foregroundColor(.secondary)
                 }
@@ -698,7 +694,7 @@ public struct DashboardView: View {
                     let maxCtx = max(1, projects.first?.ctx ?? 1)
                     VStack(alignment: .leading, spacing: 2.5) {
                         HStack {
-                            Text("按项目")
+                            Text(L("按项目", "By project"))
                                 .font(.system(size: 8, weight: .bold))
                                 .foregroundColor(.secondary)
                             Spacer()
@@ -706,7 +702,7 @@ public struct DashboardView: View {
                                 Button(action: {
                                     if expandedCards.contains("__proj") { expandedCards.remove("__proj") } else { expandedCards.insert("__proj") }
                                 }) {
-                                    Text(expandedCards.contains("__proj") ? "收起" : "另 \(projects.count - 3) 个")
+                                    Text(expandedCards.contains("__proj") ? L("收起", "Collapse") : L("另 \(projects.count - 3) 个", "+\(projects.count - 3) more"))
                                         .font(.system(size: 7.5))
                                         .foregroundColor(.blue)
                                 }
@@ -729,7 +725,7 @@ public struct DashboardView: View {
                                     .font(.system(size: 7.5))
                                     .foregroundColor(.secondary.opacity(0.8))
                                     .fixedSize()
-                                Text("\(p.turns) 轮")
+                                Text(L("\(p.turns) 轮", "\(p.turns) turns"))
                                     .font(.system(size: 7.5))
                                     .foregroundColor(.secondary)
                                     .fixedSize()
@@ -750,23 +746,23 @@ public struct DashboardView: View {
                                     .foregroundColor(.secondary)
                                     .frame(width: 66, alignment: .leading)
                                 if u.hasTokens {
-                                    Text("上下文 \(formatTokens(u.ctx))")
+                                    Text(L("上下文 \(formatTokens(u.ctx))", "context \(formatTokens(u.ctx))"))
                                     Text("·")
-                                    Text("输出 \(formatTokens(u.out))")
+                                    Text(L("输出 \(formatTokens(u.out))", "output \(formatTokens(u.out))"))
                                     if u.think > 0 {
                                         Text("·")
-                                        Text("思考 \(formatTokens(u.think))")
+                                        Text(L("思考 \(formatTokens(u.think))", "reasoning \(formatTokens(u.think))"))
                                     }
                                     Spacer(minLength: 2)
                                     if u.ctx > 0 {
-                                        Text(String(format: "命中 %.0f%%", u.cacheHitRate))
+                                        Text(String(format: L("命中 %.0f%%", "%.0f%% hit"), u.cacheHitRate))
                                             .foregroundColor(u.cacheHitRate >= 80 ? .green : .secondary)
                                             .fixedSize()
                                     }
-                                    Text("\(u.requests) 次")
+                                    Text(L("\(u.requests) 次", "\(u.requests)"))
                                         .fixedSize()
                                 } else {
-                                    Text(u.turns > 0 ? "\(u.turns) 轮 · \(u.note)" : u.note)
+                                    Text(u.turns > 0 ? L("\(u.turns) 轮 · \(u.note)", "\(u.turns) turns · \(u.note)") : u.note)
                                         .foregroundColor(.secondary.opacity(0.8))
                                         .lineLimit(1)
                                     Spacer(minLength: 2)
@@ -792,14 +788,14 @@ public struct DashboardView: View {
                                 .scaleEffect(hasLive && pulseAnim ? 1.25 : 0.85)
                                 .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulseAnim)
 
-                            Text(hasLive ? "实时捕获" : "最近交互")
+                            Text(hasLive ? L("实时捕获", "Live") : L("最近交互", "Recent activity"))
                                 .font(.system(size: 9.5, weight: .bold))
                                 .foregroundColor(hasLive ? .primary : .secondary)
                         }
 
                         Spacer()
 
-                        Text("最新 \(currentInteractions.count) 轮")
+                        Text(L("最新 \(currentInteractions.count) 轮", "Latest \(currentInteractions.count)"))
                             .font(.system(size: 8))
                             .foregroundColor(.secondary)
                     }
@@ -825,7 +821,7 @@ public struct DashboardView: View {
     private var apiSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("API Key 调用")
+                Text(L("API Key 调用", "API key calls"))
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.secondary)
                 Spacer()
@@ -834,7 +830,7 @@ public struct DashboardView: View {
                     Circle()
                         .fill(api.running ? Color.green : (api.installed ? Color.orange : Color.secondary.opacity(0.4)))
                         .frame(width: 5, height: 5)
-                    Text(api.running ? "代理运行中 · :\(api.port)" : (api.installed ? "代理已安装，未在跑" : "代理未安装"))
+                    Text(api.running ? L("代理运行中 · :\(api.port)", "Proxy running · :\(api.port)") : (api.installed ? L("代理已安装，未在跑", "Proxy installed, not running") : L("代理未安装", "Proxy not installed")))
                         .font(.system(size: 9.5, weight: .medium))
                         .foregroundColor(api.installed && !api.running ? .orange : .secondary)
                 }
@@ -842,8 +838,8 @@ public struct DashboardView: View {
 
             if apiCards.isEmpty {
                 Text(currentAPI.installed
-                     ? "还没有调用经过代理。把别名里的 BASE_URL 前面加上 http://127.0.0.1:\(currentAPI.port)/ 即可记账。"
-                     : "菜单里「安装 API 记账代理」，再把别名里的 BASE_URL 前面加上 http://127.0.0.1:\(currentAPI.port)/ 即可记账。")
+                     ? L("还没有调用经过代理。把别名里的 BASE_URL 前面加上 http://127.0.0.1:\(currentAPI.port)/ 即可记账。", "No calls have passed through the proxy. Prefix the alias BASE_URL with http://127.0.0.1:\(currentAPI.port)/ to log them.")
+                     : L("菜单里「安装 API 记账代理」，再把别名里的 BASE_URL 前面加上 http://127.0.0.1:\(currentAPI.port)/ 即可记账。", "Choose “Install API accounting proxy” in the menu, then prefix the alias BASE_URL with http://127.0.0.1:\(currentAPI.port)/ to log calls."))
                     .font(.system(size: 8.5))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -864,10 +860,10 @@ public struct DashboardView: View {
                     Image(systemName: cov.directCount > 0 ? "exclamationmark.triangle" : "checkmark.seal")
                         .font(.system(size: 8))
                         .foregroundColor(cov.directCount > 0 ? .orange : .green)
-                    Text("记账覆盖 \(cov.proxiedCount)/\(cov.entries.count) 处")
+                    Text(L("记账覆盖 \(cov.proxiedCount)/\(cov.entries.count) 处", "Accounting coverage \(cov.proxiedCount)/\(cov.entries.count)"))
                         .font(.system(size: 9, weight: .medium))
                     if cov.directCount > 0 {
-                        Text("· 未接：" + cov.entries.filter { !$0.proxied }.prefix(3).map { $0.host }.joined(separator: " "))
+                        Text(L("· 未接：", "· direct: ") + cov.entries.filter { !$0.proxied }.prefix(3).map { $0.host }.joined(separator: " "))
                             .font(.system(size: 8))
                             .foregroundColor(.orange)
                             .lineLimit(1)
@@ -880,22 +876,22 @@ public struct DashboardView: View {
             // 代理控制
             HStack(spacing: 8) {
                 if currentAPI.installed {
-                    Text("代理前缀 http://127.0.0.1:\(currentAPI.port)/")
+                    Text(L("代理前缀 http://127.0.0.1:\(currentAPI.port)/", "Proxy prefix http://127.0.0.1:\(currentAPI.port)/"))
                         .font(.system(size: 8.5))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                     Spacer()
-                    Button(action: actions.copyProxyPrefix) { Text("复制").font(.system(size: 9)) }
+                    Button(action: actions.copyProxyPrefix) { Text(L("复制", "Copy")).font(.system(size: 9)) }
                         .buttonStyle(.plain).foregroundColor(.blue)
-                    Button(action: actions.uninstallProxy) { Text("停止并卸载").font(.system(size: 9)) }
+                    Button(action: actions.uninstallProxy) { Text(L("停止并卸载", "Stop & uninstall")).font(.system(size: 9)) }
                         .buttonStyle(.plain).foregroundColor(.secondary)
                 } else {
-                    Text("代理未安装（LaunchAgent，登录自启，不依赖本 App）")
+                    Text(L("代理未安装（LaunchAgent，登录自启，不依赖本 App）", "Proxy not installed (LaunchAgent, starts at login, independent of this app)"))
                         .font(.system(size: 8.5))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                     Spacer()
-                    Button(action: actions.installProxy) { Text("安装并启动").font(.system(size: 9, weight: .semibold)) }
+                    Button(action: actions.installProxy) { Text(L("安装并启动", "Install & start")).font(.system(size: 9, weight: .semibold)) }
                         .buttonStyle(.plain).foregroundColor(.blue)
                 }
             }
@@ -910,11 +906,11 @@ public struct DashboardView: View {
     private var diskSection: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Text("磁盘占用")
+                Text(L("磁盘占用", "Disk usage"))
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.secondary)
                 Spacer()
-                Text(String(format: "AI 工具目录合计 %.1f GB", report.diskTotalAIGB))
+                Text(String(format: L("AI 工具目录合计 %.1f GB", "AI tool directories %.1f GB"), report.diskTotalAIGB))
                     .font(.system(size: 9.5))
                     .foregroundColor(.secondary)
             }
@@ -929,7 +925,7 @@ public struct DashboardView: View {
                         .lineLimit(1)
                     Spacer()
                     if d.purgeable, d.oldMB >= 1 {
-                        Text(String(format: "旧 %.0f MB", d.oldMB))
+                        Text(String(format: L("旧 %.0f MB", "%.0f MB old"), d.oldMB))
                             .font(.system(size: 8.5, weight: .semibold))
                             .foregroundColor(.orange)
                     }
@@ -945,10 +941,10 @@ public struct DashboardView: View {
                 Button(action: actions.purgeLogs) {
                     HStack {
                         Image(systemName: "trash").font(.system(size: 9))
-                        Text(String(format: "清理 %d 天前的会话记录 · %@", ProcessScanner.shared.logRetentionDays, sizeText(report.purgeableMB)))
+                        Text(String(format: L("清理 %d 天前的会话记录 · %@", "Clean sessions older than %d days · %@"), ProcessScanner.shared.logRetentionDays, sizeText(report.purgeableMB)))
                             .font(.system(size: 10, weight: .semibold))
                         Spacer()
-                        Text("移入废纸篓").font(.system(size: 8)).foregroundColor(.secondary)
+                        Text(L("移入废纸篓", "Move to Trash")).font(.system(size: 8)).foregroundColor(.secondary)
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
@@ -959,7 +955,7 @@ public struct DashboardView: View {
                 .buttonStyle(.plain)
             }
 
-            Text("🔒 = 只统计不清理（运行库 / 插件 / 你的产物）")
+            Text(L("🔒 = 只统计不清理（运行库 / 插件 / 你的产物）", "🔒 = report only (runtime / plugins / your assets)"))
                 .font(.system(size: 8))
                 .foregroundColor(.secondary)
         }
@@ -976,16 +972,16 @@ public struct DashboardView: View {
 
     private var settingsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("设置")
+            Text(L("设置", "Settings"))
                 .font(.system(size: 11, weight: .bold))
                 .foregroundColor(.secondary)
-            settingRow("定时自动清理", detail: "每 30 分钟 + 睡醒后 + 内存 ≥85% 时静默巡检",
+            settingRow(L("定时自动清理", "Scheduled cleanup"), detail: L("每 30 分钟 + 睡醒后 + 内存 ≥85% 时静默巡检", "Quiet check every 30m, after wake, and when memory ≥85%"),
                        isOn: Binding(get: { autoCleanOn }, set: { autoCleanOn = $0; actions.setAutoClean($0) }))
-            settingRow("登录时自动启动", detail: "随 macOS 登录常驻菜单栏",
+            settingRow(L("登录时自动启动", "Launch at login"), detail: L("随 macOS 登录常驻菜单栏", "Stay in the menu bar after macOS login"),
                        isOn: Binding(get: { launchAtLoginOn }, set: { launchAtLoginOn = $0; actions.setLaunchAtLogin($0) }))
-            settingRow("阈值通知", detail: "额度 80/95%、内存 85/93%、磁盘 90/96% 越线时提醒一次",
+            settingRow(L("阈值通知", "Threshold alerts"), detail: L("额度 80/95%、内存 85/93%、磁盘 90/96% 越线时提醒一次", "Alert once when quota 80/95%, memory 85/93%, or disk 90/96% thresholds are crossed"),
                        isOn: Binding(get: { notifyOn }, set: { notifyOn = $0; actions.setThresholdNotify($0) }))
-            settingRow("出口变化通知", detail: "AI 出口 IP 或国家变化时提醒，每家 10 分钟最多一次",
+            settingRow(L("出口变化通知", "Egress change alerts"), detail: L("AI 出口 IP 或国家变化时提醒，每家 10 分钟最多一次", "Alert when an AI egress IP or country changes; once per provider every 10m"),
                        isOn: Binding(get: { exitNotifyOn }, set: { exitNotifyOn = $0; actions.setExitChangeNotify($0) }))
         }
         .padding(10)
@@ -1017,7 +1013,7 @@ public struct DashboardView: View {
                 if report.totalOrphanCount > 0 {
                     Button(action: actions.cleanOrphans) {
                         HStack {
-                            Text("清理断链 AI 残留进程")
+                            Text(L("清理断链 AI 残留进程", "Reap orphaned AI processes"))
                                 .font(.system(size: 10.5, weight: .medium))
                                 .foregroundColor(.primary)
                             Spacer()
@@ -1043,7 +1039,7 @@ public struct DashboardView: View {
                 if report.npxCacheMB > 100 {
                     Button(action: actions.cleanNPX) {
                         HStack {
-                            Text("清理 NPX 临时工具缓存")
+                            Text(L("清理 NPX 临时工具缓存", "Clean NPX tool cache"))
                                 .font(.system(size: 10.5, weight: .medium))
                                 .foregroundColor(.primary)
                             Spacer()
@@ -1067,7 +1063,7 @@ public struct DashboardView: View {
                 Circle()
                     .fill(Color.green)
                     .frame(width: 5, height: 5)
-                Text("AI 与系统运行环境健康，暂无残留垃圾")
+                Text(L("AI 与系统运行环境健康，暂无残留垃圾", "AI and system runtime are healthy; no leftover processes"))
                     .font(.system(size: 9.5))
                     .foregroundColor(.secondary)
                 Spacer()
@@ -1083,7 +1079,7 @@ public struct DashboardView: View {
     private func interactionRow(for item: InteractionRecord) -> some View {
         let isLive = isRecentInteraction(timestamp: item.timestamp)
         let secs = secondsAgo(item.timestamp)
-        let timeAgo = secs < 8 ? "刚刚 · 实时" : Fmt.ago(secs)
+        let timeAgo = secs < 8 ? L("刚刚 · 实时", "just now · live") : Fmt.ago(secs)
 
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
@@ -1116,7 +1112,7 @@ public struct DashboardView: View {
                         .foregroundColor(item.cacheHitRate >= 80 ? .green : .primary)
                         .lineLimit(1)
                         .fixedSize()
-                    Text("命中")
+                    Text(L("命中", "hit"))
                         .font(.system(size: 7))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
@@ -1125,12 +1121,12 @@ public struct DashboardView: View {
             }
 
             HStack(spacing: 3.5) {
-                Text("上下文 \(formatTokensInt(item.contextTokens))")
+                Text(L("上下文 \(formatTokensInt(item.contextTokens))", "context \(formatTokensInt(item.contextTokens))"))
                 Text("·")
-                Text("输出 \(formatTokensInt(item.outputTokens))")
+                Text(L("输出 \(formatTokensInt(item.outputTokens))", "output \(formatTokensInt(item.outputTokens))"))
                 if item.thinkingTokens > 0 {
                     Text("·")
-                    Text("思考 \(formatTokensInt(item.thinkingTokens))")
+                    Text(L("思考 \(formatTokensInt(item.thinkingTokens))", "reasoning \(formatTokensInt(item.thinkingTokens))"))
                 }
             }
             .font(.system(size: 8))
@@ -1161,7 +1157,7 @@ public struct DashboardView: View {
                 .lineLimit(1)
                 .fixedSize()
             if pct >= 100 {
-                Text("耗尽")
+                Text(L("耗尽", "Exhausted"))
                     .font(.system(size: 7, weight: .semibold))
                     .foregroundColor(.red.opacity(0.85))
                     .lineLimit(1)
@@ -1180,7 +1176,7 @@ public struct DashboardView: View {
 
     /// 脚注内容：各窗口重置倒计时 + 按池分别标数据新鲜度（>5 分钟才标）
     private func footerParts(for llm: DetectedLLMRuntime) -> (resets: String, stale: String) {
-        let sp = llm.secondaryPoolName
+        let sp = secondaryPoolDisplay(llm.secondaryPoolName)
         let windows: [(String, QuotaWindow?)] = [
             ("5H", llm.fiveHour), ("W", llm.sevenDay), ("\(sp)5H", llm.secondaryFiveHour), ("\(sp)W", llm.secondarySevenDay)
         ]
@@ -1190,20 +1186,20 @@ public struct DashboardView: View {
         }
         var stale: [String] = []
         if let a = [llm.fiveHour, llm.sevenDay].compactMap({ $0?.ageSeconds(now: nowTS) }).max(), a > 300 {
-            stale.append("记录于 \(Fmt.agoShort(a))")
+            stale.append(L("记录于 \(Fmt.agoShort(a))", "recorded \(Fmt.agoShort(a))"))
         }
         if let a = [llm.secondaryFiveHour, llm.secondarySevenDay].compactMap({ $0?.ageSeconds(now: nowTS) }).max(), a > 300 {
-            stale.append("\(sp) 记录于 \(Fmt.agoShort(a))")
+            stale.append(L("\(sp) 记录于 \(Fmt.agoShort(a))", "\(sp) recorded \(Fmt.agoShort(a))"))
         }
-        return (resets.isEmpty ? "" : "重置 " + resets.joined(separator: " · "), stale.joined(separator: " · "))
+        return (resets.isEmpty ? "" : L("重置 ", "Resets ") + resets.joined(separator: " · "), stale.joined(separator: " · "))
     }
 
     /// 「按当前节奏会不会超额」——挑最吃紧的那个窗口，一直显示，不只是超额时才提示。
     /// 超额的窗口优先；都不超额就显示离满最近的那个。
     private func burnLine(for llm: DetectedLLMRuntime) -> (text: String, over: Bool)? {
-        let wins: [(String, QuotaWindow?)] = [("5h", llm.fiveHour), ("周", llm.sevenDay),
-                                              ("\(llm.secondaryPoolName)5h", llm.secondaryFiveHour),
-                                              ("\(llm.secondaryPoolName)周", llm.secondarySevenDay)]
+        let wins: [(String, QuotaWindow?)] = [("5h", llm.fiveHour), (L("周", "weekly"), llm.sevenDay),
+                                              ("\(secondaryPoolDisplay(llm.secondaryPoolName))5h", llm.secondaryFiveHour),
+                                              ("\(secondaryPoolDisplay(llm.secondaryPoolName))\(L("周", "weekly"))", llm.secondarySevenDay)]
         var best: (label: String, burn: Burn)? = nil
         for (label, w) in wins {
             guard let w = w, let b = w.burn(now: nowTS) else { continue }
@@ -1211,9 +1207,9 @@ public struct DashboardView: View {
         }
         guard let (label, b) = best else { return nil }
         if let at = b.exhaustAt, let eta = Fmt.countdown(to: at, now: nowTS) {
-            return ("\(label) 按当前节奏 \(eta) 后打满（重置时 \(b.projectedAtReset)%）", true)
+            return (L("\(label) 按当前节奏 \(eta) 后打满（重置时 \(b.projectedAtReset)%）", "\(label) at current rate: full in \(eta) (\(b.projectedAtReset)% at reset)"), true)
         }
-        return ("\(label) 按当前节奏，到重置 \(b.projectedAtReset)%", false)
+        return (L("\(label) 按当前节奏，到重置 \(b.projectedAtReset)%", "\(label) at current rate: \(b.projectedAtReset)% at reset"), false)
     }
 
     /// 第三行脚注：节奏预测 + 重置/陈旧提示，可换两行，不截断
@@ -1264,7 +1260,7 @@ public struct DashboardView: View {
                     Button(action: {
                         if expanded { expandedCards.remove(llm.id) } else { expandedCards.insert(llm.id) }
                     }) {
-                        Text(expanded ? "收起 ▴" : "另 \(sorted.count - 3) 个 ▾")
+                        Text(expanded ? L("收起 ▴", "Collapse ▴") : L("另 \(sorted.count - 3) 个 ▾", "+\(sorted.count - 3) more ▾"))
                             .font(.system(size: 7.5))
                             .foregroundColor(.blue)
                     }
@@ -1331,7 +1327,7 @@ public struct DashboardView: View {
                         .lineLimit(1)
                 }
             } else {
-                Text(llm.quotaSubtitle.isEmpty ? (llm.isRunning ? "服务就绪" : "未启动") : llm.quotaSubtitle)
+                Text(llm.quotaSubtitle.isEmpty ? (llm.isRunning ? L("服务就绪", "Ready") : L("未启动", "Not running")) : llm.quotaSubtitle)
                     .font(.system(size: 8))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -1345,7 +1341,7 @@ public struct DashboardView: View {
             if !llm.extraLine2.isEmpty {
                 Text(llm.extraLine2)
                     .font(.system(size: 7.5))
-                    .foregroundColor(llm.extraLine2.contains("错") ? .orange : .secondary)
+                    .foregroundColor(llm.extraLine2.contains(L("错", "errors")) ? .orange : .secondary)
                     .lineLimit(1)
             }
             subQuotaRows(for: llm)
@@ -1384,7 +1380,7 @@ public struct DashboardView: View {
 
                 if llm.secondaryFiveHour != nil || llm.secondarySevenDay != nil {
                     HStack(spacing: 3) {
-                        Text(llm.secondaryPoolName)
+                        Text(secondaryPoolDisplay(llm.secondaryPoolName))
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(.secondary)
                             .lineLimit(1)
@@ -1433,7 +1429,7 @@ public struct DashboardView: View {
                     Text("\(pct)")
                         .font(.system(size: 21, weight: .bold, design: .rounded))
                         .foregroundColor(pct > 80 ? color : .primary)
-                    Text("% 已用")
+                    Text(L("% 已用", "% used"))
                         .font(.system(size: 7))
                         .foregroundColor(.secondary)
                 }
@@ -1443,12 +1439,12 @@ public struct DashboardView: View {
             Text(label)
                 .font(.system(size: 9.5, weight: .semibold))
             if let c = Fmt.countdown(to: win.resetsAt, now: nowTS) {
-                Text("重置 \(c)")
+                Text(L("重置 \(c)", "resets \(c)"))
                     .font(.system(size: 8))
                     .foregroundColor(.secondary)
             }
             if let a = win.ageSeconds(now: nowTS) {
-                Text("记录于 \(Fmt.agoShort(a))")
+                Text(L("记录于 \(Fmt.agoShort(a))", "recorded \(Fmt.agoShort(a))"))
                     .font(.system(size: 7.5))
                     .foregroundColor(a > 300 ? .orange : .secondary.opacity(0.75))
             }
@@ -1478,44 +1474,44 @@ public struct DashboardView: View {
             card {
                 HStack(alignment: .top, spacing: 0) {
                     if let fh = llm.fiveHour {
-                        quotaRing(label: "5 小时窗口", win: fh).frame(maxWidth: .infinity)
+                        quotaRing(label: L("5 小时窗口", "5h window"), win: fh).frame(maxWidth: .infinity)
                     }
                     if let sd = llm.sevenDay {
-                        quotaRing(label: llm.name == "Grok" ? "周窗口" : "7 天窗口", win: sd).frame(maxWidth: .infinity)
+                        quotaRing(label: llm.name == "Grok" ? L("周窗口", "weekly window") : L("7 天窗口", "7d window"), win: sd).frame(maxWidth: .infinity)
                     }
                     if let sf = llm.secondaryFiveHour {
-                        quotaRing(label: "\(llm.secondaryPoolName) 5H", win: sf).frame(maxWidth: .infinity)
+                        quotaRing(label: "\(secondaryPoolDisplay(llm.secondaryPoolName)) 5H", win: sf).frame(maxWidth: .infinity)
                     }
                     if let sw = llm.secondarySevenDay {
-                        quotaRing(label: "\(llm.secondaryPoolName)池 周", win: sw).frame(maxWidth: .infinity)
+                        quotaRing(label: L("\(secondaryPoolDisplay(llm.secondaryPoolName))池 周", "\(secondaryPoolDisplay(llm.secondaryPoolName)) weekly"), win: sw).frame(maxWidth: .infinity)
                     }
                 }
             }
         }
 
         // 1.5 燃烧速率（窗口长度已知才算：本窗口迄今的平均速度）
-        let burns: [(String, Burn)] = [("5 小时", llm.fiveHour), ("周", llm.sevenDay),
-                                       ("\(llm.secondaryPoolName) 5 小时", llm.secondaryFiveHour),
-                                       ("\(llm.secondaryPoolName) 周", llm.secondarySevenDay)]
+        let burns: [(String, Burn)] = [(L("5 小时", "5h"), llm.fiveHour), (L("周", "weekly"), llm.sevenDay),
+                                       ("\(secondaryPoolDisplay(llm.secondaryPoolName)) \(L("5 小时", "5h"))", llm.secondaryFiveHour),
+                                       ("\(secondaryPoolDisplay(llm.secondaryPoolName)) \(L("周", "weekly"))", llm.secondarySevenDay)]
             .compactMap { label, w in w?.burn(now: nowTS).map { (label, $0) } }
         if !burns.isEmpty {
             card {
-                sectionTitle("燃烧速率（优先按近期节奏）")
+                sectionTitle(L("燃烧速率（优先按近期节奏）", "Burn rate (recent pace first)"))
                 ForEach(Array(burns.enumerated()), id: \.offset) { _, item in
                     let b = item.1
                     HStack(spacing: 4) {
                         Text(item.0).font(.system(size: 9)).foregroundColor(.secondary).lineLimit(1)
                         Spacer(minLength: 4)
-                        Text(String(format: "%.1f%%/小时", b.pctPerHour))
+                        Text(String(format: L("%.1f%%/小时", "%.1f%%/h"), b.pctPerHour))
                             .font(.system(size: 9, weight: .semibold))
                         Text(b.basis)
                             .font(.system(size: 7.5))
                             .foregroundColor(b.isRecent ? .blue.opacity(0.85) : .secondary)
-                        Text("→ 重置时 \(b.projectedAtReset)%")
+                        Text(L("→ 重置时 \(b.projectedAtReset)%", "→ \(b.projectedAtReset)% at reset"))
                             .font(.system(size: 8.5))
                             .foregroundColor(b.projectedAtReset >= 100 ? .orange : .secondary)
                         if let at = b.exhaustAt, let eta = Fmt.countdown(to: at, now: nowTS) {
-                            Text("· \(eta) 后打满")
+                            Text(L("· \(eta) 后打满", "· full in \(eta)"))
                                 .font(.system(size: 8.5, weight: .semibold))
                                 .foregroundColor(.orange)
                                 .fixedSize()
@@ -1528,7 +1524,7 @@ public struct DashboardView: View {
         // 2. 其他额度桶（Codex 的 Spark 等）
         if !d.extraPools.isEmpty {
             card {
-                sectionTitle("其他额度桶（主卡未显示）")
+                sectionTitle(L("其他额度桶（主卡未显示）", "Other quota pools (not on main card)"))
                 ForEach(Array(d.extraPools.enumerated()), id: \.offset) { _, item in
                     HStack(spacing: 4) {
                         Text(item.0).font(.system(size: 9)).foregroundColor(.secondary).lineLimit(1)
@@ -1548,7 +1544,7 @@ public struct DashboardView: View {
         if !d.rows.isEmpty {
             card {
                 HStack {
-                    sectionTitle("订阅与账号")
+                    sectionTitle(L("订阅与账号", "Subscription & account"))
                     Spacer()
                     if !llm.tier.isEmpty {
                         Text(llm.tier)
@@ -1579,9 +1575,9 @@ public struct DashboardView: View {
         if !d.sessions.isEmpty {
             card {
                 HStack {
-                    sectionTitle("活跃会话")
+                    sectionTitle(L("活跃会话", "Active sessions"))
                     Spacer()
-                    Text("\(d.sessions.count) 个").font(.system(size: 8)).foregroundColor(.secondary)
+                    Text(L("\(d.sessions.count) 个", "\(d.sessions.count)" )).font(.system(size: 8)).foregroundColor(.secondary)
                 }
                 ForEach(d.sessions) { se in
                     VStack(alignment: .leading, spacing: 1) {
@@ -1592,7 +1588,7 @@ public struct DashboardView: View {
                                 .lineLimit(1)
                                 .truncationMode(.head)
                             Spacer(minLength: 4)
-                            Text(Fmt.agoShort(se.startedAgo).replacingOccurrences(of: "前", with: ""))
+                            Text(Fmt.agoShort(se.startedAgo).replacingOccurrences(of: L("前", " ago"), with: ""))
                                 .font(.system(size: 8)).foregroundColor(.secondary).fixedSize()
                             Text(String(format: "%.0f MB", se.memMB))
                                 .font(.system(size: 8)).foregroundColor(.secondary).fixedSize()
@@ -1609,16 +1605,16 @@ public struct DashboardView: View {
         // 5. 今日用量（该平台自己的）
         if let u = currentCLI.first(where: { $0.name.hasPrefix(llm.name) || llm.name.hasPrefix($0.name.replacingOccurrences(of: " Code", with: "")) }) {
             card {
-                sectionTitle("今日用量")
+                sectionTitle(L("今日用量", "Today's usage"))
                 if u.hasTokens {
                     HStack(spacing: 0) {
-                        detailMetric("上下文", formatTokens(u.ctx))
-                        detailMetric("输出", formatTokens(u.out))
-                        detailMetric("思考", formatTokens(u.think))
-                        detailMetric("调用", "\(u.requests)")
+                        detailMetric(L("上下文", "Context"), formatTokens(u.ctx))
+                        detailMetric(L("输出", "Output"), formatTokens(u.out))
+                        detailMetric(L("思考", "Reasoning"), formatTokens(u.think))
+                        detailMetric(L("调用", "Calls"), "\(u.requests)")
                     }
                     HStack(spacing: 4) {
-                        Text("缓存命中").font(.system(size: 8)).foregroundColor(.secondary)
+                        Text(L("缓存命中", "Cache hit")).font(.system(size: 8)).foregroundColor(.secondary)
                         GeometryReader { geo in
                             ZStack(alignment: .leading) {
                                 RoundedRectangle(cornerRadius: 2).fill(Color.secondary.opacity(0.18)).frame(height: 5)
@@ -1631,7 +1627,7 @@ public struct DashboardView: View {
                             .font(.system(size: 8, weight: .bold)).fixedSize()
                     }
                 } else {
-                    Text(u.turns > 0 ? "\(u.turns) 轮 · \(u.note)" : u.note)
+                    Text(u.turns > 0 ? L("\(u.turns) 轮 · \(u.note)", "\(u.turns) turns · \(u.note)") : u.note)
                         .font(.system(size: 8.5)).foregroundColor(.secondary)
                 }
             }
@@ -1640,7 +1636,7 @@ public struct DashboardView: View {
         // 6. 数据来源
         if !d.sourceFiles.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
-                sectionTitle("数据来源（只读本机文件）")
+                sectionTitle(L("数据来源（只读本机文件）", "Data sources (local files only)"))
                 ForEach(d.sourceFiles, id: \.self) { f in
                     Text(f).font(.system(size: 7.5, design: .monospaced)).foregroundColor(.secondary.opacity(0.8)).lineLimit(1)
                 }

@@ -16,7 +16,7 @@ public struct StatsTabView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if snapshot.isScanning || snapshot.capturedAt == 0 {
-                Text("正在汇总历史（已处理 \(snapshot.processedFiles)/\(snapshot.totalFiles) 个文件）…")
+                Text(L("正在汇总历史（已处理 \(snapshot.processedFiles)/\(snapshot.totalFiles) 个文件）…", "Summarizing history (\(snapshot.processedFiles)/\(snapshot.totalFiles) files) …"))
                     .font(.system(size: 9)).foregroundColor(.secondary)
             }
             if !snapshot.error.isEmpty {
@@ -26,14 +26,14 @@ public struct StatsTabView: View {
             heatmap
             distribution
             providers
-            Text("总数与热力图只算 CLI 日志；经记账代理的 API 调用多半已在 CLI 日志里，单列不重复计入。会话数按不同日志文件计，思考包含在输出中。")
+            Text(L("总数与热力图只算 CLI 日志；经记账代理的 API 调用多半已在 CLI 日志里，单列不重复计入。会话数按不同日志文件计，思考包含在输出中。", "Totals and the heatmap use CLI logs only. Most API calls through the accounting proxy are already in CLI logs, so they are not counted twice. Sessions count distinct log files; reasoning is included in output."))
                 .font(.system(size: 8)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             if snapshot.cumulativeTurns > 0 {
-                Text("\(snapshot.cumulativeTurns) 次旧格式 Codex 记录按累计差归桶（首条以 0 为基线），跨日精度受事件时间限制。")
+                Text(L("\(snapshot.cumulativeTurns) 次旧格式 Codex 记录按累计差归桶（首条以 0 为基线），跨日精度受事件时间限制。", "\(snapshot.cumulativeTurns) legacy Codex records bucketed by cumulative deltas (first record is the zero baseline); cross-day precision depends on event timestamps."))
                     .font(.system(size: 8)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if snapshot.skippedRecords > 0 {
-                Text("\(snapshot.skippedRecords) 条记录缺少有效时间或用量，未计入。")
+                Text(L("\(snapshot.skippedRecords) 条记录缺少有效时间或用量，未计入。", "\(snapshot.skippedRecords) records lacked valid timestamps or usage and were skipped."))
                     .font(.system(size: 8)).foregroundColor(.orange)
             }
         }
@@ -43,12 +43,12 @@ public struct StatsTabView: View {
     private var metrics: some View {
         VStack(alignment: .leading, spacing: 6) {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
-                metric("累计 token", hasRecords ? Fmt.tokens(snapshot.tokenTotal) : "未检测到", "输入（含缓存）+ 输出")
-                metric("API 等价成本", costText(snapshot.cost), snapshot.hasPriceTable && snapshot.unpricedModels > 0 ? "部分模型未定价" : "仅按本地价目表计算")
-                metric("活跃天数", hasRecords ? "\(snapshot.activeDays)" : "未检测到", "有 token 用量的日历日")
-                metric("缓存命中率", snapshot.cacheHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "查不到", "缓存读取 / 全部输入")
+                metric(L("累计 token", "Total tokens"), hasRecords ? Fmt.tokens(snapshot.tokenTotal) : L("未检测到", "Unavailable"), L("输入（含缓存）+ 输出", "input (including cache) + output"))
+                metric(L("API 等价成本", "API-equivalent cost"), costText(snapshot.cost), snapshot.hasPriceTable && snapshot.unpricedModels > 0 ? L("部分模型未定价", "Some models unpriced") : L("仅按本地价目表计算", "Local price table only"))
+                metric(L("活跃天数", "Active days"), hasRecords ? "\(snapshot.activeDays)" : L("未检测到", "Unavailable"), L("有 token 用量的日历日", "Calendar days with token usage"))
+                metric(L("缓存命中率", "Cache hit rate"), snapshot.cacheHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? L("查不到", "Unavailable"), L("缓存读取 / 全部输入", "cache reads / all input"))
             }
-            Text(snapshot.earliestDate.map { "自 \($0) 起统计" } ?? "尚无带有效时间与用量的本地记录")
+            Text(snapshot.earliestDate.map { L("自 \($0) 起统计", "Since \($0)") } ?? L("尚无带有效时间与用量的本地记录", "No local records with valid timestamps and usage"))
                 .font(.system(size: 8)).foregroundColor(.secondary)
         }
     }
@@ -64,8 +64,8 @@ public struct StatsTabView: View {
     }
 
     private func costText(_ value: Double?) -> String {
-        guard snapshot.hasPriceTable else { return "未配置价目表" }
-        guard let value else { return "未定价" }
+        guard snapshot.hasPriceTable else { return L("未配置价目表", "Price table not configured") }
+        guard let value else { return L("未定价", "Unpriced") }
         return String(format: "%.2f %@", value, snapshot.priceCurrency)
     }
 
@@ -74,7 +74,7 @@ public struct StatsTabView: View {
         let keys = dates.map { UsageHistory.dayKey(timestamp: $0.timeIntervalSince1970) }
         let values = keys.map { snapshot.dailyTokens[$0] ?? 0 }
         let grades = UsageHistory.levels(values)
-        return section("每日强度 · 近 42 天") {
+        return section(L("每日强度 · 近 42 天", "Daily intensity · last 42 days")) {
             HStack(alignment: .top, spacing: 5) {
                 VStack(spacing: 4) {
                     ForEach(0..<7, id: \.self) { row in
@@ -96,30 +96,30 @@ public struct StatsTabView: View {
             HStack {
                 Text(maxDayText)
                 Spacer()
-                Text("少")
+                Text(L("少", "Less"))
                 ForEach(1...5, id: \.self) { level in
                     RoundedRectangle(cornerRadius: 1).fill(Color.green.opacity(0.15 + Double(level) * 0.15)).frame(width: 7, height: 7)
                 }
-                Text("多")
+                Text(L("多", "More"))
             }.font(.system(size: 8)).foregroundColor(.secondary)
         }
     }
 
     private var maxDayText: String {
         let visible = Set(days.map { UsageHistory.dayKey(timestamp: $0.timeIntervalSince1970) })
-        guard let day = snapshot.dailyTokens.filter({ $0.value > 0 && visible.contains($0.key) }).sorted(by: { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }).first else { return "最多的一天：未检测到" }
+        guard let day = snapshot.dailyTokens.filter({ $0.value > 0 && visible.contains($0.key) }).sorted(by: { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }).first else { return L("最多的一天：未检测到", "Top day: unavailable") }
         let parts = day.key.split(separator: "-").compactMap { Int($0) }
-        return parts.count == 3 ? "最多的一天：\(parts[1])月\(parts[2])日" : "最多的一天：\(day.key)"
+        return parts.count == 3 ? L("最多的一天：\(parts[1])月\(parts[2])日", "Top day: \(parts[1])-\(parts[2])") : L("最多的一天：\(day.key)", "Top day: \(day.key)")
     }
     private func weekday(_ date: Date) -> String {
-        ["日", "一", "二", "三", "四", "五", "六"][Calendar.current.component(.weekday, from: date) - 1]
+        [L("日", "Sun"), L("一", "Mon"), L("二", "Tue"), L("三", "Wed"), L("四", "Thu"), L("五", "Fri"), L("六", "Sat")][Calendar.current.component(.weekday, from: date) - 1]
     }
 
     private var distribution: some View {
         let all = snapshot.aggregate
-        let parts: [(String, Int64, Color)] = [("新输入", all.newInput, .blue), ("输出", all.out, .orange), ("缓存", all.cacheTotal, .green)]
+        let parts: [(String, Int64, Color)] = [(L("新输入", "New input"), all.newInput, .blue), (L("输出", "Output"), all.out, .orange), (L("缓存", "Cache"), all.cacheTotal, .green)]
         let total = max(1, all.newInput + all.out + all.cacheTotal)
-        return section("token 分布") {
+        return section(L("token 分布", "Token distribution")) {
             GeometryReader { geo in
                 HStack(spacing: 0) {
                     ForEach(parts, id: \.0) { part in
@@ -132,8 +132,8 @@ public struct StatsTabView: View {
                     Circle().fill(part.2).frame(width: 5, height: 5)
                     Text(part.0)
                     Spacer()
-                    Text(hasRecords ? Fmt.tokens(part.1) : "未检测到")
-                    if part.0 == "输出", all.think > 0 { Text("含思考 \(Fmt.tokens(all.think))") }
+                    Text(hasRecords ? Fmt.tokens(part.1) : L("未检测到", "Unavailable"))
+                    if part.0 == L("输出", "Output"), all.think > 0 { Text(L("含思考 \(Fmt.tokens(all.think))", "includes \(Fmt.tokens(all.think)) reasoning")) }
                 }.font(.system(size: 9)).foregroundColor(.secondary)
             }
         }
@@ -146,13 +146,13 @@ public struct StatsTabView: View {
                     providerCard(source, totals)
                 } else {
                     section(source) {
-                        Text(snapshot.sourceNotes[source] ?? (snapshot.isScanning ? "正在汇总…" : "查不到：未检测到有效用量记录"))
+                        Text(snapshot.sourceNotes[source] ?? (snapshot.isScanning ? L("正在汇总…", "Summarizing …") : L("查不到：未检测到有效用量记录", "Unavailable: no valid usage records")))
                             .font(.system(size: 9)).foregroundColor(.secondary)
                     }
                 }
             }
             section("Grok / Gemini") {
-                Text("本地无 token 统计").font(.system(size: 9)).foregroundColor(.secondary)
+                Text(L("本地无 token 统计", "No local token stats")).font(.system(size: 9)).foregroundColor(.secondary)
             }
         }
     }
@@ -163,16 +163,16 @@ public struct StatsTabView: View {
             HStack {
                 Text("\(Fmt.tokens(totals.tokenTotal)) token").font(.system(size: 12, weight: .semibold))
                 Spacer()
-                Text(UsageHistory.isProxySource(source) ? "不计入总数" : String(format: "%.1f%%", ratio * 100))
+                Text(UsageHistory.isProxySource(source) ? L("不计入总数", "Not included in total") : String(format: "%.1f%%", ratio * 100))
                     .font(.system(size: 9)).foregroundColor(.secondary)
             }
             HStack {
-                Text("\(totals.sessions) 会话 · \(totals.turns) 请求")
+                Text(L("\(totals.sessions) 会话 · \(totals.turns) 请求", "\(totals.sessions) sessions · \(totals.turns) requests"))
                 Spacer()
                 Text(costText(snapshot.costBySource[source]))
             }.font(.system(size: 9)).foregroundColor(.secondary)
             if snapshot.hasPriceTable, snapshot.unpricedBySource[source, default: 0] > 0 {
-                Text("部分模型未定价").font(.system(size: 8)).foregroundColor(.orange)
+                Text(L("部分模型未定价", "Some models unpriced")).font(.system(size: 8)).foregroundColor(.orange)
             }
             if let note = snapshot.sourceNotes[source] { Text(note).font(.system(size: 8)).foregroundColor(.secondary) }
             GeometryReader { geo in

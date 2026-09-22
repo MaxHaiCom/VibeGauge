@@ -236,7 +236,7 @@ public final class UsageHistory {
         result.processedFiles = paths.count
         result.totalFiles = paths.count
         for source in ["Claude", "Codex"] where !paths.contains(where: { $0.source == source }) {
-            result.sourceNotes[source] = result.totals[source] == nil ? "未检测到本机会话日志" : "日志已移除，显示已缓存历史"
+            result.sourceNotes[source] = result.totals[source] == nil ? L("未检测到本机会话日志", "No local session logs found") : L("日志已移除，显示已缓存历史", "Logs removed; showing cached history")
         }
         cache.days = result.days
         cache.updatedAt = Date().timeIntervalSince1970
@@ -262,9 +262,9 @@ public final class UsageHistory {
             let root = URL(fileURLWithPath: "\(home)/\(suffix)")
             guard fm.fileExists(atPath: root.path) else { continue }
             guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], errorHandler: { _, _ in
-                self.errors.insert("部分日志目录无法读取，汇总可能不完整")
+                self.errors.insert(L("部分日志目录无法读取，汇总可能不完整", "Some log directories could not be read; summary may be incomplete"))
                 return true
-            }) else { errors.insert("日志目录无法读取"); continue }
+            }) else { errors.insert(L("日志目录无法读取", "Log directory unavailable")); continue }
             for case let url as URL in en where url.pathExtension == "jsonl" {
                 guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
                       values.isRegularFile == true, values.isSymbolicLink != true else { continue }
@@ -295,7 +295,7 @@ public final class UsageHistory {
             state.size = size; state.mtime = mod.timeIntervalSince1970
             cache.files[path] = state
             dirty = true
-        } catch { errors.insert("部分日志无法读取，保留上次汇总并等待重试") }
+        } catch { errors.insert(L("部分日志无法读取，保留上次汇总并等待重试", "Some logs could not be read; keeping the previous summary and retrying")) }
     }
 
     private func readNewLines(_ fh: FileHandle, state: inout FileState, size: UInt64) throws {
@@ -389,9 +389,9 @@ public final class UsageHistory {
         guard FileManager.default.fileExists(atPath: cachePath) else { return }
         do {
             let decoded = try JSONDecoder().decode(DiskCache.self, from: Data(contentsOf: URL(fileURLWithPath: cachePath)))
-            guard decoded.version == 3 else { errors.insert("历史缓存版本变化，已重新汇总"); return }
+            guard decoded.version == 3 else { errors.insert(L("历史缓存版本变化，已重新汇总", "History cache version changed; rebuilding summary")); return }
             cache = decoded
-        } catch { errors.insert("历史缓存无法读取，已重新汇总") }
+        } catch { errors.insert(L("历史缓存无法读取，已重新汇总", "History cache could not be read; rebuilding summary")) }
     }
     private func saveCache() {
         do {
@@ -400,14 +400,14 @@ public final class UsageHistory {
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.deletingLastPathComponent().path)
             try JSONEncoder().encode(cache).write(to: url, options: [.atomic])
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cachePath)
-        } catch { errors.insert("历史缓存保存失败，重启后需重新汇总") }
+        } catch { errors.insert(L("历史缓存保存失败，重启后需重新汇总", "History cache could not be saved; restart will rebuild the summary")) }
     }
     private func readJSON(_ path: String) -> [String: Any]? {
         guard FileManager.default.fileExists(atPath: path) else { return nil }
         do {
             guard let json = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path))) as? [String: Any] else { throw CocoaError(.fileReadCorruptFile) }
             return json
-        } catch { errors.insert("价目表无法读取，未计入成本"); return nil }
+        } catch { errors.insert(L("价目表无法读取，未计入成本", "Price table could not be read; cost omitted")); return nil }
     }
     private func publishProgress(_ processed: Int, total: Int) {
         lock.lock()
@@ -474,8 +474,15 @@ public final class UsageHistory {
 
 public extension Fmt {
     static func tokens(_ count: Int64) -> String {
-        if count >= 100_000_000 { return String(format: "%.2f 亿", Double(count) / 100_000_000) }
-        if count >= 10_000 { return String(format: "%.1f 万", Double(count) / 10_000) }
+        let d = Double(count)
+        if isChineseUI {
+            if count >= 100_000_000 { return String(format: "%.2f 亿", d / 1e8) }
+            if count >= 10_000 { return String(format: "%.1f 万", d / 1e4) }
+        } else {
+            if count >= 1_000_000_000 { return String(format: "%.2fB", d / 1e9) }
+            if count >= 1_000_000 { return String(format: "%.1fM", d / 1e6) }
+            if count >= 10_000 { return String(format: "%.1fk", d / 1e3) }
+        }
         return String(count)
     }
 }
