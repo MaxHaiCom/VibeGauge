@@ -73,7 +73,14 @@ public final class UsageHistory {
         public var cumulativeTurns = 0
         public var skippedRecords = 0
         public var capturedAt: TimeInterval = 0
+        /// 近 7 天每个钟点（本地时区）的调用次数，键 = 来源（Claude / Codex / API · 厂商），"*" = 全部 CLI
+        public var hourCounts: [String: [Double]] = [:]
         public var tokenTotal: Int64 { aggregate.tokenTotal }
+        /// 某个平台的作息画像：优先用它自己的日志，没有（Gemini / Grok 等）就用你整体的作息
+        public func activityProfile(for name: String) -> ActivityProfile? {
+            (hourCounts[name] ?? hourCounts["API · " + name]).flatMap(ActivityProfile.init(hourCounts:))
+                ?? hourCounts["*"].flatMap(ActivityProfile.init(hourCounts:))
+        }
         public var ctx: Int64 { aggregate.ctx }
         public var cacheRead: Int64 { aggregate.cacheRead }
         public var cacheHitRate: Double? { ctx > 0 ? Double(cacheRead) / Double(ctx) : nil }
@@ -440,6 +447,11 @@ public final class UsageHistory {
             result.totals[record.source, default: Totals()].add(record)
             if record.cumulative { result.cumulativeTurns += 1 }
         }
+        let now = Date().timeIntervalSince1970
+        for (source, recs) in Dictionary(grouping: records, by: \.source) {
+            result.hourCounts[source] = ActivityProfile.hourCounts(recs.map(\.timestamp), now: now)
+        }
+        result.hourCounts["*"] = ActivityProfile.hourCounts(records.filter { !Self.isProxySource($0.source) }.map(\.timestamp), now: now)
         for source in result.totals.keys { result.totals[source]?.sessions = sessions[source]?.count ?? 0 }
         for day in buckets.keys {
             for source in buckets[day]!.keys { buckets[day]?[source]?.sessions = dailySessions[day]?[source]?.count ?? 0 }

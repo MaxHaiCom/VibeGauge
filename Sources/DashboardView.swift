@@ -1201,15 +1201,17 @@ public struct DashboardView: View {
                                               ("\(secondaryPoolDisplay(llm.secondaryPoolName))5h", llm.secondaryFiveHour),
                                               ("\(secondaryPoolDisplay(llm.secondaryPoolName))\(L("周", "weekly"))", llm.secondarySevenDay)]
         var best: (label: String, burn: Burn)? = nil
+        let profile = history.activityProfile(for: llm.name)
         for (label, w) in wins {
-            guard let w = w, let b = w.burn(now: nowTS) else { continue }
+            guard let w = w, let b = w.burn(now: nowTS, profile: profile) else { continue }
             if best == nil || b.projectedAtReset > best!.burn.projectedAtReset { best = (label, b) }
         }
         guard let (label, b) = best else { return nil }
+        let pace = b.perActiveDay == nil ? L("按当前节奏", "at current rate") : L("按作息", "at your usual pace")
         if let at = b.exhaustAt, let eta = Fmt.countdown(to: at, now: nowTS) {
-            return (L("\(label) 按当前节奏 \(eta) 后打满（重置时 \(b.projectedAtReset)%）", "\(label) at current rate: full in \(eta) (\(b.projectedAtReset)% at reset)"), true)
+            return (L("\(label) \(pace) \(eta) 后打满（重置时 \(b.projectedAtReset)%）", "\(label) \(pace): full in \(eta) (\(b.projectedAtReset)% at reset)"), true)
         }
-        return (L("\(label) 按当前节奏，到重置 \(b.projectedAtReset)%", "\(label) at current rate: \(b.projectedAtReset)% at reset"), false)
+        return (L("\(label) \(pace)，到重置 \(b.projectedAtReset)%", "\(label) \(pace): \(b.projectedAtReset)% at reset"), false)
     }
 
     /// 第三行脚注：节奏预测 + 重置/陈旧提示，可换两行，不截断
@@ -1489,20 +1491,22 @@ public struct DashboardView: View {
             }
         }
 
-        // 1.5 燃烧速率（窗口长度已知才算：本窗口迄今的平均速度）
+        // 1.5 燃烧速率（窗口长度已知才算）：5h 看近期节奏，周这类长窗口按近 7 天作息
+        let profile = history.activityProfile(for: llm.name)
         let burns: [(String, Burn)] = [(L("5 小时", "5h"), llm.fiveHour), (L("周", "weekly"), llm.sevenDay),
                                        ("\(secondaryPoolDisplay(llm.secondaryPoolName)) \(L("5 小时", "5h"))", llm.secondaryFiveHour),
                                        ("\(secondaryPoolDisplay(llm.secondaryPoolName)) \(L("周", "weekly"))", llm.secondarySevenDay)]
-            .compactMap { label, w in w?.burn(now: nowTS).map { (label, $0) } }
+            .compactMap { label, w in w?.burn(now: nowTS, profile: profile).map { (label, $0) } }
         if !burns.isEmpty {
             card {
-                sectionTitle(L("燃烧速率（优先按近期节奏）", "Burn rate (recent pace first)"))
+                sectionTitle(L("燃烧速率（5h 看近期节奏 · 周额度按作息）", "Burn rate (5h: recent pace · weekly: usage pattern)"))
                 ForEach(Array(burns.enumerated()), id: \.offset) { _, item in
                     let b = item.1
                     HStack(spacing: 4) {
                         Text(item.0).font(.system(size: 9)).foregroundColor(.secondary).lineLimit(1)
                         Spacer(minLength: 4)
-                        Text(String(format: L("%.1f%%/小时", "%.1f%%/h"), b.pctPerHour))
+                        Text(b.perActiveDay.map { String(format: L("%.1f%%/活跃天", "%.1f%%/day"), $0) }
+                             ?? String(format: L("%.1f%%/小时", "%.1f%%/h"), b.pctPerHour))
                             .font(.system(size: 9, weight: .semibold))
                         Text(b.basis)
                             .font(.system(size: 7.5))
@@ -1517,6 +1521,11 @@ public struct DashboardView: View {
                                 .fixedSize()
                         }
                     }
+                }
+                if let profile, burns.contains(where: { $0.1.perActiveDay != nil }) {
+                    Text(L("周额度按近 7 天作息推算：常用 \(profile.activeHoursText)，其余钟点几乎不计；速度按每活跃天",
+                           "Weekly forecast follows your last 7 days: usual hours \(profile.activeHoursText), other hours barely count; rate per active day"))
+                        .font(.system(size: 8)).foregroundColor(.secondary)
                 }
             }
         }

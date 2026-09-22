@@ -62,6 +62,7 @@ When using autonomous coding agents like **Claude Code**, **OpenAI Codex**, **Go
   - **Gemini / Antigravity**: Tracks official and 3rd-party quota pools with respective reset dates.
   - **Grok**: Reads weekly credit usage and billing cycle reset boundaries.
   - **Local Model Probing**: Detects running Ollama / LM Studio instances and active models.
+  - **Forecast that knows you sleep**: Weekly quotas are projected from *your* last 7 days of usage — which hours you actually code (from local CLI logs) and how much you used last cycle — so a busy evening isn't extrapolated through the night. 5-hour windows use the recent pace.
 - 📈 **Today's Token Analytics & Prompt Cache ROI**:
   - Aggregated daily stats: hundreds of millions in context tokens, output tokens, and thinking/reasoning tokens.
   - Real-time Prompt Cache hit rate calculations (e.g. 97.4% hit rate).

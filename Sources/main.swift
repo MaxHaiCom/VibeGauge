@@ -196,6 +196,89 @@ if CommandLine.arguments.contains("--selftest") {
         precondition(early.burn(now: now)?.isRecent == true)
     }
 
+    // 按作息推算（周窗口）：只在 10 点到次日 2 点用，睡觉的 8 小时几乎不算
+    do {
+        let utc = TimeZone(identifier: "UTC")!
+        let day0 = 1_789_948_800.0                      // 某天 UTC 0 点
+        func hourOf(_ t: TimeInterval) -> Int { Int(t.truncatingRemainder(dividingBy: 86400) / 3600) }
+        var counts = [Double](repeating: 0, count: 24)
+        for h in [0, 1] + Array(10...23) { counts[h] = 10 }
+        let p = ActivityProfile(hourCounts: counts)!
+        precondition(abs(p.share.reduce(0, +) - 1) < 1e-9)
+        precondition(abs(p.activeDays(from: day0, to: day0 + 86400, timeZone: utc) - 1) < 1e-9, "整一天 = 1 个活跃天")
+        let night = p.activeDays(from: day0 + 2 * 3600, to: day0 + 10 * 3600, timeZone: utc)
+        precondition(night < 0.04, "睡觉的 8 小时不到 0.04 个活跃天，实际 \(night)")
+        precondition(p.activeHoursText == L("10–02 点", "10–02"), "实际 \(p.activeHoursText)")
+        precondition(ActivityProfile(hourCounts: [Double](repeating: 10, count: 24))!.activeHoursText == L("全天", "all day"))
+        var few = [Double](repeating: 0, count: 24); few[9] = 40; few[10] = 40
+        precondition(ActivityProfile(hourCounts: few) == nil, "只有 2 个钟点有记录 → 不画像")
+        precondition(ActivityProfile(hourCounts: counts.map { $0 / 10 }) == nil, "近 7 天不足 30 次 → 不画像")
+        let hc = ActivityProfile.hourCounts([day0 + 10 * 3600 + 5, day0 + 23 * 3600, day0 - 8 * 86400], now: day0 + 86400, timeZone: utc)
+        precondition(hc[10] == 1 && hc[23] == 1 && hc.reduce(0, +) == 2, "8 天前那条不算")
+
+        // day0 10 点起的周窗口；第 3 天凌晨 2 点（刚睡）已用 45%，睡到 10 点用量没变
+        let reset = day0 + 10 * 3600 + 7 * 86400
+        let w = QuotaWindow(usedPct: 45, resetsAt: reset, capturedAt: day0, windowSeconds: 7 * 86400)
+        let atSleep = day0 + 3 * 86400 + 2 * 3600, wake = atSleep + 8 * 3600
+        let s1 = w.burn(now: atSleep, profile: p, timeZone: utc)!, s2 = w.burn(now: wake, profile: p, timeZone: utc)!
+        precondition(s1.perActiveDay != nil && w.burn(now: atSleep)!.perActiveDay == nil)
+        precondition(abs(s1.projectedAtReset - s2.projectedAtReset) <= 2, "睡一觉不该改变预测：\(s1.projectedAtReset) vs \(s2.projectedAtReset)")
+        let o1 = w.burn(now: atSleep)!.projectedAtReset, o2 = w.burn(now: wake)!.projectedAtReset
+        precondition(o1 - o2 > 10, "旧算法把整晚当在用，同样用量两个时刻差 \(o1 - o2)")
+        // 用得猛会打满：打满时刻必须落在常用时段，不会算在睡觉时
+        let heavy = QuotaWindow(usedPct: 60, resetsAt: reset, capturedAt: day0, windowSeconds: 7 * 86400)
+        let hb = heavy.burn(now: atSleep, profile: p, timeZone: utc)!
+        precondition(hb.projectedAtReset > 100 && hb.exhaustAt! < reset, "实际 \(hb.projectedAtReset)")
+        precondition(counts[hourOf(hb.exhaustAt!)] > 0, "打满时刻 \(hourOf(hb.exhaustAt!)) 点不在常用时段")
+
+        // 刚重置 1 小时就用了 5%：没有上周期 → 样本不够不推算；有上周期 70% → 先信上周期，不会外推出几百
+        var fresh = QuotaWindow(usedPct: 5, resetsAt: reset, capturedAt: day0, windowSeconds: 7 * 86400)
+        let justAfter = day0 + 11 * 3600
+        precondition(fresh.burn(now: justAfter, profile: p, timeZone: utc) == nil)
+        precondition(fresh.burn(now: justAfter)!.projectedAtReset > 500, "旧算法：1 小时 5% × 167 小时")
+        fresh.lastCyclePct = 70
+        let fb = fresh.burn(now: justAfter, profile: p, timeZone: utc)!
+        precondition((70...120).contains(fb.projectedAtReset), "有上周期兜底，实际 \(fb.projectedAtReset)")
+        precondition(fb.basis == L("作息 · 上周期 70%", "pattern · last 70%"))
+        // 非整点夏令时（查塔姆群岛 02:45 跳 03:45）：与逐 30 秒积分对照
+        let chatham = TimeZone(identifier: "Pacific/Chatham")!
+        if let dst = chatham.nextDaylightSavingTimeTransition(after: Date(timeIntervalSince1970: day0))?.timeIntervalSince1970 {
+            var spiky = [Double](repeating: 0, count: 24); spiky[1] = 100; spiky[2] = 100; spiky[10] = 100
+            let sp = ActivityProfile(hourCounts: spiky)!
+            func share(_ t: TimeInterval) -> Double {
+                let local = t + Double(chatham.secondsFromGMT(for: Date(timeIntervalSince1970: t)))
+                return sp.share[(Int((local / 3600).rounded(.down)) % 24 + 24) % 24]
+            }
+            let a = dst - 20 * 3600, b = dst + 20 * 3600
+            let brute = stride(from: a, to: b, by: 30).reduce(0.0) { $0 + share($1) * 30 / 3600 }
+            let fast = sp.activeDays(from: a, to: b, timeZone: chatham)
+            precondition(abs(fast - brute) < 0.002, "跨夏令时积分 \(fast) vs 逐秒 \(brute)")
+            var used = 0.0, bruteAt = b
+            for t in stride(from: a, to: b, by: 30) { used += 100 * share(t) * 30 / 3600; if used >= 60 { bruteAt = t; break } }
+            let at = sp.exhaustTime(from: a, limit: b, need: 60, perDay: 100, timeZone: chatham)!
+            precondition(abs(at - bruteAt) < 120, "跨夏令时打满时刻差 \(at - bruteAt) 秒")
+        }
+        // 5h 窗口不受作息影响
+        let five = QuotaWindow(usedPct: 20, resetsAt: now + 4 * 3600, capturedAt: now, windowSeconds: 5 * 3600)
+        precondition(five.burn(now: now, profile: p) == five.burn(now: now))
+
+        // 上周期终值：取重置前最后一笔；数据源滞后时重置后用旧重置点记的 0% 不算
+        let samples: [String: [(t: TimeInterval, pct: Int)]] = [
+            "Claude|w@1000": [(t: 900, pct: 60), (t: 990, pct: 72), (t: 1010, pct: 0)],
+            "Claude|w@2000": [(t: 1500, pct: 10)],
+            "Claude|5h@1000": [(t: 990, pct: 99)],
+        ]
+        let fin = ProcessScanner.finishedCycle(samples, rawKey: "Claude|w", now: 1500)!
+        precondition(fin.reset == 1000 && fin.pct == 72, "实际 \(fin)")
+        precondition(ProcessScanner.finishedCycle(samples, rawKey: "Claude|w", now: 1500) != nil)
+        precondition(ProcessScanner.finishedCycle(samples, rawKey: "Claude|w", now: 999) == nil, "还没到重置点")
+        // 合盖一晚跨过周重置：一次归档把周和 5h 的终值都存下，之后清掉过期样本也不丢
+        var all = samples
+        ProcessScanner.archiveFinals(&all, now: 1500)
+        precondition(all["final|Claude|w"]?.last?.pct == 72 && all["final|Claude|5h"]?.last?.pct == 99)
+        precondition(all["final|Claude|w"]?.last?.t == 1000)
+    }
+
     // 会话日志保留期硬下限 7 天（本工具自己要读近两天的文件算额度）
     precondition(ProcessScanner.effectiveRetention(30) == 30)
     precondition(ProcessScanner.effectiveRetention(3) == 7)
@@ -439,19 +522,25 @@ if CommandLine.arguments.contains("--selftest") {
         print(String(format: L("  %-16@ %3d%%  线 %d/%d  margin %+d  level %d  %@", "  %-16@ %3d%%  thresholds %d/%d  margin %+d  level %d  %@"), s.short, s.pct, s.warn, s.crit, s.margin, s.level, s.detail))
     }
     print(L("--- 平台 ---", "--- Platforms ---"))
-    func w(_ label: String, _ q: QuotaWindow?) -> String {
+    func w(_ label: String, _ q: QuotaWindow?, _ profile: ActivityProfile? = nil) -> String {
         guard let q = q else { return "" }
         let reset = Fmt.countdown(to: q.resetsAt, now: now) ?? "?"
         let age = q.ageSeconds(now: now).map { Fmt.ago($0) } ?? "?"
-        let burn = q.burn(now: now).map {
-            String(format: L(", %.1f%%/h→重置时 %d%%%@", ", %.1f%%/h → %d%% at reset%@"), $0.pctPerHour, $0.projectedAtReset,
+        let burn = q.burn(now: now, profile: profile).map {
+            ($0.perActiveDay.map { String(format: L(", %.1f%%/活跃天[%@]", ", %.1f%%/active day [%@]"), $0, q.lastCyclePct.map { "\($0)%" } ?? "—") } ?? "")
+            + String(format: L(", %.1f%%/h→重置时 %d%%%@", ", %.1f%%/h → %d%% at reset%@"), $0.pctPerHour, $0.projectedAtReset,
                    $0.exhaustAt.flatMap { Fmt.countdown(to: $0, now: now) }.map { L(" ⚡\($0)后打满", " ⚡full in \($0)") } ?? "")
         } ?? ""
         return L("  \(label)=\(q.effectivePct(now: now))%(raw \(q.usedPct), 重置 \(reset), 采集 \(age)\(burn))", "  \(label)=\(q.effectivePct(now: now))% (raw \(q.usedPct), resets \(reset), captured \(age)\(burn))")
     }
+    // 作息画像来自历史汇总：先等首轮汇总完，否则这里的周额度预测会全部退回旧算法
+    let profileDeadline = Date().addingTimeInterval(120)
+    while UsageHistory.shared.snapshot().capturedAt == 0 && Date() < profileDeadline { usleep(200_000) }
+    let earlyHistory = UsageHistory.shared.snapshot()
     for l in r.detectedLLMs {
+        let profile = earlyHistory.activityProfile(for: l.name)
         let secondaryPool = l.secondaryPoolName == "三方" ? L("三方", "Third-party") : l.secondaryPoolName
-        print("\(l.isRunning ? "●" : "○") \(l.name) [\(l.tier)] \(l.detail)" + w("5H", l.fiveHour) + w("W", l.sevenDay) + w("\(secondaryPool)5H", l.secondaryFiveHour) + w("\(secondaryPool)W", l.secondarySevenDay) + (l.hasQuota ? "" : "  | \(l.quotaSubtitle)"))
+        print("\(l.isRunning ? "●" : "○") \(l.name) [\(l.tier)] \(l.detail)" + w("5H", l.fiveHour) + w("W", l.sevenDay, profile) + w("\(secondaryPool)5H", l.secondaryFiveHour) + w("\(secondaryPool)W", l.secondarySevenDay, profile) + (l.hasQuota ? "" : "  | \(l.quotaSubtitle)"))
     }
     let rs = ProcessScanner.shared.codexRemoteStatus()
     print(L("Codex 远程 \(rs.host): \(rs.ok ? "已连上" : "未连上") · \(rs.ageSeconds)s 前拉取", "Codex remote \(rs.host): \(rs.ok ? "connected" : "not connected") · fetched \(rs.ageSeconds)s ago"))
@@ -525,6 +614,11 @@ if CommandLine.arguments.contains("--selftest") {
     print("DNS: \(network.leak.dnsVerdict.localizedDescription)")
     let history = UsageHistory.shared.snapshot()
     print(L("--- 统计 ---", "--- Stats ---"))
+    for name in ["Claude", "Codex", "*"] {
+        let n = Int(history.hourCounts[name]?.reduce(0, +) ?? 0)
+        let hours = history.hourCounts[name].flatMap(ActivityProfile.init(hourCounts:))?.activeHoursText ?? L("样本不足", "not enough data")
+        print(L("作息 \(name): 近 7 天 \(n) 次调用 · 常用 \(hours)", "Pattern \(name): \(n) calls in 7 days · usual hours \(hours)"))
+    }
     print(L("已处理 \(history.processedFiles)/\(history.totalFiles) 文件 · 自 \(history.earliestDate ?? "查不到最早日期") · \(history.activeDays) 个活跃日", "Processed \(history.processedFiles)/\(history.totalFiles) files · since \(history.earliestDate ?? "earliest date unavailable") · \(history.activeDays) active days"))
     print(L("累计 token \(history.tokenTotal) · 输入 \(history.ctx) · 缓存读 \(history.cacheRead) · 输出 \(history.aggregate.out)", "Total tokens \(history.tokenTotal) · input \(history.ctx) · cache read \(history.cacheRead) · output \(history.aggregate.out)"))
     print(L("缓存命中率 ", "Cache hit rate ") + (history.cacheHitRate.map { String(format: "%.2f%%", $0 * 100) } ?? L("查不到：无输入用量", "Unavailable: no input usage")))
