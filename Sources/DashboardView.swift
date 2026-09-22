@@ -107,6 +107,7 @@ public struct PanelActions {
     public var purgeLogs: () -> Void = {}
     /// Tab 切换后内容高度变了 → 让宿主按新 fittingSize 重排
     public var relayout: () -> Void = {}
+    public var quit: () -> Void = {}
     public init() {}
 }
 
@@ -151,6 +152,7 @@ public struct DashboardView: View {
     @State private var refreshing: Bool = false
     @State private var network = NetworkSnapshot()
     @State private var history = UsageHistory.Snapshot()
+    @AppStorage("uiLanguage") private var uiLanguage = ""
 
     private let liveTicker = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
@@ -381,13 +383,13 @@ public struct DashboardView: View {
                         Text(L("订阅", "Plans")).tag(0)
                         Text("API").tag(1)
                         Text(L("统计", "Stats")).tag(2)
-                        Text(L("网络", "Network")).tag(3)
-                        Text(L("系统", "System")).tag(4)
+                        Text(L("网络", "Net")).tag(3)
+                        Text(L("系统", "Mac")).tag(4)
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .controlSize(.small)
-                    .frame(width: 222)
+                    .frame(width: 222)      // 分段等宽：英文标签必须 ≤5 个字母，否则撑出面板
                     .help(L("也可以在面板上用触控板左右滑动切换", "Swipe left or right on the trackpad to switch tabs"))
 
                     Spacer()
@@ -431,6 +433,29 @@ public struct DashboardView: View {
                 onHeight: { h in if abs(h - measuredHeight) > 1 { measuredHeight = h } }
             )
             .frame(width: Self.panelWidth - 24, height: min(max(measuredHeight, 360), Self.maxContentHeight))
+
+            Divider()
+            HStack {
+                Button(action: actions.quit) {
+                    Text(L("退出 VibeGauge", "Quit VibeGauge")).font(.system(size: 13))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("⌘Q")
+                Spacer()
+                // 语言切换：点了就记住，没点过跟随系统。切完重扫一次，扫描器里拼好的文案也跟着换
+                Picker("", selection: Binding(
+                    get: { uiLanguage.isEmpty ? (isChineseUI ? "zh" : "en") : uiLanguage },
+                    set: { uiLanguage = $0; actions.rescan(); actions.relayout() })) {
+                    Text("中").tag("zh")
+                    Text("EN").tag("en")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 76)
+                .help("界面语言 / Language")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -450,11 +475,11 @@ public struct DashboardView: View {
         let active = currentLLMs.filter { $0.isRunning }.count
         let calls = currentAPI.providers.reduce(0) { $0 + $1.calls }
         switch tab {
-        case 1: return L("今日 \(calls) 次", "\(calls) today")
-        case 2: return history.isScanning ? L("汇总中", "Summarizing") : L("\(history.activeDays) 活跃天", "\(history.activeDays) active days")
+        case 1: return L("今日 \(calls) 次", "\(calls) calls")
+        case 2: return history.isScanning ? L("汇总中", "Scanning") : L("\(history.activeDays) 活跃天", "\(history.activeDays) days")
         case 3: return L("\(network.aiExits.filter { !$0.isGemini && !$0.ip.isEmpty && $0.error.isEmpty }.count)/4 出口", "\(network.aiExits.filter { !$0.isGemini && !$0.ip.isEmpty && $0.error.isEmpty }.count)/4 egress")
-        case 4: return L("\(active) 平台活跃", "\(active) platforms active")
-        default: return L("内存可用 \(report.freePercentage)%", "\(report.freePercentage)% memory free")
+        case 4: return L("\(active) 平台活跃", "\(active) active")
+        default: return L("内存可用 \(report.freePercentage)%", "RAM \(report.freePercentage)% free")
         }
     }
 

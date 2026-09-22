@@ -422,6 +422,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.purgeLogsAction()
         }
         actions.relayout = { [weak self] in self?.relayoutMenuPanel() }
+        actions.quit = { NSApp.terminate(nil) }
 
         let dashboard = DashboardView(
             report: report,
@@ -441,10 +442,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         cardItem.view = hosting
         menu.addItem(cardItem)
 
-        menu.addItem(NSMenuItem.separator())
-
+        // 退出按钮在面板底栏（右边是语言切换）；这里留一个隐藏项，只为 ⌘Q 照常可用
         let quitItem = NSMenuItem(title: L("退出 VibeGauge", "Quit VibeGauge"), action: #selector(quitAction), keyEquivalent: "q")
         quitItem.target = self
+        quitItem.isHidden = true
+        quitItem.allowsKeyEquivalentWhenHidden = true
         menu.addItem(quitItem)
     }
 
