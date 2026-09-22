@@ -108,6 +108,8 @@ public struct PanelActions {
     /// Tab 切换后内容高度变了 → 让宿主按新 fittingSize 重排
     public var relayout: () -> Void = {}
     public var quit: () -> Void = {}
+    /// 状态栏桥接：("claude" | "agy", 连接 / 断开)
+    public var setQuotaBridge: (String, Bool) -> Void = { _, _ in }
     public init() {}
 }
 
@@ -153,6 +155,8 @@ public struct DashboardView: View {
     @State private var network = NetworkSnapshot()
     @State private var history = UsageHistory.Snapshot()
     @AppStorage("uiLanguage") private var uiLanguage = ""
+    @AppStorage("latestVersion") private var latestVersion = ""
+    @AppStorage("updateCheckEnabled") private var updateCheckOn = true
 
     private let liveTicker = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
@@ -443,6 +447,13 @@ public struct DashboardView: View {
                 .buttonStyle(.plain)
                 .help("⌘Q")
                 Spacer()
+                if updateCheckOn, UpdateChecker.isNewer(latestVersion, than: UpdateChecker.shared.current) {
+                    Link(destination: UpdateChecker.releasePage) {
+                        Label(L("新版本 v\(latestVersion)", "Update v\(latestVersion)"), systemImage: "arrow.down.circle.fill")
+                            .font(.system(size: 9.5, weight: .semibold))
+                    }
+                    .help(L("打开 GitHub 发布页下载", "Open the GitHub release page"))
+                }
                 // 语言切换：点了就记住，没点过跟随系统。切完重扫一次，扫描器里拼好的文案也跟着换
                 Picker("", selection: Binding(
                     get: { uiLanguage.isEmpty ? (isChineseUI ? "zh" : "en") : uiLanguage },
@@ -1008,6 +1019,15 @@ public struct DashboardView: View {
                        isOn: Binding(get: { notifyOn }, set: { notifyOn = $0; actions.setThresholdNotify($0) }))
             settingRow(L("出口变化通知", "Egress change alerts"), detail: L("AI 出口 IP 或国家变化时提醒，每家 10 分钟最多一次", "Alert when an AI egress IP or country changes; once per provider every 10m"),
                        isOn: Binding(get: { exitNotifyOn }, set: { exitNotifyOn = $0; actions.setExitChangeNotify($0) }))
+            settingRow(L("检查更新", "Check for updates"), detail: L("每天问一次 GitHub 有没有新版本；只提示，不自动安装", "Asks GitHub once a day for a newer release; notifies only, never installs"),
+                       isOn: $updateCheckOn)
+            ForEach([("claude", "Claude Code"), ("agy", "Antigravity (agy)")], id: \.0) { tool, name in
+                if let t = StatuslineBridge.Tool(rawValue: tool), StatuslineBridge.shared.toolInstalled(t) {
+                    settingRow(L("\(name) 额度连接", "\(name) quota link"),
+                               detail: L("从它的状态栏读取官方额度；原状态栏照常显示，关掉即还原", "Reads official quota from its status line; your status line is unchanged; off restores it"),
+                               isOn: Binding(get: { StatuslineBridge.shared.isConnected(t) }, set: { actions.setQuotaBridge(tool, $0) }))
+                }
+            }
         }
         .padding(10)
         .background(Color.secondary.opacity(0.06))
@@ -1358,6 +1378,16 @@ public struct DashboardView: View {
                     .font(.system(size: 8))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
+                if !llm.connectTool.isEmpty {
+                    Button(action: { actions.setQuotaBridge(llm.connectTool, true) }) {
+                        Label(L("一键连接额度", "Connect quota"), systemImage: "link")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundColor(.blue)
+                    .help(L("让 VibeGauge 读取官方下发给状态栏的额度：原状态栏照常显示，配置自动备份，可在「系统 → 设置」断开",
+                            "Reads the official quota your CLI hands to its status line. Your status line stays the same, settings are backed up, and you can disconnect under Mac → Settings."))
+                }
             }
             if !llm.extraLine.isEmpty {
                 Text(llm.extraLine)

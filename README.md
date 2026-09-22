@@ -7,7 +7,7 @@
 <h3 align="center">The Native macOS Menu Bar Dashboard for Vibe Coders</h3>
 
 <p align="center">
-  <b>Reap orphaned MCP zombie processes · Monitor AI quotas & 5h/weekly reset countdowns · Track Token costs & Prompt Cache hit rates in real time.</b>
+  <b>Claude / Codex / Gemini / Grok quotas with sleep-aware forecasts · AI egress IP & DNS-leak checks · Token & Prompt Cache analytics · Orphaned MCP reaper.</b>
 </p>
 
 <p align="center">
@@ -82,11 +82,12 @@ When using autonomous coding agents like **Claude Code**, **OpenAI Codex**, **Go
 
 ### Method 1: Download Pre-built Binary (Recommended)
 
-> Universal app — runs on **Apple Silicon and Intel** Macs with **macOS 14+**. The UI follows your system language (English / 简体中文).
+> Universal app — runs on **Apple Silicon and Intel** Macs with **macOS 14+**. UI in English / 简体中文 — follows your system, switch anytime at the panel's bottom-right.
 
 1. Download the latest `VibeGauge.zip` from [GitHub Releases](https://github.com/MaxHaiCom/vibe-gauge/releases).
 2. Unzip and drag `VibeGauge.app` into your `/Applications` folder.
 3. Launch it. The icon will appear in your top menu bar.
+4. Using Claude Code or agy? Click **Connect quota** on its card once — the quota appears after your next message.
 
 > **Tip**: On first launch, if prompted by macOS Gatekeeper, click "Open Anyway" in `System Settings → Privacy & Security`. If you use menu-bar management utilities like Bartender or Ice, make sure VibeGauge isn't hidden in a collapsed drawer.
 
@@ -127,11 +128,13 @@ All subscription tiers, quotas, and token metrics are read strictly from local s
 
 | Provider | Plan Detection | Quotas & Reset Timestamps | Update Frequency |
 |:---|:---|:---|:---|
-| **Claude** | `~/.claude.json`<br>(e.g. `max_5x`, `max_20x`, `pro`) | `~/.claude/claude-usage.json`<br>(Statusline-intercepted 5h / 7d rates & reset points) | Automatically updates on every dialogue round |
+| **Claude** | `~/.claude.json`<br>(e.g. `max_5x`, `max_20x`, `pro`) | Official 5h / 7d usage Claude Code hands to its status line<br>(**one click**: “Connect quota” on the card) | Every Claude Code status-line refresh |
 | **Codex** | `~/.codex/auth.json`<br>(JWT `chatgpt_plan_type`) | Session jsonl `rate_limits`<br>(Extracts exact unlock time from `task_complete` errors) | Updates only when requests are actively sent |
-| **Gemini** | Local auth token verification | `~/.cache/agy-hud/quota_cache.json`<br>(Split by primary & 3rd-party model pools) | Refreshed by background helper while agy runs |
+| **Gemini** | Local auth token verification | Official quota agy hands to its status line, Gemini & 3rd-party pools<br>(**one click**: “Connect quota” on the card) | Every agy status-line refresh |
 | **Grok** | `~/.grok/settings_cache.json` | `~/.grok/logs/unified.jsonl`<br>(Latest billing credits config & period end) | Periodically flushed by Grok CLI |
 | **Ollama** | Local socket & process probe | Non-quota based (monitors active on-device models) | Instant live status |
+
+> 🔗 **How “Connect quota” works**: Claude Code and agy pass the official quota to their status-line command on every refresh. Connecting swaps in VibeGauge's small bridge script (`~/.config/vibegauge/vibegauge-statusline.py`, stdlib Python), which saves a copy and then hands the exact same input to your previous status line — what you see doesn't change. Your `settings.json` is backed up first (`settings.json.vibegauge-backup`); turn it off under **Mac → Settings** to restore it. No credentials are read and no requests are made.
 
 > 📌 *Note*: Footnotes such as "Recorded 1h ago" represent the **timestamp when the vendor CLI last refreshed its local log**, not a lag in VibeGauge. VibeGauge's incremental delta-scanner runs in ~100ms when the panel is open.
 
@@ -213,6 +216,7 @@ curl -fsSL https://raw.githubusercontent.com/MaxHaiCom/vibe-gauge/main/Resources
 
 ```bash
 /Applications/VibeGauge.app/Contents/MacOS/VibeGauge --uninstall-proxy   # only if you installed the proxy
+python3 ~/.config/vibegauge/vibegauge-statusline.py --uninstall claude   # only if you connected quota (same for: agy)
 rm -rf /Applications/VibeGauge.app ~/.config/vibegauge
 defaults delete com.haifeng.vibegauge
 ```
@@ -222,9 +226,10 @@ If you enabled *Launch at Login*, turn it off in the menu first (or remove it in
 
 ## 🛡️ Privacy & Security
 
-- 🔒 **100% Local Execution**: No analytics, no telemetry, no remote servers. Your token counts and usage data never leave your Mac.
+- 🔒 **100% Local Data**: No analytics, no telemetry, no remote servers. Your token counts and usage data never leave your Mac.
+- 🔄 **Update check**: once a day VibeGauge asks the public GitHub API for the latest release version (no identifiers, nothing uploaded). It only shows a notice — it never downloads or installs anything. Turn it off under **Mac → Settings**.
 - 🔑 **Zero Key Disk Logging**: API keys processed by the local proxy remain strictly in volatile process memory for upstream balance checks. Recorded logs only store an 8-character SHA-256 fingerprint; URL query parameters are stripped.
-- ⚙️ **Non-Intrusive**: VibeGauge reads local logs and network settings, and makes the documented trace probes. It does not tamper with OAuth credentials, proxy your login sessions, or modify vendor or system network configurations.
+- ⚙️ **Non-Intrusive**: VibeGauge reads local logs and network settings, and makes the documented trace probes. It does not read or use OAuth credentials, proxy your login sessions, or modify system network configurations. The only vendor config it touches is the `statusLine` entry, and only when you click “Connect quota” (backed up, reversible).
 - 🛡️ **Whitelisted Safe Reaping**: The process cleaner strictly enforces multi-criteria verification before terminating orphaned processes.
 
 ---

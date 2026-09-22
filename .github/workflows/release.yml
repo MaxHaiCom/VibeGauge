@@ -32,6 +32,7 @@ jobs:
         # Run selftest to ensure clean binary
         ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest
         /usr/bin/python3 Resources/vibegauge-proxy.py --selftest
+        /usr/bin/python3 Resources/vibegauge-statusline.py --selftest
 
     - name: Package Zip
       run: |

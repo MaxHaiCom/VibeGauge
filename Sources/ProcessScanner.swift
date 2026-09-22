@@ -306,6 +306,8 @@ public struct DetectedLLMRuntime: Identifiable {
     public var secondarySevenDay: QuotaWindow? = nil
     public var isFullWidth: Bool = false
     public var quotaSubtitle: String = ""
+    /// 没额度数据、且可以一键接上状态栏桥接时 = "claude" / "agy"（卡片上显示「一键连接」）
+    public var connectTool: String = ""
     /// 卡片第三行附加信息（API Key 卡片用：模型 + 今日 token）
     public var extraLine: String = ""
     /// 卡片第四行（API Key 卡片用：p95 延迟 / 错误率 / 花费）
@@ -1357,11 +1359,19 @@ public final class ProcessScanner {
 
     // MARK: 额度（全部带 resets_at + 采集时间）
 
-    /// Claude：statusline 截获后写入 ~/.claude/claude-usage.json（Claude Code 下发的整个 rate_limits 对象）。
+    /// Claude：状态栏截获的 rate_limits（Claude Code 下发的整个对象）+ _captured_at。
+    /// 两个来源取较新的：VibeGauge 自带桥接写 ~/.config/vibegauge/claude-usage.json；自己配过 tee 的写 ~/.claude/claude-usage.json。
     /// 目前只有 five_hour / seven_day；若将来出现按模型的窗口键（如 seven_day_fable），自动当副池显示，键名即池名。
     private func readClaudeQuota() -> (fiveHour: QuotaWindow?, sevenDay: QuotaWindow?, extraName: String, extra5h: QuotaWindow?, extraW: QuotaWindow?) {
-        guard let json = readJSON("\(home)/.claude/claude-usage.json") else { return (nil, nil, "", nil, nil) }
-        let captured = (json["_captured_at"] as? NSNumber)?.doubleValue
+        // 采集时间：优先 _captured_at；别人家的 tee 没写这个字段就用文件修改时间，免得永远输给另一个来源
+        let sources = ["\(home)/.config/vibegauge/claude-usage.json", "\(home)/.claude/claude-usage.json"].compactMap { path -> (json: [String: Any], at: Double)? in
+            guard let json = readJSON(path) else { return nil }
+            let mtime = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            return (json, (json["_captured_at"] as? NSNumber)?.doubleValue ?? mtime)
+        }
+        guard let newest = sources.max(by: { $0.at < $1.at }) else { return (nil, nil, "", nil, nil) }
+        let json = newest.json
+        let captured: Double? = newest.at
         func win(_ d: Any?, _ windowSeconds: Double) -> QuotaWindow? {
             guard let d = d as? [String: Any], let used = clampPct(d["used_percentage"] as? NSNumber) else { return nil }
             return QuotaWindow(usedPct: used, resetsAt: (d["resets_at"] as? NSNumber)?.doubleValue,
@@ -1614,22 +1624,24 @@ public final class ProcessScanner {
         return (weekly, tier)
     }
 
-    /// Gemini（Antigravity）：agy-hud 写的 quota_cache.json，两个池：gemini / 3p
+    /// Gemini（Antigravity）：两个池 gemini / 3p，各有 5h 与周窗口。
+    /// 两个来源同一格式，逐个窗口取记录较新的：VibeGauge 自带桥接写 ~/.config/vibegauge/agy-quota.json；
+    /// 装了 agy-hud 的写 ~/.cache/agy-hud/quota_cache.json（它会删掉已过期的窗口，桥接不删，过期由这里当 0%）。
     private func readGeminiQuota() -> (native5h: QuotaWindow?, nativeW: QuotaWindow?, tp5h: QuotaWindow?, tpW: QuotaWindow?) {
-        guard let json = readJSON("\(home)/.cache/agy-hud/quota_cache.json"),
-              let pools = json["pools"] as? [String: Any] else { return (nil, nil, nil, nil) }
-        func win(_ pool: Any?, _ key: String) -> QuotaWindow? {
-            guard let p = pool as? [String: Any], let w = p[key] as? [String: Any],
-                  let rf = (w["remaining_fraction"] as? NSNumber)?.doubleValue else { return nil }
-            return QuotaWindow(
-                usedPct: max(0, min(100, Int(round((1.0 - rf) * 100.0)))),
-                resetsAt: (w["reset_at"] as? NSNumber)?.doubleValue,
-                capturedAt: (w["recorded_at"] as? NSNumber)?.doubleValue ?? (json["updated_at"] as? NSNumber)?.doubleValue,
-                windowSeconds: key.contains("five") || key.contains("5h") ? 5 * 3600 : 7 * 86400
-            )
+        let files = ["\(home)/.config/vibegauge/agy-quota.json", "\(home)/.cache/agy-hud/quota_cache.json"].compactMap { readJSON($0) }
+        func win(_ poolName: String, _ key: String) -> QuotaWindow? {
+            files.compactMap { json -> QuotaWindow? in
+                guard let pools = json["pools"] as? [String: Any], let p = pools[poolName] as? [String: Any],
+                      let w = p[key] as? [String: Any], let rf = (w["remaining_fraction"] as? NSNumber)?.doubleValue else { return nil }
+                return QuotaWindow(
+                    usedPct: max(0, min(100, Int(round((1.0 - rf) * 100.0)))),
+                    resetsAt: (w["reset_at"] as? NSNumber)?.doubleValue,
+                    capturedAt: (w["recorded_at"] as? NSNumber)?.doubleValue ?? (json["updated_at"] as? NSNumber)?.doubleValue,
+                    windowSeconds: key == "5h" ? 5 * 3600 : 7 * 86400
+                )
+            }.max { ($0.capturedAt ?? 0) < ($1.capturedAt ?? 0) }
         }
-        let g = pools["gemini"], tp = pools["3p"]
-        return (win(g, "5h"), win(g, "weekly"), win(tp, "5h"), win(tp, "weekly"))
+        return (win("gemini", "5h"), win("gemini", "weekly"), win("3p", "5h"), win("3p", "weekly"))
     }
 
     // MARK: 平台汇聚
@@ -1655,7 +1667,7 @@ public final class ProcessScanner {
 
     private func claudeDetail(_ c: SessionCounts) -> PlatformDetail {
         var d = PlatformDetail()
-        d.sourceFiles = ["~/.claude.json", "~/.claude/claude-usage.json", "~/.claude/projects/*.jsonl"]
+        d.sourceFiles = ["~/.claude.json", "~/.config/vibegauge/claude-usage.json", "~/.claude/projects/*.jsonl"]
         if let oa = readJSON("\(home)/.claude.json")?["oauthAccount"] as? [String: Any] {
             if let v = oa["organizationRateLimitTier"] as? String { d.rows.append((L("限速档位字段", "Rate-limit tier field"), v)) }
             if let v = oa["organizationType"] as? String { d.rows.append((L("组织类型", "Organization type"), v)) }
@@ -1707,7 +1719,7 @@ public final class ProcessScanner {
 
     private func geminiDetail(_ c: SessionCounts) -> PlatformDetail {
         var d = PlatformDetail()
-        d.sourceFiles = ["~/.gemini/antigravity-cli/", "~/.cache/agy-hud/quota_cache.json"]
+        d.sourceFiles = ["~/.gemini/antigravity-cli/", "~/.config/vibegauge/agy-quota.json"]
         if let st = readJSON("\(home)/.gemini/antigravity-cli/settings.json"), let m = st["model"] as? String {
             d.rows.append((L("默认模型", "Default model"), m))
         }
@@ -1742,12 +1754,15 @@ public final class ProcessScanner {
         // Claude
         if c.claude > 0 || fm.fileExists(atPath: "\(home)/.claude.json") {
             let q = readClaudeQuota()
+            let linked = StatuslineBridge.shared.isConnected(.claude)
             list.append(DetectedLLMRuntime(
                 name: "Claude", isRunning: c.claude > 0, tier: getClaudeTier(), detail: L("\(c.claude) 会话", "\(c.claude) sessions"),
                 fiveHour: q.fiveHour, sevenDay: q.sevenDay,
                 secondaryPoolName: q.extraName, secondaryFiveHour: q.extra5h, secondarySevenDay: q.extraW,
                 isFullWidth: !q.extraName.isEmpty,
-                quotaSubtitle: L("Anthropic · 无额度数据 (状态栏未截获)", "Anthropic · no quota data (status not captured)"),
+                quotaSubtitle: linked ? L("Anthropic · 已连接，在 Claude Code 里发一条消息后显示", "Anthropic · connected, send a message in Claude Code")
+                                      : L("Anthropic · 额度还没连接", "Anthropic · quota not connected"),
+                connectTool: linked ? "" : "claude",
                 platformDetail: claudeDetail(c)
             ))
         }
@@ -1773,13 +1788,16 @@ public final class ProcessScanner {
         // Gemini / Antigravity（双池，独占整行）
         if c.agy > 0 || fm.fileExists(atPath: "\(home)/.gemini/antigravity-cli") {
             let q = readGeminiQuota()
+            let linked = StatuslineBridge.shared.isConnected(.agy)
             let hasAny = q.native5h != nil || q.nativeW != nil || q.tp5h != nil || q.tpW != nil
             list.append(DetectedLLMRuntime(
                 name: "Gemini", isRunning: c.agy > 0, tier: getGeminiTier(hasQuota: hasAny), detail: L("\(c.agy) 会话", "\(c.agy) sessions"),
                 fiveHour: q.native5h, sevenDay: q.nativeW,
                 secondaryPoolName: "三方", secondaryFiveHour: q.tp5h, secondarySevenDay: q.tpW,
                 isFullWidth: hasAny,
-                quotaSubtitle: L("Antigravity · 无额度数据 (agy-hud 未刷新)", "Antigravity · no quota data (agy-hud not refreshed)"),
+                quotaSubtitle: linked ? L("Antigravity · 已连接，在 agy 里发一条消息后显示", "Antigravity · connected, send a message in agy")
+                                      : L("Antigravity · 额度还没连接", "Antigravity · quota not connected"),
+                connectTool: linked ? "" : "agy",
                 platformDetail: geminiDetail(c)
             ))
         }

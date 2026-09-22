@@ -51,7 +51,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DashboardView.migrateTabSelection()
         NetworkScanner.shared.start()
         UsageHistory.shared.start()
-        DispatchQueue.global(qos: .utility).async { ProxyManager.shared.syncIfInstalled() }   // 包里脚本更新了就热替换
+        DispatchQueue.global(qos: .utility).async { ProxyManager.shared.syncIfInstalled(); StatuslineBridge.shared.syncIfConnected() }   // 包里脚本更新了就热替换
         updateStatus()
 
         timer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { [weak self] _ in
@@ -190,6 +190,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isScanning = false
 
     @objc func updateStatus() {
+        checkForUpdate()                    // 每天一次，没到期直接返回
         guard !isScanning else { return }   // 首扫可能 4s+，别让 8s 定时器堆积
         isScanning = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -423,6 +424,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         actions.relayout = { [weak self] in self?.relayoutMenuPanel() }
         actions.quit = { NSApp.terminate(nil) }
+        actions.setQuotaBridge = { [weak self] tool, on in self?.setQuotaBridge(tool, on: on) }
 
         let dashboard = DashboardView(
             report: report,
@@ -534,6 +536,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do { try ProxyManager.shared.install() } catch { msg = L("安装失败：\(error.localizedDescription)", "Installation failed: \(error.localizedDescription)") }
             DispatchQueue.main.async {
                 self?.sendNotification(title: L("API 记账代理", "API accounting proxy"), body: msg)
+                self?.updateStatus()
+            }
+        }
+    }
+
+    func checkForUpdate() {
+        UpdateChecker.shared.checkIfDue { [weak self] v in
+            self?.sendNotification(title: L("VibeGauge 有新版本 v\(v)", "VibeGauge v\(v) is available"),
+                                   body: L("点面板底部的「新版本」打开下载页。", "Click “Update” at the bottom of the panel to open the download page."))
+        }
+    }
+
+    /// 连接 / 断开状态栏桥接（改的是 Claude Code / agy 的 settings.json，脚本会先备份）
+    func setQuotaBridge(_ raw: String, on: Bool) {
+        guard let tool = StatuslineBridge.Tool(rawValue: raw) else { return }
+        let name = tool == .claude ? "Claude Code" : "agy"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var title = on ? L("额度已连接", "Quota connected") : L("额度连接已断开", "Quota disconnected")
+            var body = on
+                ? L("在 \(name) 里发一条消息，额度就会出现在面板上。原状态栏照常显示，原配置已备份为 settings.json.vibegauge-backup。",
+                    "Send a message in \(name) and the quota shows up here. Your status line is unchanged; settings were backed up to settings.json.vibegauge-backup.")
+                : L("\(name) 的状态栏已还原。", "\(name) status line restored.")
+            do {
+                if on { try StatuslineBridge.shared.connect(tool) } else { try StatuslineBridge.shared.disconnect(tool) }
+            } catch {
+                title = on ? L("连接失败", "Couldn't connect") : L("断开失败", "Couldn't disconnect")
+                body = error.localizedDescription
+            }
+            DispatchQueue.main.async {
+                self?.sendNotification(title: title, body: body)
                 self?.updateStatus()
             }
         }

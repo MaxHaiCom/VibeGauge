@@ -128,3 +128,81 @@ final class ProxyManager {
         }
     }
 }
+
+/// 状态栏桥接：Claude Code / agy 刷新状态栏时会把官方额度交给状态栏命令，
+/// 桥接脚本（Resources/vibegauge-statusline.py）截下一份写到 ~/.config/vibegauge/，再原样转交用户原来的状态栏。
+/// 只在用户点「连接」时改对方的 settings.json（脚本先备份），「断开」还原。
+final class StatuslineBridge {
+    static let shared = StatuslineBridge()
+    enum Tool: String, CaseIterable { case claude, agy }
+
+    private let home = FileManager.default.homeDirectoryForCurrentUser.path
+    private var dir: String { "\(home)/.config/vibegauge" }
+    private var scriptPath: String { "\(dir)/vibegauge-statusline.py" }
+    /// 连接 / 断开一次只做一个：两个开关连点时，两个脚本进程不会同时改配置
+    private let lock = NSLock()
+
+    func settingsPath(_ tool: Tool) -> String {
+        tool == .claude ? "\(home)/.claude/settings.json" : "\(home)/.gemini/antigravity-cli/settings.json"
+    }
+
+    /// 装了这个 CLI 才提供连接（看它的配置目录在不在）
+    func toolInstalled(_ tool: Tool) -> Bool {
+        FileManager.default.fileExists(atPath: tool == .claude ? "\(home)/.claude" : "\(home)/.gemini/antigravity-cli")
+    }
+
+    /// 对方配置里的状态栏命令就是本脚本 = 已连接
+    func isConnected(_ tool: Tool) -> Bool {
+        guard let data = FileManager.default.contents(atPath: settingsPath(tool)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sl = json["statusLine"] as? [String: Any], let cmd = sl["command"] as? String else { return false }
+        return cmd.contains("vibegauge-statusline.py")
+    }
+
+    func connect(_ tool: Tool) throws {
+        lock.lock(); defer { lock.unlock() }
+        try syncScript()
+        try runScript(["--install", tool.rawValue])
+    }
+
+    func disconnect(_ tool: Tool) throws {
+        lock.lock(); defer { lock.unlock() }
+        try runScript(["--uninstall", tool.rawValue])
+    }
+
+    /// App 启动时：连着的话把包里新版脚本同步过去（内容相同不写）
+    func syncIfConnected() {
+        guard Tool.allCases.contains(where: isConnected) else { return }
+        try? syncScript()
+    }
+
+    private func syncScript() throws {
+        guard let src = Bundle.main.path(forResource: "vibegauge-statusline", ofType: "py") else {
+            throw NSError(domain: "VibeGauge", code: 1, userInfo: [NSLocalizedDescriptionKey: L("App 包里没有 vibegauge-statusline.py", "vibegauge-statusline.py is missing from the app bundle")])
+        }
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // 已有目录也收紧：状态文件里的原命令会被执行，目录必须只有自己能写
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
+        let new = try Data(contentsOf: URL(fileURLWithPath: src))
+        if FileManager.default.contents(atPath: scriptPath) != new {
+            try new.write(to: URL(fileURLWithPath: scriptPath), options: .atomic)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptPath)
+    }
+
+    private func runScript(_ args: [String]) throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        p.arguments = [scriptPath] + args
+        let err = Pipe()
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = err
+        try p.run()
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else {
+            let msg = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            throw NSError(domain: "VibeGauge", code: Int(p.terminationStatus), userInfo: [NSLocalizedDescriptionKey:
+                msg.isEmpty ? L("python3 不可用（需要 Xcode 命令行工具）", "python3 unavailable (Xcode Command Line Tools required)") : msg])
+        }
+    }
+}

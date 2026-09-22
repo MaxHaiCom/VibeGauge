@@ -46,3 +46,4 @@ jobs:
     - name: Test Python Proxy Self-Test
       run: |
         /usr/bin/python3 Resources/vibegauge-proxy.py --selftest
+        /usr/bin/python3 Resources/vibegauge-statusline.py --selftest

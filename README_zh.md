@@ -7,7 +7,7 @@
 <h3 align="center">专为 Vibe Coding 打造的 macOS 极简原生菜单栏仪表盘</h3>
 
 <p align="center">
-  <b>一键回收断链 MCP 孤儿进程 · 实时聚合各家大模型额度与 5H/周重置倒计时 · Prompt Cache 命中率与 Token 成本透明监控</b>
+  <b>Claude / Codex / Gemini / Grok 额度与懂作息的用量预估 · AI 出口 IP 与 DNS 泄漏体检 · Token 与 Prompt Cache 统计 · 一键回收断链 MCP 进程</b>
 </p>
 
 <p align="center">
@@ -78,11 +78,12 @@
 
 ### 方式一：直接下载预编译 App（推荐）
 
-> Universal 通用包：**Apple Silicon 与 Intel** Mac 均可运行，需 **macOS 14+**。界面语言跟随系统（简体中文 / English）。
+> Universal 通用包：**Apple Silicon 与 Intel** Mac 均可运行，需 **macOS 14+**。界面支持简体中文 / English，默认跟随系统，面板右下角可随时切换。
 
 1. 前往 [GitHub Releases](https://github.com/MaxHaiCom/vibe-gauge/releases) 下载最新版 `VibeGauge.zip`。
 2. 解压并将 `VibeGauge.app` 拖入 `/Applications`（应用程序）目录。
 3. 双击打开，图标即会常驻在菜单栏右上角。
+4. 用 Claude Code 或 agy 的话，在对应卡片上点一次 **「一键连接额度」**，下一条消息后额度就会出现。
 
 > **提示**：首次打开如遇 macOS 安全提示，请在「系统设置」→「隐私与安全性」中点击「仍要打开」。若使用了 Bartender 等菜单栏收纳工具，请检查图标是否被收拢在隐藏区。
 
@@ -123,11 +124,13 @@ open VibeGauge.app
 
 | 平台 | 订阅档位识别 | 额度与重置时间来源 | 数据更新时机 |
 |:---|:---|:---|:---|
-| **Claude** | `~/.claude.json`<br>（如 `max_5x` / `max_20x` / `pro`） | `~/.claude/claude-usage.json`<br>（Statusline 截获的 5h / 7d 额度与重置点） | 每次与 Claude Code 对话交互时自动刷新 |
+| **Claude** | `~/.claude.json`<br>（如 `max_5x` / `max_20x` / `pro`） | Claude Code 交给状态栏的官方 5h / 7d 额度<br>（卡片上点 **「一键连接额度」**） | Claude Code 每次刷新状态栏时 |
 | **Codex** | `~/.codex/auth.json`<br>（JWT 包含的 `plan_type`） | 会话日志中的 `rate_limits`<br>打满时精准解析 `task_complete` 中的解封时间 | 仅在发出请求时写入；支持可选 SSH 远程多端同步 |
-| **Gemini** | 检测本地鉴权标识与登录态 | `~/.cache/agy-hud/quota_cache.json`<br>（区分官方主池与三方模型副池） | 运行 agy 时由对应缓存服务静默写入 |
+| **Gemini** | 检测本地鉴权标识与登录态 | agy 交给状态栏的官方额度，区分 Gemini 主池与三方池<br>（卡片上点 **「一键连接额度」**） | agy 每次刷新状态栏时 |
 | **Grok** | `~/.grok/settings_cache.json` | `~/.grok/logs/unified.jsonl`<br>（解析 billing 信用百分比与周期截止时刻） | Grok 运行期间由后台定期刷回本地 |
 | **Ollama / 本地** | 探测本地服务端口与进程 | 无云端额度约束（直接显示端侧运行状态） | 实时探测活跃模型 |
+
+> 🔗 **「一键连接额度」怎么工作**：Claude Code 和 agy 每次刷新状态栏，都会把官方额度交给状态栏命令。连接后，状态栏命令换成 VibeGauge 自带的小脚本（`~/.config/vibegauge/vibegauge-statusline.py`，纯 Python 标准库）：截下一份额度，再把同一份输入原样交给你原来的状态栏，显示不变。改动前自动备份 `settings.json`（`settings.json.vibegauge-backup`），在 **系统 → 设置** 里关掉即还原。不读任何凭据，不发任何请求。
 
 > 📌 **注**：卡片脚注提示的「记录于 Nh前」是**上游 CLI 数据源本身的写入时间**，而非 VibeGauge 未刷新。面板打开时，内部引擎每秒增量扫描耗时仅 ~100ms。
 
@@ -194,6 +197,7 @@ curl -fsSL https://raw.githubusercontent.com/MaxHaiCom/vibe-gauge/main/Resources
 
 ```bash
 /Applications/VibeGauge.app/Contents/MacOS/VibeGauge --uninstall-proxy   # 装过记账代理才需要
+python3 ~/.config/vibegauge/vibegauge-statusline.py --uninstall claude   # 连接过额度才需要（agy 同理）
 rm -rf /Applications/VibeGauge.app ~/.config/vibegauge
 defaults delete com.haifeng.vibegauge
 ```
@@ -203,9 +207,10 @@ defaults delete com.haifeng.vibegauge
 
 ## 🛡️ 安全与隐私边界
 
-- 🔒 **100% 纯本地运行**：不设置任何云端中转服务器，不上传任何用量数据、Token 记录与机器标识。
+- 🔒 **数据 100% 留在本机**：不设置任何云端中转服务器，不上传任何用量数据、Token 记录与机器标识。
+- 🔄 **检查更新**：每天向 GitHub 公开接口查询一次最新版本号（不带任何标识、不上传任何数据），只提示、从不自动下载安装。可在 **系统 → 设置** 关闭。
 - 🔑 **API Key 零落盘**：记账代理截获的 API Key 仅暂存于内存中用于查询厂商余额，写入日志时强制抹除并仅保留 SHA-256 前 8 位脱敏指纹。
-- ⚙️ **无入侵性**：仅只读扫描本地日志，不篡改任何 CLI 的凭据文件，不代理 OAuth 登录流程。
+- ⚙️ **无入侵性**：只读扫描本地日志，不读取、不使用任何 CLI 的凭据，不代理 OAuth 登录流程。唯一会改的厂商配置是 `statusLine` 一项，且只在你点「一键连接额度」时改（先备份，可还原）。
 - 🛡️ **严格的放行防护**：孤儿进程清理具备多重放行过滤器，确保绝对不误触系统关键进程与正常运行中的开发任务。
 
 ---

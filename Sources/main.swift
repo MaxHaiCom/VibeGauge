@@ -196,6 +196,11 @@ if CommandLine.arguments.contains("--selftest") {
         precondition(early.burn(now: now)?.isRecent == true)
     }
 
+    // 版本号比较：逐段按数字，不是按字符串
+    precondition(UpdateChecker.isNewer("v1.10.0", than: "1.9.2") && UpdateChecker.isNewer("1.1.0", than: "1.0.9"))
+    precondition(!UpdateChecker.isNewer("1.1.0", than: "1.1.0") && !UpdateChecker.isNewer("v1.1", than: "1.1.0"))
+    precondition(!UpdateChecker.isNewer("", than: "1.0.0") && UpdateChecker.isNewer("2", than: "1.99.99"))
+
     // 按作息推算（周窗口）：只在 10 点到次日 2 点用，睡觉的 8 小时几乎不算
     do {
         let utc = TimeZone(identifier: "UTC")!

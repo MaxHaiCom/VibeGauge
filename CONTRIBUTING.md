@@ -9,6 +9,7 @@ ARCHS=arm64 ./build.sh          # fast local build (default builds a Universal a
 ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -AppleLanguages '(en)'
 ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -AppleLanguages '(zh-Hans)'
 /usr/bin/python3 Resources/vibegauge-proxy.py --selftest
+/usr/bin/python3 Resources/vibegauge-statusline.py --selftest
 open VibeGauge.app
 ```
 

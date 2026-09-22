@@ -22,6 +22,7 @@ for ARCH in ${ARCHS}; do
         -framework UserNotifications \
         Sources/ProcessScanner.swift \
         Sources/ProxyManager.swift \
+        Sources/UpdateChecker.swift \
         Sources/NetworkScanner.swift \
         Sources/NetworkTabView.swift \
         Sources/UsageHistory.swift \
@@ -41,6 +42,7 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources"
 mv "${APP_NAME}" "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
 cp Resources/Info.plist "${APP_BUNDLE}/Contents/Info.plist"
 cp Resources/vibegauge-proxy.py "${APP_BUNDLE}/Contents/Resources/vibegauge-proxy.py"
+cp Resources/vibegauge-statusline.py "${APP_BUNDLE}/Contents/Resources/vibegauge-statusline.py"
 if [ -f Resources/AppIcon.icns ]; then
     cp Resources/AppIcon.icns "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
 fi
