@@ -26,7 +26,22 @@ jobs:
 
     - name: Run Headless Self-Test
       run: |
-        ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest
+        ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -AppleLanguages '(zh-Hans)'
+        ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -AppleLanguages '(en)'
+
+    - name: Self-Test Intel Slice (Rosetta)
+      run: |
+        lipo -archs VibeGauge.app/Contents/MacOS/VibeGauge | grep -q x86_64
+        /usr/sbin/softwareupdate --install-rosetta --agree-to-license >/dev/null 2>&1 || true
+        arch -x86_64 ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -AppleLanguages '(en)'
+
+    - name: First-Launch Smoke Test (clean machine, no AI tools installed)
+      run: |
+        ./VibeGauge.app/Contents/MacOS/VibeGauge -AppleLanguages '(en)' &
+        pid=$!
+        sleep 15
+        kill -0 "$pid"   # still running = no crash on first launch
+        kill "$pid"
 
     - name: Test Python Proxy Self-Test
       run: |

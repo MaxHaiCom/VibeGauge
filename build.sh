@@ -8,24 +8,31 @@ BUILD_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "==> 正在编译 ${APP_NAME}..."
 cd "${BUILD_DIR}"
 
-rm -rf "${APP_BUNDLE}" "${APP_NAME}"
+rm -rf "${APP_BUNDLE}" "${APP_NAME}" "${APP_NAME}"-*
 
-swiftc -O \
-    -target arm64-apple-macosx14.0 \
-    -framework Cocoa \
-    -framework SwiftUI \
-    -framework ServiceManagement \
-    -framework UserNotifications \
-    Sources/ProcessScanner.swift \
-    Sources/ProxyManager.swift \
-    Sources/NetworkScanner.swift \
-    Sources/NetworkTabView.swift \
-    Sources/UsageHistory.swift \
-    Sources/StatsTabView.swift \
-    Sources/DashboardView.swift \
-    Sources/AppDelegate.swift \
-    Sources/main.swift \
-    -o "${APP_NAME}"
+# 默认 Universal（Apple Silicon + Intel）；本地调试可 ARCHS=arm64 ./build.sh 只编一份
+ARCHS="${ARCHS:-arm64 x86_64}"
+for ARCH in ${ARCHS}; do
+    echo "    - ${ARCH}"
+    swiftc -O \
+        -target "${ARCH}-apple-macosx14.0" \
+        -framework Cocoa \
+        -framework SwiftUI \
+        -framework ServiceManagement \
+        -framework UserNotifications \
+        Sources/ProcessScanner.swift \
+        Sources/ProxyManager.swift \
+        Sources/NetworkScanner.swift \
+        Sources/NetworkTabView.swift \
+        Sources/UsageHistory.swift \
+        Sources/StatsTabView.swift \
+        Sources/DashboardView.swift \
+        Sources/AppDelegate.swift \
+        Sources/main.swift \
+        -o "${APP_NAME}-${ARCH}"
+done
+lipo -create "${APP_NAME}"-* -output "${APP_NAME}"
+rm -f "${APP_NAME}"-*
 
 echo "==> 正在构建 App Bundle..."
 mkdir -p "${APP_BUNDLE}/Contents/MacOS"

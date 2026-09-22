@@ -77,7 +77,7 @@
 
 ### 方式一：直接下载预编译 App（推荐）
 
-> 需要 **Apple Silicon**（M1 及以上）Mac，**macOS 14+**。暂不支持 Intel Mac。
+> Universal 通用包：**Apple Silicon 与 Intel** Mac 均可运行，需 **macOS 14+**。界面语言跟随系统（简体中文 / English）。
 
 1. 前往 [GitHub Releases](https://github.com/MaxHaiCom/vibe-gauge/releases) 下载最新版 `VibeGauge.zip`。
 2. 解压并将 `VibeGauge.app` 拖入 `/Applications`（应用程序）目录。
@@ -165,6 +165,41 @@ open VibeGauge.app
 
 ---
 
+## ⚙️ 配置（可选）
+
+零配置即可使用，下面这些只在需要扩展功能时才配。
+
+**价目表** — `~/.config/vibegauge/prices.json`。VibeGauge 不内置价格（价格常变，编一个错的比不显示更糟）；不配就不显示「API 等价成本」。
+```bash
+mkdir -p ~/.config/vibegauge
+curl -fsSL https://raw.githubusercontent.com/MaxHaiCom/vibe-gauge/main/Resources/prices.example.json -o ~/.config/vibegauge/prices.json
+# 然后填每百万 token 单价；模型名按最长前缀匹配
+```
+
+**按请求数计的套餐上限** — `~/.config/vibegauge/plans.json`（参考 [`Resources/plans.example.json`](Resources/plans.example.json)）。没有用量接口的 Coding Plan，额度 = 经本机代理的请求数 ÷ 你填的上限，面板一律标「估算」。
+
+**高级设置**（`defaults write com.haifeng.vibegauge <键> <值>`，改完重启 App）：
+
+| 键 | 默认 | 作用 |
+|----|------|------|
+| `logRetentionDays` | `30` | 超过这么多天的会话记录会列为可清理（下限 7） |
+| `clashAPI` | `http://127.0.0.1:9090` | 网络 Tab 读取的 Clash / mihomo / sing-box 控制端口（只允许本机地址） |
+| `clashSecret` | — | 控制端口密钥（如果设了） |
+| `codexRemoteHost` | 关闭 | `user@host`，需免密 SSH；合并另一台 Mac 的 Codex 额度 |
+
+---
+
+## 🗑️ 卸载
+
+```bash
+/Applications/VibeGauge.app/Contents/MacOS/VibeGauge --uninstall-proxy   # 装过记账代理才需要
+rm -rf /Applications/VibeGauge.app ~/.config/vibegauge
+defaults delete com.haifeng.vibegauge
+```
+若开启过「开机自启」，先在菜单里关掉（或到 系统设置 → 通用 → 登录项 移除）。别忘了把 `*_BASE_URL` 里的 `http://127.0.0.1:18790/` 前缀删掉。
+
+---
+
 ## 🛡️ 安全与隐私边界
 
 - 🔒 **100% 纯本地运行**：不设置任何云端中转服务器，不上传任何用量数据、Token 记录与机器标识。
@@ -176,7 +211,7 @@ open VibeGauge.app
 
 ## 🤝 贡献与反馈
 
-欢迎提交 Issue 与 Pull Request！
+欢迎提交 Issue 与 Pull Request，流程见 [CONTRIBUTING.md](CONTRIBUTING.md)；安全问题请私密报告，见 [SECURITY.md](SECURITY.md)。
 - 如果你发现了新的 MCP 孤儿进程签名，欢迎补充至放行/识别规则中。
 - 如果某家 CLI 升级了日志格式或下发了新的额度字段，欢迎提 Issue 协助适配。
 

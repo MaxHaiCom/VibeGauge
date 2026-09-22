@@ -81,7 +81,7 @@ When using autonomous coding agents like **Claude Code**, **OpenAI Codex**, **Go
 
 ### Method 1: Download Pre-built Binary (Recommended)
 
-> Requires an **Apple Silicon** Mac (M1 or later) on **macOS 14+**. Intel Macs: not supported yet.
+> Universal app — runs on **Apple Silicon and Intel** Macs with **macOS 14+**. The UI follows your system language (English / 简体中文).
 
 1. Download the latest `VibeGauge.zip` from [GitHub Releases](https://github.com/MaxHaiCom/vibe-gauge/releases).
 2. Unzip and drag `VibeGauge.app` into your `/Applications` folder.
@@ -184,6 +184,41 @@ When routing terminal tools or scripts directly to AI provider endpoints, route 
 
 ---
 
+## ⚙️ Configuration (Optional)
+
+Everything works with zero config. These files and settings are only needed for the extras.
+
+**Price table** — `~/.config/vibegauge/prices.json`. VibeGauge ships no built-in prices (they change too often; a wrong number is worse than none). Without it, "API-equivalent cost" is simply hidden.
+```bash
+mkdir -p ~/.config/vibegauge
+curl -fsSL https://raw.githubusercontent.com/MaxHaiCom/vibe-gauge/main/Resources/prices.example.json -o ~/.config/vibegauge/prices.json
+# then fill in per-million-token prices; model names match by longest prefix
+```
+
+**Request-based plan limits** — `~/.config/vibegauge/plans.json` (see [`Resources/plans.example.json`](Resources/plans.example.json)). For coding plans that expose no usage API, quota = requests counted by the local proxy ÷ the limit you enter, always labelled *estimated*.
+
+**Advanced settings** (`defaults write com.haifeng.vibegauge <key> <value>`, then restart the app):
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `logRetentionDays` | `30` | Session logs older than this are offered for cleanup (min 7) |
+| `clashAPI` | `http://127.0.0.1:9090` | Clash / mihomo / sing-box controller for the Network tab (loopback only) |
+| `clashSecret` | — | Controller secret, if you set one |
+| `codexRemoteHost` | off | `user@host` with password-less SSH; merges Codex quota from another Mac |
+
+---
+
+## 🗑️ Uninstall
+
+```bash
+/Applications/VibeGauge.app/Contents/MacOS/VibeGauge --uninstall-proxy   # only if you installed the proxy
+rm -rf /Applications/VibeGauge.app ~/.config/vibegauge
+defaults delete com.haifeng.vibegauge
+```
+If you enabled *Launch at Login*, turn it off in the menu first (or remove it in System Settings → General → Login Items). Remember to strip the `http://127.0.0.1:18790/` prefix from any `*_BASE_URL` you pointed at the proxy.
+
+---
+
 ## 🛡️ Privacy & Security
 
 - 🔒 **100% Local Execution**: No analytics, no telemetry, no remote servers. Your token counts and usage data never leave your Mac.
@@ -195,7 +230,7 @@ When routing terminal tools or scripts directly to AI provider endpoints, route 
 
 ## 🤝 Contributing
 
-Contributions, feature requests, and bug reports are warmly welcomed!
+Contributions, feature requests, and bug reports are warmly welcomed — see [CONTRIBUTING.md](CONTRIBUTING.md). Security issues: please report privately, see [SECURITY.md](SECURITY.md).
 - Discover a new MCP process pattern? Please open a PR to update the signature filters.
 - Vendor changed their log format or introduced a new quota tier? Feel free to submit an issue.
 
