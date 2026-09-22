@@ -81,6 +81,8 @@ When using autonomous coding agents like **Claude Code**, **OpenAI Codex**, **Go
 
 ### Method 1: Download Pre-built Binary (Recommended)
 
+> Requires an **Apple Silicon** Mac (M1 or later) on **macOS 14+**. Intel Macs: not supported yet.
+
 1. Download the latest `VibeGauge.zip` from [GitHub Releases](https://github.com/MaxHaiCom/vibe-gauge/releases).
 2. Unzip and drag `VibeGauge.app` into your `/Applications` folder.
 3. Launch it. The icon will appear in your top menu bar.

@@ -77,6 +77,8 @@
 
 ### 方式一：直接下载预编译 App（推荐）
 
+> 需要 **Apple Silicon**（M1 及以上）Mac，**macOS 14+**。暂不支持 Intel Mac。
+
 1. 前往 [GitHub Releases](https://github.com/MaxHaiCom/vibe-gauge/releases) 下载最新版 `VibeGauge.zip`。
 2. 解压并将 `VibeGauge.app` 拖入 `/Applications`（应用程序）目录。
 3. 双击打开，图标即会常驻在菜单栏右上角。

@@ -16,7 +16,14 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Check tag matches app version
+      run: |
+        v=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Resources/Info.plist)
+        [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME != Info.plist v$v"; exit 1; }
 
     - name: Compile and Bundle App
       run: |
@@ -24,6 +31,7 @@ jobs:
         ./build.sh
         # Run selftest to ensure clean binary
         ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest
+        /usr/bin/python3 Resources/vibegauge-proxy.py --selftest
 
     - name: Package Zip
       run: |
@@ -32,11 +40,12 @@ jobs:
         shasum -a 256 VibeGauge.zip > VibeGauge.zip.sha256
 
     - name: Create GitHub Release
-      uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+      uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
       with:
         files: |
           VibeGauge.zip
           VibeGauge.zip.sha256
+        fail_on_unmatched_files: true
         draft: false
         prerelease: false
         generate_release_notes: true
