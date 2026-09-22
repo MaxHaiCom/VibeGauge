@@ -112,7 +112,7 @@ public struct StatsTabView: View {
         return parts.count == 3 ? L("最多的一天：\(parts[1])月\(parts[2])日", "Top day: \(parts[1])-\(parts[2])") : L("最多的一天：\(day.key)", "Top day: \(day.key)")
     }
     private func weekday(_ date: Date) -> String {
-        [L("日", "Sun"), L("一", "Mon"), L("二", "Tue"), L("三", "Wed"), L("四", "Thu"), L("五", "Fri"), L("六", "Sat")][Calendar.current.component(.weekday, from: date) - 1]
+        [L("日", "Su"), L("一", "Mo"), L("二", "Tu"), L("三", "We"), L("四", "Th"), L("五", "Fr"), L("六", "Sa")][Calendar.current.component(.weekday, from: date) - 1]
     }
 
     private var distribution: some View {

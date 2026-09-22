@@ -520,7 +520,7 @@ public extension ScanReport {
         for l in detectedLLMs {
             addQuota(l.fiveHour, l.name, "5h")
             addQuota(l.sevenDay, l.name, L("周", "weekly"), keyPool: "周")
-            let sec = l.secondaryPoolName.isEmpty ? L("副池", "Secondary") : (l.secondaryPoolName == "三方" ? L("三方", "Third-party") : l.secondaryPoolName)
+            let sec = l.secondaryPoolName.isEmpty ? L("副池", "Secondary") : (l.secondaryPoolName == "三方" ? L("三方", "3P") : l.secondaryPoolName)
             let secKey = l.secondaryPoolName.isEmpty ? "副池" : l.secondaryPoolName
             addQuota(l.secondaryFiveHour, l.name, "\(sec) 5h", keyPool: "\(secKey) 5h")
             addQuota(l.secondarySevenDay, l.name, "\(sec) \(L("周", "weekly"))", keyPool: "\(secKey) 周")

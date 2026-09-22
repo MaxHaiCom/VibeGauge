@@ -489,10 +489,12 @@ public extension Fmt {
         let d = Double(count)
         if isChineseUI {
             if count >= 100_000_000 { return String(format: "%.2f 亿", d / 1e8) }
+            if count >= 10_000_000 { return String(format: "%.0f 万", d / 1e4) }
             if count >= 10_000 { return String(format: "%.1f 万", d / 1e4) }
         } else {
             if count >= 1_000_000_000 { return String(format: "%.2fB", d / 1e9) }
             if count >= 1_000_000 { return String(format: "%.1fM", d / 1e6) }
+            if count >= 100_000 { return String(format: "%.0fk", d / 1e3) }      // 142k，不要 142.0k
             if count >= 10_000 { return String(format: "%.1fk", d / 1e3) }
         }
         return String(count)

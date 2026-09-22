@@ -68,7 +68,7 @@ public struct NetworkTabView: View {
             ForEach(snapshot.aiExits) { item in
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        Text(item.name).font(.system(size: 10.5, weight: .medium)).frame(width: 78, alignment: .leading)
+                        Text(item.name).font(.system(size: 10.5, weight: .medium)).lineLimit(1).frame(width: 92, alignment: .leading)
                         if item.isGemini {
                             Text(L("由活动连接判断", "Based on active connections"))
                                 .font(.system(size: 9.5, design: .monospaced)).foregroundColor(.secondary)
@@ -89,7 +89,7 @@ public struct NetworkTabView: View {
                     }
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text(!item.error.isEmpty ? item.error : item.isGemini ? L("等待连接表采集", "Waiting for connection table") : L("国家 \(item.loc.isEmpty ? "—" : item.loc) · 机房 \(item.colo.isEmpty ? "—" : item.colo)", "country \(item.loc.isEmpty ? "—" : item.loc) · colo \(item.colo.isEmpty ? "—" : item.colo)"))
-                            .font(.system(size: 8.8)).foregroundColor(item.error.isEmpty ? .secondary : .orange).lineLimit(2)
+                            .font(.system(size: 8.8)).foregroundColor(item.error.isEmpty || item.isGemini ? .secondary : .orange).lineLimit(2)
                             .help(item.error)
                         Spacer(minLength: 0)
                         if !item.isGemini {
@@ -138,7 +138,7 @@ public struct NetworkTabView: View {
 
     private var localSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            localRow(L("默认路由", "Default route"), value: snapshot.local.gateway.isEmpty ? L("查不到（系统未提供默认路由）", "Unavailable (system provided no default route)") : "\(snapshot.local.gateway) · \(snapshot.local.interfaceName)")
+            localRow(L("默认路由", "Gateway"), value: snapshot.local.gateway.isEmpty ? L("查不到（系统未提供默认路由）", "Unavailable (system provided no default route)") : "\(snapshot.local.gateway) · \(snapshot.local.interfaceName)")
             localRow("IPv4", value: snapshot.local.ipv4.isEmpty ? L("未检测到接口 IPv4", "No interface IPv4 detected") : snapshot.local.ipv4)
             localRow("IPv6", value: snapshot.local.ipv6.isEmpty ? L("未检测到 global IPv6", "No global IPv6 detected") : snapshot.local.ipv6)
             localRow("DNS", value: snapshot.local.dnsServers.isEmpty ? L("查不到（resolver #1 未提供 nameserver）", "Unavailable (resolver #1 provided no nameserver)") : snapshot.local.dnsServers.joined(separator: ", "))

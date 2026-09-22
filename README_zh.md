@@ -26,11 +26,20 @@
 
 ---
 
-<p align="center">
-  <img src="assets/dashboard_subscription.png" width="48%" alt="订阅与模型监控" />
-  &nbsp;
-  <img src="assets/dashboard_system.png" width="48%" alt="系统与MCP清理" />
-</p>
+<table>
+  <tr>
+    <td align="center" valign="top" width="33%"><img src="assets/screenshots/zh-plans.png" alt="各家额度一览" /><br /><sub>各家额度一览</sub></td>
+    <td align="center" valign="top" width="33%"><img src="assets/screenshots/zh-forecast.png" alt="懂作息的周额度预估" /><br /><sub>懂作息的周额度预估</sub></td>
+    <td align="center" valign="top" width="33%"><img src="assets/screenshots/zh-network.png" alt="AI 出口 IP 与泄漏体检" /><br /><sub>AI 出口 IP 与泄漏体检</sub></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" width="33%"><img src="assets/screenshots/zh-stats.png" alt="近 42 天用量与成本" /><br /><sub>近 42 天用量与成本</sub></td>
+    <td align="center" valign="top" width="33%"><img src="assets/screenshots/zh-mac.png" alt="孤儿进程清理、磁盘与设置" /><br /><sub>孤儿进程清理、磁盘与设置</sub></td>
+    <td></td>
+  </tr>
+</table>
+
+<p align="center"><sub>截图使用虚构的演示数据（<code>tools/screenshots.sh</code> 生成）。</sub></p>
 
 ---
 

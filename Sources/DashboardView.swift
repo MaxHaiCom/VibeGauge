@@ -170,6 +170,17 @@ public struct DashboardView: View {
         _exitNotifyOn = State(initialValue: settings.exitChangeNotify)
     }
 
+    /// 截图 / 预览用：只显示灌进来的演示数据，不启动实时刷新 —— 读不到本机任何真实用量（tools/screenshots.swift）
+    private var isDemo = false
+
+    init(demo report: ScanReport, history: UsageHistory.Snapshot, network: NetworkSnapshot, drillDown: String? = nil) {
+        self.init(report: report, settings: PanelSettings(autoClean: true, launchAtLogin: true), actions: PanelActions())
+        _history = State(initialValue: history)
+        _network = State(initialValue: network)
+        _drillDown = State(initialValue: drillDown)
+        isDemo = true
+    }
+
     /// 旧索引 2 是系统页；只迁移一次，之后用户主动选择统计页不会被改回去。
     static func migrateTabSelection(defaults: UserDefaults = .standard) {
         guard !defaults.bool(forKey: "vg.fiveTabsMigrated") else { return }
@@ -293,7 +304,7 @@ public struct DashboardView: View {
     }
 
     private func secondaryPoolDisplay(_ name: String) -> String {
-        name == "三方" ? L("三方", "Third-party") : name
+        name == "三方" ? L("三方", "3P") : name
     }
 
     /// 0% 绿 → 100% 红 连续渐变。平方让曲线后段变色更快：
@@ -338,6 +349,7 @@ public struct DashboardView: View {
     }
 
     private func refreshLive() {
+        guard !isDemo else { return }
         // 新采集器独立节流，只读 O(1) 快照；旧扫描较慢时进度与网络页仍每秒刷新。
         network = NetworkScanner.shared.snapshot()
         history = UsageHistory.shared.snapshot()
@@ -1022,10 +1034,10 @@ public struct DashboardView: View {
             settingRow(L("检查更新", "Check for updates"), detail: L("每天问一次 GitHub 有没有新版本；只提示，不自动安装", "Asks GitHub once a day for a newer release; notifies only, never installs"),
                        isOn: $updateCheckOn)
             ForEach([("claude", "Claude Code"), ("agy", "Antigravity (agy)")], id: \.0) { tool, name in
-                if let t = StatuslineBridge.Tool(rawValue: tool), StatuslineBridge.shared.toolInstalled(t) {
+                if let t = StatuslineBridge.Tool(rawValue: tool), isDemo || StatuslineBridge.shared.toolInstalled(t) {
                     settingRow(L("\(name) 额度连接", "\(name) quota link"),
                                detail: L("从它的状态栏读取官方额度；原状态栏照常显示，关掉即还原", "Reads official quota from its status line; your status line is unchanged; off restores it"),
-                               isOn: Binding(get: { StatuslineBridge.shared.isConnected(t) }, set: { actions.setQuotaBridge(tool, $0) }))
+                               isOn: Binding(get: { isDemo || StatuslineBridge.shared.isConnected(t) }, set: { actions.setQuotaBridge(tool, $0) }))
                 }
             }
         }
@@ -1223,7 +1235,7 @@ public struct DashboardView: View {
     private func footerParts(for llm: DetectedLLMRuntime) -> (resets: String, stale: String) {
         let sp = secondaryPoolDisplay(llm.secondaryPoolName)
         let windows: [(String, QuotaWindow?)] = [
-            ("5H", llm.fiveHour), ("W", llm.sevenDay), ("\(sp)5H", llm.secondaryFiveHour), ("\(sp)W", llm.secondarySevenDay)
+            ("5H", llm.fiveHour), ("W", llm.sevenDay), (L("\(sp)5H", "\(sp) 5H"), llm.secondaryFiveHour), (L("\(sp)W", "\(sp) W"), llm.secondarySevenDay)
         ]
         let resets = windows.compactMap { label, w -> String? in
             guard let w = w, let c = Fmt.countdown(to: w.resetsAt, now: nowTS) else { return nil }
@@ -1267,7 +1279,7 @@ public struct DashboardView: View {
             Text((b.over ? "⚡ " : "→ ") + b.text)
                 .font(.system(size: 7))
                 .foregroundColor(b.over ? .orange : .secondary)
-                .lineLimit(1)
+                .lineLimit(2)                       // 半宽卡片一行放不下「x 后打满（重置时 y%）」，截断就看不到结论了
         }
         if !parts.resets.isEmpty || !parts.stale.isEmpty {
             (Text(parts.resets)
@@ -1329,6 +1341,7 @@ public struct DashboardView: View {
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(llm.isRunning ? .primary : .secondary)
                 .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)   // 平台名永远完整；挤不下时截后面的会话数
 
             if !llm.tier.isEmpty {
                 Text(llm.tier)

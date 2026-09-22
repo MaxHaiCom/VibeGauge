@@ -26,11 +26,20 @@
 
 ---
 
-<p align="center">
-  <img src="assets/dashboard_subscription.png" width="48%" alt="Subscription & Quota Dashboard" />
-  &nbsp;
-  <img src="assets/dashboard_system.png" width="48%" alt="System & MCP Process Cleaner" />
-</p>
+<table>
+  <tr>
+    <td align="center" valign="top" width="33%"><img src="assets/screenshots/en-plans.png" alt="Quotas at a glance" /><br /><sub>Quotas at a glance</sub></td>
+    <td align="center" valign="top" width="33%"><img src="assets/screenshots/en-forecast.png" alt="Sleep-aware weekly forecast" /><br /><sub>Sleep-aware weekly forecast</sub></td>
+    <td align="center" valign="top" width="33%"><img src="assets/screenshots/en-network.png" alt="AI egress IP &amp; leak checks" /><br /><sub>AI egress IP &amp; leak checks</sub></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" width="33%"><img src="assets/screenshots/en-stats.png" alt="42-day history &amp; cost" /><br /><sub>42-day history &amp; cost</sub></td>
+    <td align="center" valign="top" width="33%"><img src="assets/screenshots/en-mac.png" alt="Orphan reaper, disk &amp; settings" /><br /><sub>Orphan reaper, disk &amp; settings</sub></td>
+    <td></td>
+  </tr>
+</table>
+
+<p align="center"><sub>Screenshots use made-up demo data (<code>tools/screenshots.sh</code>).</sub></p>
 
 ---
 

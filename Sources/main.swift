@@ -409,6 +409,8 @@ if CommandLine.arguments.contains("--selftest") {
         precondition(merged.count == 1 && merged[a.id]?.usage.out == 20)
         precondition(Fmt.tokens(10_000) == L("1.0 万", "10.0k") && Fmt.tokens(100_000_000) == L("1.00 亿", "100.0M"))
         precondition(Fmt.tokens(2_350_000_000) == L("23.50 亿", "2.35B") && Fmt.tokens(9_999) == "9999")
+        precondition(Fmt.tokens(18_300_000) == L("1830 万", "18.3M"), "上千万不带小数，窄列里才不折行")
+        precondition(Fmt.tokens(142_000) == L("14.2 万", "142k"))
     }
 
     // 临时目录覆盖真实增量路径：重启、跨文件去重、追加半行、重写、模型成本重算。
@@ -544,7 +546,7 @@ if CommandLine.arguments.contains("--selftest") {
     let earlyHistory = UsageHistory.shared.snapshot()
     for l in r.detectedLLMs {
         let profile = earlyHistory.activityProfile(for: l.name)
-        let secondaryPool = l.secondaryPoolName == "三方" ? L("三方", "Third-party") : l.secondaryPoolName
+        let secondaryPool = l.secondaryPoolName == "三方" ? L("三方", "3P") : l.secondaryPoolName
         print("\(l.isRunning ? "●" : "○") \(l.name) [\(l.tier)] \(l.detail)" + w("5H", l.fiveHour) + w("W", l.sevenDay, profile) + w("\(secondaryPool)5H", l.secondaryFiveHour) + w("\(secondaryPool)W", l.secondarySevenDay, profile) + (l.hasQuota ? "" : "  | \(l.quotaSubtitle)"))
     }
     let rs = ProcessScanner.shared.codexRemoteStatus()
