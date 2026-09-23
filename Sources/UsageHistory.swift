@@ -55,6 +55,8 @@ public final class UsageHistory {
     public struct Snapshot: Equatable {
         public var days: [Day] = []
         public var dailyTokens: [String: Int64] = [:]
+        /// 近 8 天按小时的 token（键 "yyyy-MM-dd#H"，本地时区），给「近 7 天 × 时段」热力图；更早的记录已按天折叠，没有小时粒度
+        public var hourlyTokens: [String: Int64] = [:]
         public var totals: [String: Totals] = [:]
         public var aggregate = Totals()
         public var earliestDate: String?
@@ -584,6 +586,12 @@ public final class UsageHistory {
             if record.cumulative { result.cumulativeTurns += 1 }
         }
         let now = clock()
+        let hourCal = Calendar.current
+        for record in records where record.timestamp > now - 8 * 86400 && !Self.isProxySource(record.source) {
+            let d = Date(timeIntervalSince1970: record.timestamp)
+            let key = Self.dayKey(timestamp: record.timestamp) + "#\(hourCal.component(.hour, from: d))"
+            result.hourlyTokens[key, default: 0] += record.usage.tokenTotal
+        }
         for (source, recs) in Dictionary(grouping: records, by: \.source) {
             result.hourCounts[source] = ActivityProfile.hourCounts(recs.map(\.timestamp), now: now)
         }

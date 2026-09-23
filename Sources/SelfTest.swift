@@ -807,6 +807,9 @@ enum SelfTest {
             precondition(snap.totals["Codex"]?.ctx == 320 && snap.totals["Codex"]?.out == 32 && snap.totals["Codex"]?.turns == 5 && snap.totals["Codex"]?.sessions == 2)
             precondition(snap.totals["API · Fixture A"]?.ctx == 30 && snap.totals["API · Fixture B"]?.ctx == 50)
             precondition(snap.cost == nil && !snap.hasPriceTable && snap.error.isEmpty)
+            // 时段热力图：近 8 天的 CLI 记录按小时归桶，合计等于 Claude + Codex，经代理的 API 不算
+            precondition(snap.hourlyTokens.values.reduce(0, +) == 45 + 10 + 320 + 32 && snap.hourlyTokens.keys.allSatisfy { $0.contains("#") },
+                         "按小时：\(snap.hourlyTokens)")
             let cacheURL = root.appendingPathComponent(".config/vibegauge/usage-daily.json")
             func checkCachePermissions() throws {
                 let file = try FileManager.default.attributesOfItem(atPath: cacheURL.path)

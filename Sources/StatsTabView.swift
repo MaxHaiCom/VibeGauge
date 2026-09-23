@@ -5,13 +5,11 @@ import Foundation
 public struct StatsTabView: View {
     public let snapshot: UsageHistory.Snapshot
     public init(snapshot: UsageHistory.Snapshot) { self.snapshot = snapshot }
+    @AppStorage("vg.heatmapHourly") private var heatmapHourly = false
+    @State private var monthOffset = 0
 
     private var hasRecords: Bool { snapshot.aggregate.turns > 0 }
     private var sources: [String] { ["Claude", "Codex"] + snapshot.totals.keys.filter { $0 != "Claude" && $0 != "Codex" }.sorted() }
-    private var days: [Date] {
-        let cal = Calendar.current, today = Calendar.current.startOfDay(for: Date())
-        return (0..<42).map { cal.date(byAdding: .day, value: $0 - 41, to: today)! }
-    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -70,47 +68,137 @@ public struct StatsTabView: View {
         return String(format: "%.2f %@", value, snapshot.priceCurrency)
     }
 
+    /// 每日强度：默认按月日历（一行 7 天，周一开头，和日历对得上）；点一下切到「近 7 天 × 24 小时」，再点切回
     private var heatmap: some View {
-        let dates = days
-        let keys = dates.map { UsageHistory.dayKey(timestamp: $0.timeIntervalSince1970) }
-        let values = keys.map { snapshot.dailyTokens[$0] ?? 0 }
-        let grades = UsageHistory.levels(values)
-        return section(L("每日强度 · 近 42 天", "Daily intensity · last 42 days")) {
-            HStack(alignment: .top, spacing: 5) {
-                VStack(spacing: 4) {
-                    Text(" ").font(.system(size: 7.5)).frame(height: 10)
-                    ForEach(0..<7, id: \.self) { row in
-                        Text(weekday(dates[row])).font(.system(size: 8)).foregroundColor(.secondary).frame(width: 14, height: 14)
-                    }
-                }
-                ForEach(0..<6, id: \.self) { column in
-                    VStack(spacing: 4) {
-                        // 每列 7 天：顶上标这一列从哪天开始（最后一列到今天为止）
-                        Text(monthDay(dates[column * 7])).font(.system(size: 7.5)).foregroundColor(.secondary).frame(height: 10)
-                        ForEach(0..<7, id: \.self) { row in
-                            let i = column * 7 + row
-                            RoundedRectangle(cornerRadius: 3)
-                                .fill(grades[i] == 0 ? Color.secondary.opacity(0.10) : Color.green.opacity(0.15 + Double(grades[i]) * 0.15))
-                                .frame(maxWidth: .infinity).frame(height: 14)
-                                .help("\(keys[i]) · \(values[i]) token")
-                        }
-                    }
-                }
-            }
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(maxDayText)
+                Text(heatmapHourly ? L("时段强度 · 近 7 天", "By hour · last 7 days") : L("每日强度 · \(monthTitle)", "Daily intensity · \(monthTitle)"))
+                    .font(.system(size: 11, weight: .bold)).foregroundColor(.secondary)
+                Spacer()
+                if !heatmapHourly {
+                    Button { monthOffset -= 1 } label: { Image(systemName: "chevron.left") }.buttonStyle(.plain)
+                        .disabled(monthOffset <= -11)
+                    Button { monthOffset = min(0, monthOffset + 1) } label: { Image(systemName: "chevron.right") }.buttonStyle(.plain)
+                        .disabled(monthOffset == 0)
+                }
+                Text(heatmapHourly ? L("点按看月历", "Tap for month") : L("点按看时段", "Tap for hours"))
+                    .font(.system(size: 8)).foregroundColor(.secondary)
+            }
+            .font(.system(size: 9)).foregroundColor(.secondary)
+            if heatmapHourly { hourlyGrid } else { monthGrid }
+            HStack {
+                Text(heatmapHourly ? L("更早的记录已按天汇总，没有时段", "Older records are daily totals only") : maxDayText)
                 Spacer()
                 Text(L("少", "Less"))
                 ForEach(1...5, id: \.self) { level in
-                    RoundedRectangle(cornerRadius: 1).fill(Color.green.opacity(0.15 + Double(level) * 0.15)).frame(width: 7, height: 7)
+                    RoundedRectangle(cornerRadius: 1).fill(heatColor(level)).frame(width: 7, height: 7)
                 }
                 Text(L("多", "More"))
             }.font(.system(size: 8)).foregroundColor(.secondary)
         }
+        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.06)).cornerRadius(8)
+        .contentShape(Rectangle())
+        .onTapGesture { heatmapHourly.toggle() }
+    }
+
+    private func heatColor(_ level: Int) -> Color {
+        level == 0 ? Color.secondary.opacity(0.10) : Color.green.opacity(0.15 + Double(level) * 0.15)
+    }
+
+    /// 周一开头的当月日历：monthOffset = 0 是本月，-1 上个月…
+    private var monthStart: Date {
+        let cal = Calendar.current
+        let first = cal.date(from: cal.dateComponents([.year, .month], from: Date()))!
+        return cal.date(byAdding: .month, value: monthOffset, to: first)!
+    }
+    private var monthTitle: String {
+        let c = Calendar.current.dateComponents([.year, .month], from: monthStart)
+        return L("\(c.year!) 年 \(c.month!) 月", String(format: "%04d-%02d", c.year!, c.month!))
+    }
+
+    private var monthGrid: some View {
+        let cal = Calendar.current
+        let start = monthStart
+        let count = cal.range(of: .day, in: .month, for: start)!.count
+        let lead = (cal.component(.weekday, from: start) + 5) % 7          // 周一 = 0
+        let cells: [Date?] = Array(repeating: nil, count: lead) + (0..<count).map { cal.date(byAdding: .day, value: $0, to: start) }
+            + Array(repeating: nil, count: (7 - (lead + count) % 7) % 7)
+        let keys = cells.map { $0.map { UsageHistory.dayKey(timestamp: $0.timeIntervalSince1970) } }
+        let values = keys.map { $0.flatMap { snapshot.dailyTokens[$0] } ?? 0 }
+        // 颜色深浅按近一年所有活跃日分档：翻到只有两三天数据的月份也不会失真
+        let reference = Array(snapshot.dailyTokens.values)
+        let grades = Array(UsageHistory.levels(reference + values).suffix(values.count))
+        let today = cal.startOfDay(for: Date())
+        let heads = [L("一", "Mo"), L("二", "Tu"), L("三", "We"), L("四", "Th"), L("五", "Fr"), L("六", "Sa"), L("日", "Su")]
+        return VStack(spacing: 4) {
+            HStack(spacing: 4) {
+                ForEach(0..<7, id: \.self) { i in
+                    Text(heads[i]).font(.system(size: 8)).foregroundColor(.secondary).frame(maxWidth: .infinity)
+                }
+            }
+            ForEach(0..<(cells.count / 7), id: \.self) { row in
+                HStack(spacing: 4) {
+                    ForEach(0..<7, id: \.self) { col in
+                        let i = row * 7 + col
+                        if let d = cells[i] {
+                            dayCell(d, today: today, grade: grades[i], tip: "\(keys[i] ?? "") · \(Fmt.tokens(values[i])) token")
+                        } else {
+                            Color.clear.frame(maxWidth: .infinity).frame(height: 16)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func dayCell(_ d: Date, today: Date, grade: Int, tip: String) -> some View {
+        let future = d > today
+        let border: Color = d == today ? Color.primary.opacity(0.6) : Color.secondary.opacity(future ? 0.15 : 0)
+        return RoundedRectangle(cornerRadius: 3)
+            .fill(future ? Color.clear : heatColor(grade))
+            .overlay(RoundedRectangle(cornerRadius: 3).stroke(border, lineWidth: 1))
+            .overlay(Text("\(Calendar.current.component(.day, from: d))").font(.system(size: 7.5))
+                .foregroundColor(grade >= 4 ? Color.black.opacity(0.7) : Color.secondary))
+            .frame(maxWidth: .infinity).frame(height: 16)
+            .help(tip)
+    }
+
+    /// 近 7 天（行，今天在最下）× 24 小时（列）
+    private var hourlyGrid: some View {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        let dates = (0..<7).map { cal.date(byAdding: .day, value: $0 - 6, to: today)! }
+        let keys = dates.map { UsageHistory.dayKey(timestamp: $0.timeIntervalSince1970) }
+        let values = keys.flatMap { k in (0..<24).map { snapshot.hourlyTokens["\(k)#\($0)"] ?? 0 } }
+        let grades = UsageHistory.levels(values)
+        return VStack(spacing: 2) {
+            HStack(spacing: 1.5) {
+                Text("").frame(width: 34)
+                ForEach(0..<24, id: \.self) { h in
+                    Text(h % 6 == 0 ? "\(h)" : " ").font(.system(size: 7.5)).foregroundColor(.secondary)
+                        .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            ForEach(0..<7, id: \.self) { row in
+                HStack(spacing: 1.5) {
+                    Text("\(monthDay(dates[row])) \(weekday(dates[row]))").font(.system(size: 7.5)).foregroundColor(.secondary)
+                        .frame(width: 34, alignment: .leading).lineLimit(1)
+                    ForEach(0..<24, id: \.self) { h in
+                        let i = row * 24 + h
+                        RoundedRectangle(cornerRadius: 2).fill(heatColor(grades[i]))
+                            .frame(maxWidth: .infinity).frame(height: 13)
+                            .help("\(keys[row]) \(h):00–\(h + 1):00 · \(Fmt.tokens(values[i])) token")
+                    }
+                }
+            }
+        }
     }
 
     private var maxDayText: String {
-        let visible = Set(days.map { UsageHistory.dayKey(timestamp: $0.timeIntervalSince1970) })
+        let cal = Calendar.current
+        let n = cal.range(of: .day, in: .month, for: monthStart)!.count
+        let visible = Set((0..<n).map { UsageHistory.dayKey(timestamp: cal.date(byAdding: .day, value: $0, to: monthStart)!.timeIntervalSince1970) })
         guard let day = snapshot.dailyTokens.filter({ $0.value > 0 && visible.contains($0.key) }).sorted(by: { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }).first else { return L("最多的一天：未检测到", "Top day: unavailable") }
         let parts = day.key.split(separator: "-").compactMap { Int($0) }
         return parts.count == 3 ? L("最多的一天：\(parts[1])月\(parts[2])日", "Top day: \(parts[1])-\(parts[2])") : L("最多的一天：\(day.key)", "Top day: \(day.key)")

@@ -1,5 +1,5 @@
 // README 截图：用虚构的演示数据离屏渲染面板（不截屏、不读本机任何真实用量）。
-// 用法：tools/screenshots.sh   → assets/screenshots/{zh,en}-{plans,forecast,network,stats,api,mac}.png
+// 用法：tools/screenshots.sh   → assets/screenshots/{zh,en}-{plans,forecast,network,stats,hours,api,mac}.png
 import AppKit
 import SwiftUI
 
@@ -15,13 +15,14 @@ struct Screenshots {
         MainActor.assumeIsolated {
             for lang in ["zh", "en"] {
                 UserDefaults.standard.set(lang, forKey: "uiLanguage")
-                for (name, tab, drill) in [("plans", 0, nil), ("forecast", 0, "Claude"), ("network", 3, nil), ("stats", 2, nil), ("api", 1, nil), ("mac", 4, nil)] as [(String, Int, String?)] {
+                for (name, tab, drill) in [("plans", 0, nil), ("forecast", 0, "Claude"), ("network", 3, nil), ("stats", 2, nil), ("hours", 2, nil), ("api", 1, nil), ("mac", 4, nil)] as [(String, Int, String?)] {
                     UserDefaults.standard.set(tab, forKey: "vg.tab")
+                    UserDefaults.standard.set(name == "hours", forKey: "vg.heatmapHourly")
                     render(DashboardView(demo: report(), history: history(), network: network(), drillDown: drill),
                            to: "\(out)/\(lang)-\(name).png")
                 }
             }
-            for k in ["uiLanguage", "vg.tab"] { UserDefaults.standard.removeObject(forKey: k) }
+            for k in ["uiLanguage", "vg.tab", "vg.heatmapHourly"] { UserDefaults.standard.removeObject(forKey: k) }
         }
     }
 
@@ -175,6 +176,12 @@ struct Screenshots {
             let key = UsageHistory.dayKey(timestamp: date.timeIntervalSince1970)
             s.days.append(UsageHistory.Day(date: key, sources: ["Claude": c, "Codex": x]))
             s.dailyTokens[key] = c.tokenTotal + x.tokenTotal
+            if i < 8 {                                            // 近几天的时段分布：上午、下午两段工作，深夜偶尔
+                for h in 0..<24 {
+                    let w: Double = (9...12).contains(h) ? 1.0 : (14...19).contains(h) ? 0.8 : (21...23).contains(h) ? 0.35 * Double((i + h) % 2) : 0
+                    if w > 0 { s.hourlyTokens["\(key)#\(h)"] = Int64(Double(c.tokenTotal + x.tokenTotal) * w / 9 * (0.7 + 0.3 * sin(Double(h * 7 + i)))) }
+                }
+            }
             totalC.merge(c); totalX.merge(x)
         }
         totalC.sessions = 386; totalX.sessions = 142            // merge 不累加会话数（真实数据按日志文件数另算）
