@@ -78,6 +78,25 @@ enum SelfTest {
             precondition(r.trust(now: t) == .estimated)
             precondition(w(reset: t - 1, captured: t - 60).trustText(now: t) == L("等待新回报", "Awaiting update"))
         }
+        // 预计打满提醒：只报官方回报的窗口；预测持续 15 分钟才发；同一周期只发一次；预测消失再出现要重新计时
+        do {
+            let t: TimeInterval = 1_790_000_000
+            var hot = QuotaWindow(usedPct: 80, resetsAt: t + 7200, capturedAt: t, windowSeconds: 5 * 3600)
+            hot.recentPctPerHour = 30; hot.recentSpanMinutes = 30          // 40 分钟打满，早于 2 小时后的重置
+            var calm = hot; calm.recentPctPerHour = 1
+            var stale = hot; stale.capturedAt = t - 3 * 3600
+            var rolling = hot; rolling.isRolling = true
+            let found = ForecastCandidate.find(in: [("Claude", "5h", hot, nil), ("Codex", "5h", calm, nil), ("Grok", "5h", stale, nil), ("API", "5h", rolling, nil), ("X", "5h", nil, nil)], now: t)
+            precondition(found.map(\.key) == ["forecast:Claude:5h@\(Int(t + 7200))"], "候选：\(found.map(\.key))")
+            precondition(abs((found.first?.exhaustAt ?? 0) - (t + 2400)) < 1)
+            var seen: [String: TimeInterval] = [:]
+            precondition(AppDelegate.dueForecasts(found, firstSeen: &seen, notified: [], now: t).isEmpty, "刚出现不报")
+            precondition(AppDelegate.dueForecasts(found, firstSeen: &seen, notified: [], now: t + 600).isEmpty)
+            precondition(AppDelegate.dueForecasts(found, firstSeen: &seen, notified: [], now: t + 900).count == 1, "持续 15 分钟后报")
+            precondition(AppDelegate.dueForecasts(found, firstSeen: &seen, notified: [found[0].key], now: t + 1000).isEmpty, "同周期不重报")
+            _ = AppDelegate.dueForecasts([], firstSeen: &seen, notified: [], now: t + 1100)
+            precondition(AppDelegate.dueForecasts(found, firstSeen: &seen, notified: [], now: t + 1200).isEmpty, "预测消失后重新计时")
+        }
         precondition(ProxyManager.validPort(0) == 18790 && ProxyManager.validPort(80) == 18790 && ProxyManager.validPort(18791) == 18791 && ProxyManager.validPort(70000) == 18790)
 
         // Codex 跨零点：total_token_usage 是会话累计，今天只算零点后新增的；请求数只数今天的事件

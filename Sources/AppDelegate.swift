@@ -295,6 +295,53 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.toolTip = ([L("VibeGauge · 内存可用 \(report.freePercentage)%", "VibeGauge · \(report.freePercentage)% memory free"), L("—— 以下为已用 %（越高越紧）——", "— below: % used (higher is tighter) —")]
                           + signals.prefix(8).map { "\($0.short)  \($0.pct)%" + ($0.level > 0 ? "  ⚠︎" : "") }).joined(separator: "\n")
         evaluateThresholds(signals)
+        evaluateForecasts(report)
+    }
+
+    // MARK: - 预计打满提醒（每池每周期一次；预测要持续 15 分钟才算稳定；重启不重报）
+
+    private var forecastFirstSeen: [String: TimeInterval] = [:]
+    private let forecastNotifiedKey = "vg.forecastNotified"
+    static let forecastStableAfter: TimeInterval = 15 * 60
+
+    /// 返回这一轮该发的键：持续预测够久、且这个周期没报过
+    static func dueForecasts(_ candidates: [ForecastCandidate], firstSeen: inout [String: TimeInterval],
+                             notified: Set<String>, now: TimeInterval) -> [ForecastCandidate] {
+        let live = Set(candidates.map(\.key))
+        firstSeen = firstSeen.filter { live.contains($0.key) }       // 预测消失 → 重新计时
+        var due: [ForecastCandidate] = []
+        for c in candidates where !notified.contains(c.key) {
+            let since = firstSeen[c.key] ?? now
+            firstSeen[c.key] = since
+            if now - since >= forecastStableAfter { due.append(c) }
+        }
+        return due
+    }
+
+    private func evaluateForecasts(_ report: ScanReport) {
+        guard isThresholdNotifyEnabled else { return }
+        let now = Date().timeIntervalSince1970
+        let history = UsageHistory.shared.snapshot()
+        var windows: [(platform: String, pool: String, window: QuotaWindow?, profile: ActivityProfile?)] = []
+        for l in report.detectedLLMs {
+            let profile = history.activityProfile(for: l.name)
+            let sec = l.secondaryPoolName.isEmpty ? L("副池", "secondary") : l.secondaryPoolName
+            windows += [(l.name, "5h", l.fiveHour, profile), (l.name, L("周", "weekly"), l.sevenDay, profile),
+                        (l.name, "\(sec) 5h", l.secondaryFiveHour, profile), (l.name, "\(sec) \(L("周", "weekly"))", l.secondarySevenDay, profile)]
+        }
+        for p in report.api.providers {
+            windows += [(p.displayName, "5h", p.fiveHour, nil), (p.displayName, L("周", "weekly"), p.sevenDay, nil)]
+        }
+        var notified = Set(UserDefaults.standard.stringArray(forKey: forecastNotifiedKey) ?? [])
+        let due = Self.dueForecasts(ForecastCandidate.find(in: windows, now: now), firstSeen: &forecastFirstSeen, notified: notified, now: now)
+        guard !due.isEmpty else { return }
+        for c in due {
+            sendNotification(title: c.title, body: c.body)
+            notified.insert(c.key)
+        }
+        // 键里带重置点：重置点一周前的旧周期键留着没用
+        let kept = notified.filter { Double($0.split(separator: "@").last ?? "").map { $0 > now - 8 * 86400 } ?? false }
+        UserDefaults.standard.set(kept.sorted(), forKey: forecastNotifiedKey)
     }
 
     // MARK: - 阈值通知

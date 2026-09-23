@@ -206,7 +206,7 @@ These windows are **rolling**: each request frees its share when it turns 5 hour
 | `uiLanguage` | follows system | `zh` or `en`; the switch in the panel's bottom-right corner |
 | `logRetentionDays` | `30` | Session logs older than this are offered for cleanup (minimum 7) |
 | `autoCleanEnabled` | off | Silently reap confirmed orphan processes |
-| `thresholdNotifyEnabled` | on | Notify when memory, disk, or a quota crosses its threshold |
+| `thresholdNotifyEnabled` | on | Notify when memory, disk, or a quota crosses its threshold, and once per quota cycle when a reported (not estimated or stale) quota is projected to run out before its reset, after the projection has held for 15 minutes |
 | `proxyPort` | `18790` | Accounting proxy port (1024–65535). Reinstall the proxy after changing |
 | `clashAPI` | `http://127.0.0.1:9090` | Clash / mihomo / sing-box controller for the Network tab; loopback only |
 | `clashSecret` | none | Controller secret |
@@ -214,7 +214,7 @@ These windows are **rolling**: each request frees its share when it turns 5 hour
 | `exitChangeNotifyEnabled` | on | Notify when the AI egress IP or country changes |
 | `updateCheckEnabled` | on | Check GitHub releases at most once a day |
 
-The app also stores internal state: UI (`vg.tab`, `vg.fiveTabsMigrated`), notification de-duplication (`vg.notifyState`), last seen AI egress per target (`vg.aiExit.<name>`), and update-check bookkeeping (`lastUpdateCheck`, `latestVersion`, `notifiedVersion`).
+The app also stores internal state: UI (`vg.tab`, `vg.fiveTabsMigrated`), notification de-duplication (`vg.notifyState`, `vg.forecastNotified`), last seen AI egress per target (`vg.aiExit.<name>`), and update-check bookkeeping (`lastUpdateCheck`, `latestVersion`, `notifiedVersion`).
 
 ## Command line
 

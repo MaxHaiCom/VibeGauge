@@ -200,6 +200,31 @@ public struct QuotaWindow: Equatable {
     }
 }
 
+
+/// 「预计会在重置前打满」的候选：只看官方回报的固定窗口（估算 / 过期 / 等新回报的都不报）
+public struct ForecastCandidate: Equatable {
+    public let key: String            // 平台 + 池 + 重置点：一个周期一个键
+    public let title: String
+    public let body: String
+    public let exhaustAt: TimeInterval
+
+    public static func find(in windows: [(platform: String, pool: String, window: QuotaWindow?, profile: ActivityProfile?)],
+                            now: TimeInterval) -> [ForecastCandidate] {
+        windows.compactMap { item in
+            guard let w = item.window, w.trust(now: now) == .reported, w.effectivePct(now: now) < 100,
+                  let reset = w.resetsAt, let b = w.burn(now: now, profile: item.profile),
+                  let at = b.exhaustAt, at < reset,
+                  let eta = Fmt.countdown(to: at, now: now), let left = Fmt.countdown(to: reset, now: now) else { return nil }
+            return ForecastCandidate(
+                key: "forecast:\(item.platform):\(item.pool)@\(Int(reset))",
+                title: L("📈 预计打满 · \(item.platform) \(item.pool)", "📈 Projected to run out · \(item.platform) \(item.pool)"),
+                body: L("已用 \(w.effectivePct(now: now))%，照目前节奏（\(b.basis)）约 \(eta) 后打满，离重置还有 \(left)。这是预计，不是已经用完。",
+                        "\(w.effectivePct(now: now))% used; at the current pace (\(b.basis)) it runs out in about \(eta), with \(left) left until the reset. This is a projection."),
+                exhaustAt: at)
+        }
+    }
+}
+
 // 额度采样：记 (时刻, 已用%) 算近期速度，归档上周期终值给预测当先验
 extension ProcessScanner {
     // MARK: 额度采样（算"当前节奏"用）
