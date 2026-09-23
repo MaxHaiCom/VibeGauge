@@ -219,6 +219,18 @@ enum SelfTest {
                 let r = OfficialQuota.run("/bin/bash", ["-n", f.path], stdin: nil, timeout: 10)
                 precondition(r.status == 0, "连接脚本语法：\(c) \(String(data: r.err, encoding: .utf8) ?? "")")
             }
+            precondition(OfficialCLI.parse(.ark, ["items": [["product": "coding-plan", "subscribed": false, "error": "AccessDenied"] as [String: Any]]], capturedAt: 1) == nil, "错误优先于无订阅")
+            precondition(OfficialCLI.parse(.ark, ["items": NSNull()], capturedAt: 1) == nil)
+            precondition(OfficialCLI.parse(.bailian, ["per5Hour": ["percentage": 0.1, "resetTime": 1e308]], capturedAt: 1)?.fiveHour.map { $0.usedPct == 10 && $0.resetsAt == nil } == true, "离谱重置时间丢弃")
+            // 路径里的 $() 不能被 shell 执行
+            let q = OfficialQuota.run("/bin/bash", ["-c", "echo " + OfficialQuota.shellQuote("/x/v1$(echo HACK)'`id`/bin")], stdin: nil, timeout: 10)
+            precondition(String(data: q.out, encoding: .utf8) == "/x/v1$(echo HACK)'`id`/bin\n", "转义：\(String(data: q.out, encoding: .utf8) ?? "")")
+            // 关掉输出但继续运行的进程：按进程退出计时，到点杀掉，不会一直等
+            let t0 = Date()
+            let hang = OfficialQuota.run("/bin/sh", ["-c", "exec >&- 2>&-; sleep 30"], stdin: nil, timeout: 1)
+            precondition(hang.timedOut && Date().timeIntervalSince(t0) < 6, "超时：\(hang.timedOut) \(Date().timeIntervalSince(t0))")
+            let echo = OfficialQuota.run("/bin/cat", [], stdin: Data("hi".utf8), timeout: 5)
+            precondition(String(data: echo.out, encoding: .utf8) == "hi" && echo.status == 0 && !echo.timedOut)
             precondition(OfficialQuota.firstJSONObject(Data("update available\n{\"a\":1}".utf8)) != nil)
         }
         // Codex 上下文水位：压缩后旧水位作废；只来新窗口不来用量 → 未知，不拿旧用量除新窗口
@@ -242,6 +254,16 @@ enum SelfTest {
             put(100)
             let a2 = ProcessScanner.refreshCodexCtx(path: f.path, from: a1)
             precondition(a1.used == 900 && a2.used == 100, "等长重写：\(a1.used as Any) → \(a2.used as Any)")
+            // 尾部不变、前面的数被改（同尺寸原地改写）：靠修改时间识别
+            let two = String(data: tc(["model_context_window": 1000, "last_token_usage": ["total_tokens": 300]]), encoding: .utf8)! + "\n"
+                    + String(data: line(["type": "turn_context", "timestamp": "2026-09-23T01:00:00Z", "payload": ["model": "m"]]), encoding: .utf8)! + "\n"
+            try! two.write(to: f, atomically: false, encoding: .utf8)
+            try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: f.path)
+            let b1 = ProcessScanner.refreshCodexCtx(path: f.path, from: CodexCtxState())
+            try! two.replacingOccurrences(of: "\"total_tokens\":300", with: "\"total_tokens\":700").write(to: f, atomically: false, encoding: .utf8)
+            try! FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_100)], ofItemAtPath: f.path)
+            let b2 = ProcessScanner.refreshCodexCtx(path: f.path, from: b1)
+            precondition(b1.used == 300 && b2.used == 700, "尾部不变的改写：\(b1.used as Any) → \(b2.used as Any)")
         }
         // 待处理会话：只显示确认过的（permission_prompt / 等输入）；Hook 之后日志又动过 = 会话已往下走
         do {

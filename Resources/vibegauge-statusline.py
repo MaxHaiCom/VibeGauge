@@ -455,7 +455,7 @@ def record_hook(data, now: float) -> None:
     use_id = data.get("tool_use_id") if isinstance(data.get("tool_use_id"), str) else ""
     key = agent + "|" + use_id
     path = waiting_path()
-    creates = ev == "PermissionRequest" or input_note
+    creates = ev == "PermissionRequest" or input_note or (ev == "Notification" and ntype == "permission_prompt")
     # 存在性检查也在锁里做：锁外先读会和正在写的通知撞车，丢掉这次清除
     with open(os.path.join(private_dir(), ".claude-waiting.lock"), "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -482,16 +482,21 @@ def record_hook(data, now: float) -> None:
             elif ev == "Notification" and ntype == "permission_prompt":
                 for c in calls.values():         # 通知不带调用 ID：之前发起的待批准调用都算确认
                     c["state"] = "permission"
+                if not calls:                    # 没有对应的 PermissionRequest（如沙箱联网批准）：单独记一条
+                    calls["|notify"] = {"state": "permission", "since": now, "tool": None}
             elif input_note:
                 sess["input"] = sess.get("input") if _num(sess.get("input")) is not None else now
             elif ev == "SubagentStop":
                 calls = {k: v for k, v in calls.items() if not (agent and k.startswith(agent + "|"))}
             else:                                # 这次调用有了结果：只清对应那一个；不带调用 ID 时清这个子代理的全部
+                # PermissionRequest 可能不带调用 ID（存成「子代理|」）：同一子代理没 ID 的请求、以及独立通知，一并视为有了结果
+                prefix = agent + "|"
                 if use_id:
                     calls.pop(key, None)
                     done[key] = now
+                    calls = {k: v for k, v in calls.items() if k not in (prefix, prefix + "notify")}
                 else:
-                    calls = {k: v for k, v in calls.items() if not k.startswith(agent + "|")}
+                    calls = {k: v for k, v in calls.items() if not k.startswith(prefix)}
                 if not agent:
                     sess.pop("input", None)
             sess.update(calls=calls, done=done, at=now)
@@ -613,6 +618,17 @@ def selftest() -> None:
         assert not waiting()["w1"]["calls"]
         hook({"session_id": "w1", "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_use_id": "T1"})
         assert not waiting()["w1"]["calls"], "已有结果的调用，迟到的 PermissionRequest 不能复活"
+        # 按官方形态：PermissionRequest 不带 tool_use_id，PostToolUse 带 → 也要清掉
+        hook({"session_id": "w4", "hook_event_name": "PermissionRequest", "tool_name": "Bash"})
+        hook({"session_id": "w4", "hook_event_name": "Notification", "notification_type": "permission_prompt"})
+        assert waiting()["w4"]["calls"]["|"]["state"] == "permission"
+        hook({"session_id": "w4", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "toolu_X"})
+        assert not waiting()["w4"]["calls"], waiting()["w4"]
+        # 没有 PermissionRequest 的独立批准通知（沙箱联网）也要显示，之后有结果即清
+        hook({"session_id": "w5", "hook_event_name": "Notification", "notification_type": "permission_prompt"})
+        assert waiting()["w5"]["calls"]["|notify"]["state"] == "permission"
+        hook({"session_id": "w5", "hook_event_name": "PostToolUse", "tool_use_id": "toolu_Y"})
+        assert not waiting()["w5"]["calls"]
         hook({"session_id": "w3", "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_use_id": "T9"})
         hook({"session_id": "w3", "hook_event_name": "PermissionDenied", "tool_use_id": "T9"})
         assert not waiting()["w3"]["calls"], "拒绝也算这次调用结束"

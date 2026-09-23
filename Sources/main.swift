@@ -1,5 +1,8 @@
 import Cocoa
 
+// 往已退出的子进程管道里写会收到 SIGPIPE，默认直接杀掉整个 App：忽略它，让写入返回错误
+signal(SIGPIPE, SIG_IGN)
+
 // `VibeGauge --install-proxy` / `--uninstall-proxy`：命令行装卸 API 记账代理（与菜单同一条代码路径）
 if CommandLine.arguments.contains("--install-proxy") {
     do {

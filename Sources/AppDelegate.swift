@@ -497,7 +497,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async { self?.addUsageKey() }
         }
         actions.removeUsageKey = { [weak self] account in
-            OfficialQuota.shared.remove(account)
+            if !OfficialQuota.shared.remove(account) {
+                self?.sendNotification(title: L("没有删掉", "Not removed"), body: L("钥匙串拒绝删除这条 key，可在「钥匙串访问」里搜 com.haifeng.vibegauge.usage-key 手动删除",
+                                                                                   "Keychain refused to delete the key; search com.haifeng.vibegauge.usage-key in Keychain Access to remove it"))
+            }
             self?.updateStatus()
         }
         actions.connectCLI = { [weak self] c in

@@ -128,7 +128,16 @@ extension ProcessScanner {
                 let r = proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, &si, Int32(MemoryLayout<socket_fdinfo>.size))
                 guard r == Int32(MemoryLayout<socket_fdinfo>.size), si.psi.soi_kind == Int32(SOCKINFO_TCP) else { continue }
                 let tcp = si.psi.soi_proto.pri_tcp
-                if tcp.tcpsi_state == TSI_S_LISTEN, Int(UInt16(bigEndian: UInt16(truncatingIfNeeded: tcp.tcpsi_ini.insi_lport))) == port { return true }
+                guard tcp.tcpsi_state == TSI_S_LISTEN, Int(UInt16(bigEndian: UInt16(truncatingIfNeeded: tcp.tcpsi_ini.insi_lport))) == port else { continue }
+            // 还要是 127.0.0.1 能连到的那个 socket：IPv4 的 127.0.0.1 / 0.0.0.0，或双栈的 ::（同端口在 ::1 或别的地址上监听不算）
+            let ini = tcp.tcpsi_ini
+            if ini.insi_vflag & UInt8(INI_IPV4) != 0 {
+                let a = UInt32(bigEndian: ini.insi_laddr.ina_46.i46a_addr4.s_addr)
+                if a == 0x7F00_0001 || a == 0 { return true }
+            } else if ini.insi_vflag & UInt8(INI_IPV6) != 0 {
+                var any = in6addr_any, addr = ini.insi_laddr.ina_6
+                if memcmp(&addr, &any, MemoryLayout<in6_addr>.size) == 0 { return true }
+            }
             }
         }
         return false

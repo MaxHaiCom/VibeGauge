@@ -59,13 +59,17 @@ public enum OfficialCLI: String, CaseIterable {
         var q = CLIQuota()
         func win(_ pct: Double?, _ reset: TimeInterval?, _ secs: Double) -> QuotaWindow? {
             guard let p = Fmt.pct(pct) else { return nil }
-            return QuotaWindow(usedPct: p, resetsAt: reset, capturedAt: capturedAt, windowSeconds: secs)
+            // 重置时间只认 2001–2100 年之间的有限值：离谱的时间戳下游转整数会崩
+            let r = reset.flatMap { $0.isFinite && $0 > 1e9 && $0 < 4.2e9 ? $0 : nil }
+            return QuotaWindow(usedPct: p, resetsAt: r, capturedAt: capturedAt, windowSeconds: secs)
         }
         switch cli {
         case .ark:
-            let items = (j["items"] as? [[String: Any]] ?? []).filter { ($0["product"] as? String ?? "coding-plan") == "coding-plan" }
-            guard let item = items.first, item["subscribed"] as? Bool != false else { q.noSubscription = j["items"] != nil; return q.noSubscription ? q : nil }
-            if item["error"] is String { return nil }       // 该桶查询失败：交给调用方显示原因
+            // 先认错误，再认「没订阅」：带 error 的条目不能当成已登录无订阅
+            guard j["error"] == nil, let all = j["items"] as? [[String: Any]] else { return nil }
+            let items = all.filter { ($0["product"] as? String ?? "coding-plan") == "coding-plan" }
+            if items.contains(where: { $0["error"] != nil }) { return nil }
+            guard let item = items.first, item["subscribed"] as? Bool != false else { q.noSubscription = true; return q }
             q.plan = (item["tier"] as? String).map { "Coding Plan \($0.capitalized)" } ?? ""
             for p in item["periods"] as? [[String: Any]] ?? [] {
                 let w = win((p["percent"] as? NSNumber)?.doubleValue, Fmt.parseISODate(p["reset_at"] as? String), 0)
@@ -144,6 +148,7 @@ public final class OfficialQuota {
     private var fastUntil: TimeInterval = 0          // 刚点过「连接」：这段时间内 20 秒查一次，登录完很快就能看到
     private var keyCache: [String: String] = [:]     // 本次运行读过的 key：钥匙串授权弹窗每次启动最多一次
     private var denied = Set<String>()                // 用户在钥匙串弹窗里拒绝了：本次运行不再问
+    private var removedAt: [String: TimeInterval] = [:]  // 删掉的时刻：比它早开始的那轮查询结果不能再写回来
 
     // MARK: 扫描侧
 
@@ -168,11 +173,13 @@ public final class OfficialQuota {
         lastRun = now
         lock.unlock()
         queue.async { [self] in
+            let started = Date().timeIntervalSince1970
             let keys = self.probeKeys()
             var states: [OfficialCLI: CLIState] = [:]
             for c in OfficialCLI.allCases { states[c] = self.readCLI(c) }
             lock.lock()
-            keyRows = keys
+            keyRows = keys.filter { (removedAt[$0.key] ?? 0) < started }
+            for (acc, t) in removedAt where t >= started { keyCache[acc] = nil }
             cli = states
             running = false
             if rerun { rerun = false; lastRun = 0 }
@@ -185,6 +192,11 @@ public final class OfficialQuota {
     static func fingerprint(_ key: String) -> String {
         // 与代理的 key 指纹同算法（sha256(头部值) 前 8 位），同一个 key 经代理的调用会并到同一张卡
         SHA256.hash(data: Data(("Bearer " + key).utf8)).map { String(format: "%02x", $0) }.joined().prefix(8).description
+    }
+
+    /// 客户端用 x-api-key 直接发 key 时，代理记的是原值的指纹
+    static func rawFingerprint(_ key: String) -> String {
+        SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined().prefix(8).description
     }
 
     public func register(host: String, key: String) throws {
@@ -203,14 +215,16 @@ public final class OfficialQuota {
         guard st == errSecSuccess else {
             throw NSError(domain: "VibeGauge", code: Int(st), userInfo: [NSLocalizedDescriptionKey: L("写入钥匙串失败（\(st)）", "Couldn't save to Keychain (\(st))")])
         }
-        lock.lock(); keyCache[account] = key; denied.remove(account); lock.unlock()
+        lock.lock(); keyCache[account] = key; denied.remove(account); removedAt[account] = nil; lock.unlock()
         refreshIfDue(force: true)
     }
 
-    public func remove(_ account: String) {
-        SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.service,
-                       kSecAttrAccount as String: account] as CFDictionary)
-        lock.lock(); keyCache[account] = nil; keyRows[account] = nil; lock.unlock()
+    @discardableResult
+    public func remove(_ account: String) -> Bool {
+        let st = SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.service,
+                                kSecAttrAccount as String: account] as CFDictionary)
+        lock.lock(); keyCache[account] = nil; keyRows[account] = nil; removedAt[account] = Date().timeIntervalSince1970; lock.unlock()
+        return st == errSecSuccess || st == errSecItemNotFound
     }
 
     /// 只读属性（不读 key 本身，不会弹授权）
@@ -257,7 +271,11 @@ public final class OfficialQuota {
             }
             let req = (try? JSONSerialization.data(withJSONObject: ["host": r.host, "key": key])) ?? Data()
             let res = Self.run("/usr/bin/python3", [script, "--probe"], stdin: req, timeout: 25)
-            if let j = Self.firstJSONObject(res.out) as? [String: Any] { rows[r.account] = j }
+            if var j = Self.firstJSONObject(res.out) as? [String: Any] {
+                j["_registered"] = true
+                j["_alt_fp"] = Self.rawFingerprint(key)
+                rows[r.account] = j
+            }
             else { rows[r.account] = ["provider": r.name, "error": res.timedOut ? L("查询超时", "Timed out") : L("查询失败", "Query failed"), "captured_at": Date().timeIntervalSince1970] }
         }
         return rows
@@ -269,7 +287,9 @@ public final class OfficialQuota {
         let h = FileManager.default.homeDirectoryForCurrentUser.path
         var dirs = ["\(h)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "\(h)/.npm-global/bin", "\(h)/.volta/bin", "\(h)/.bun/bin"]
         let nvm = "\(h)/.nvm/versions/node"
-        for v in ((try? FileManager.default.contentsOfDirectory(atPath: nvm)) ?? []).sorted().reversed() { dirs.append("\(nvm)/\(v)/bin") }
+        // 只认 v1.2.3 这种版本目录名
+        for v in ((try? FileManager.default.contentsOfDirectory(atPath: nvm)) ?? []).sorted().reversed()
+            where v.range(of: #"^v[0-9]+(\.[0-9]+)*$"#, options: .regularExpression) != nil { dirs.append("\(nvm)/\(v)/bin") }
         return dirs
     }
 
@@ -298,11 +318,14 @@ public final class OfficialQuota {
         return .notConnected(line.isEmpty ? L("读取失败（退出码 \(res.status)）", "Failed (exit \(res.status))") : String(line.prefix(80)))
     }
 
+    /// 单引号包住整段，里面的单引号拆成 '\'' ：目录名里的 $() / 反引号 / 引号都不会被 shell 解释
+    static func shellQuote(_ v: String) -> String { "'" + v.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+
     static func connectScript(_ c: OfficialCLI, needsInstall: Bool) -> String {
         """
         #!/bin/bash
         # VibeGauge：连接\(c.title)的官方额度（由 VibeGauge 生成，可删除）
-        export PATH="\(Self.searchDirs.joined(separator: ":")):$PATH"
+        export PATH=\(Self.shellQuote(Self.searchDirs.joined(separator: ":"))):"$PATH"
         finish() { echo; read -n 1 -s -r -p "按任意键关闭 / Press any key to close"; echo; exit "$1"; }
         echo "== VibeGauge：连接\(c.title)官方额度 =="
         echo
@@ -352,20 +375,41 @@ public final class OfficialQuota {
         p.standardOutput = outPipe
         p.standardError = errPipe
         p.standardInput = inPipe
-        final class Box { var out = Data(); var err = Data() }
+        // 输出随到随收（不阻塞读）；超时以「进程退出」为准 —— 管道 EOF 不等于进程结束，后代进程也可能一直占着管道
+        final class Box { let lock = NSLock(); var out = Data(); var err = Data() }
         let box = Box()
-        let g = DispatchGroup()
-        do { try p.run() } catch { return (-1, Data(), Data(), false) }
-        g.enter(); DispatchQueue.global().async { box.out = outPipe.fileHandleForReading.readDataToEndOfFile(); g.leave() }
-        g.enter(); DispatchQueue.global().async { box.err = errPipe.fileHandleForReading.readDataToEndOfFile(); g.leave() }
-        if let stdin { inPipe.fileHandleForWriting.write(stdin) }
+        outPipe.fileHandleForReading.readabilityHandler = { h in
+            let d = h.availableData
+            if d.isEmpty { h.readabilityHandler = nil; return }      // EOF：不摘掉会空转
+            box.lock.lock(); box.out.append(d); box.lock.unlock()
+        }
+        errPipe.fileHandleForReading.readabilityHandler = { h in
+            let d = h.availableData
+            if d.isEmpty { h.readabilityHandler = nil; return }      // EOF：不摘掉会空转
+            box.lock.lock(); box.err.append(d); box.lock.unlock()
+        }
+        let exited = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in exited.signal() }
+        do { try p.run() } catch {
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            return (-1, Data(), Data(), false)
+        }
+        if let stdin { try? inPipe.fileHandleForWriting.write(contentsOf: stdin) }   // 对方提前退出时抛错而不是崩（SIGPIPE 已忽略）
         try? inPipe.fileHandleForWriting.close()
-        let timedOut = g.wait(timeout: .now() + timeout) == .timedOut
+        let timedOut = exited.wait(timeout: .now() + timeout) == .timedOut
         if timedOut {
             p.terminate()
-            if g.wait(timeout: .now() + 2) == .timedOut { kill(p.processIdentifier, SIGKILL) }
+            if exited.wait(timeout: .now() + 2) == .timedOut {
+                kill(p.processIdentifier, SIGKILL)
+                _ = exited.wait(timeout: .now() + 2)
+            }
         }
-        p.waitUntilExit()
-        return (p.terminationStatus, box.out, box.err, timedOut)
+        // ponytail: 退出后再给 0.2 秒收尾输出；后代进程若还占着管道，多出的输出不要了
+        Thread.sleep(forTimeInterval: 0.2)
+        outPipe.fileHandleForReading.readabilityHandler = nil
+        errPipe.fileHandleForReading.readabilityHandler = nil
+        box.lock.lock(); defer { box.lock.unlock() }
+        return (p.isRunning ? -9 : p.terminationStatus, box.out, box.err, timedOut)
     }
 }

@@ -579,9 +579,14 @@ extension ProcessScanner {
                 }
                 let account = fp.isEmpty ? "-" : fp
                 // 同一 host、同一账户可能有多条路由（火山 Coding / 按量同 key）：优先 provider 名一致的那张
-                let candidates = byHost.values.filter { $0.host == host && $0.account == account }
+                var candidates = byHost.values.filter { $0.host == host && $0.account == account }
+                // 登记的 key 按 Bearer 头算指纹；客户端若用 x-api-key 发同一个 key，代理记的是原值指纹：两种都认
+                if candidates.isEmpty, let alt = d["_alt_fp"] as? String {
+                    candidates = byHost.values.filter { $0.host == host && $0.account == alt }
+                }
                 let id = (candidates.first { $0.provider == provider } ?? candidates.first)?.id ?? Self.cardID(host: host, provider: provider, key: fp)
                 var p = byHost[id] ?? newCard(id, host: host, provider: provider, key: fp)
+                if byHost[id] == nil, d["_registered"] as? Bool == true { p.callsObserved = false }
                 let cap = (d["captured_at"] as? NSNumber)?.doubleValue
                 if let e = d["error"] as? String { p.quotaError = e }
                 let kind = d["kind"] as? String ?? ""
@@ -594,9 +599,17 @@ extension ProcessScanner {
                         return QuotaWindow(usedPct: used, resetsAt: (w["resets_at"] as? NSNumber)?.doubleValue, capturedAt: cap,
                                            windowSeconds: k == "5h" ? 5 * 3600 : 7 * 86400)
                     }
-                    if let w = win("5h") { p.fiveHour = w }
-                    if let w = win("weekly") { p.sevenDay = w }
-                    if p.fiveHour != nil || p.sevenDay != nil { p.quotaSource = L("官方用量接口", "Official usage API"); p.quotaIsEstimate = false }
+                    let w5 = win("5h"), ww = win("weekly")
+                    // 只有这次真解析出官方窗口，才把整卡改成官方口径；估算剩下的月窗 / 模型池一并撤掉，不混着显示
+                    if w5 != nil || ww != nil {
+                        p.fiveHour = w5
+                        p.sevenDay = ww
+                        p.monthly = nil
+                        p.subQuotas = []
+                        p.estimateNote = ""
+                        p.quotaIsEstimate = false
+                        p.quotaSource = L("官方用量接口", "Official usage API")
+                    }
                 } else if kind == "balance" {
                     p.balanceText = balanceText(d)
                 }
@@ -606,10 +619,14 @@ extension ProcessScanner {
         // 厂商官方 CLI：订阅额度的真值，替换本机估算；没有经代理的调用也单独出一张订阅卡
         for c in OfficialCLI.allCases {
             guard case let .connected(q, _) = official.cli[c], !q.noSubscription else { continue }
+            // CLI 查的是它登录的那个账号：只有一张同厂商卡时才并进去；有多张（多个 key / 账号）对不上是谁，单独出一张
             var ids = byHost.values.filter { c.matches($0) }.map(\.id)
-            if ids.isEmpty {
-                let id = Self.cardID(host: c.host, provider: c.provider, key: "")
-                byHost[id] = newCard(id, host: c.host, provider: c.provider, key: "")
+            if ids.count != 1 {
+                let provider = ids.isEmpty ? c.provider : L("\(c.title) · CLI 登录账号", "\(c.title) · CLI account")
+                let id = Self.cardID(host: c.host, provider: provider, key: "")
+                var card = byHost[id] ?? newCard(id, host: c.host, provider: provider, key: "")
+                if byHost[id] == nil { card.callsObserved = false }
+                byHost[id] = card
                 ids = [id]
             }
             for id in ids {

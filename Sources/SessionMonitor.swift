@@ -30,6 +30,8 @@ struct CodexCtxState {
     var size: UInt64 = 0
     /// 已读部分最后 64 字节：文件被原样长度或别的长度重写时，这里对不上 → 从头重读
     var tail = Data()
+    var inode: UInt64 = 0
+    var mtime: TimeInterval = 0
     var used: Int?
     var window: Int?
     var model = ""
@@ -86,8 +88,12 @@ extension ProcessScanner {
     /// 从上次读到的位置接着读；文件变小，或已读部分的末尾对不上（原样长度 / 变长重写）= 被重写，从头来
     static func refreshCodexCtx(path: String, from old: CodexCtxState) -> CodexCtxState {
         var st = old
-        let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.uint64Value ?? 0
-        if size < st.size { st = CodexCtxState() }
+        let attrs = (try? FileManager.default.attributesOfItem(atPath: path)) ?? [:]
+        let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
+        let inode = (attrs[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
+        let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        // 换了文件（inode 变）、变小、同尺寸却被改过（只追加不会这样）：都当重写，从头读
+        if size < st.size || (st.inode != 0 && inode != st.inode) || (size == st.size && st.mtime != 0 && mtime != st.mtime) { st = CodexCtxState() }
         else if st.offset > 0, let fh = FileHandle(forReadingAtPath: path) {
             let n = UInt64(st.tail.count)
             try? fh.seek(toOffset: st.offset - n)
@@ -106,6 +112,8 @@ extension ProcessScanner {
             try? fh.close()
         }
         st.size = size
+        st.inode = inode
+        st.mtime = mtime
         return st
     }
 

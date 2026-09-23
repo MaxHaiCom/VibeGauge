@@ -221,7 +221,7 @@ public struct ForecastCandidate: Equatable {
                             now: TimeInterval) -> [ForecastCandidate] {
         windows.compactMap { item in
             guard let w = item.window, w.trust(now: now) == .reported, w.effectivePct(now: now) < 100,
-                  let reset = w.resetsAt, let b = w.burn(now: now, profile: item.profile),
+                  let reset = w.resetsAt, reset.isFinite, abs(reset) < 1e15, let b = w.burn(now: now, profile: item.profile),
                   let at = b.exhaustAt, at < reset,
                   let eta = Fmt.countdown(to: at, now: now), let left = Fmt.countdown(to: reset, now: now) else { return nil }
             return ForecastCandidate(
@@ -301,7 +301,7 @@ extension ProcessScanner {
     /// 记一笔样本，并把"近期速度"与"上周期终值"回填进窗口。lookback 内取最老的一个样本做两点差。
     func sampleAndFill(_ w: inout QuotaWindow, key rawKey: String, now: TimeInterval) {
         guard !w.isRolling else { return }        // 「重置点」随每笔请求变，按它分键只会堆垃圾样本
-        guard let reset = w.resetsAt else { return }
+        guard let reset = w.resetsAt, reset.isFinite, abs(reset) < 1e15 else { return }   // 离谱的时间戳转 Int 会崩
         loadSamples()
         let key = "\(rawKey)@\(Int(reset))"
         Self.archiveFinals(&qsamples, now: now)
