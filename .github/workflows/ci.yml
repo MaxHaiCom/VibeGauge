@@ -47,6 +47,12 @@ jobs:
         kill -0 "$pid"   # still running = no crash on first launch
         kill "$pid"
 
+    - name: Screenshot Tool Compiles (demo-data renderer for README)
+      run: |
+        swiftc -parse-as-library -target arm64-apple-macosx14.0 \
+          -framework Cocoa -framework SwiftUI -framework ServiceManagement -framework UserNotifications \
+          $(ls Sources/*.swift | grep -v '/main.swift$') tools/screenshots.swift -o "$RUNNER_TEMP/screenshots"
+
     - name: Test Python Proxy Self-Test
       run: |
         /usr/bin/python3 Resources/vibegauge-proxy.py --selftest

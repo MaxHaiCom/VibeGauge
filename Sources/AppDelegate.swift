@@ -24,6 +24,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var autoCleanTimer: Timer?
 
     private var currentReport = ScanReport()
+    private let reportStore = ReportStore(ScanReport())
     private weak var hostingView: SwipeHostingView<DashboardView>?
     private let log = Logger(subsystem: "com.haifeng.vibegauge", category: "menu")
 
@@ -202,6 +203,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async {
                 self?.isScanning = false
                 self?.currentReport = report
+                self?.reportStore.report = report       // 面板开着就跟着刷新
                 self?.renderStatusButton(report: report)
                 self?.reapIfMemoryTight(report)
             }
@@ -401,14 +403,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        // 菜单弹出直接用 ≤8s 前的缓存快照，主线程不做任何扫描；DashboardView.onAppear 会立刻在后台刷一次
-        let report = currentReport
+        // 菜单弹出直接用 ≤8s 前的缓存快照，主线程不做任何扫描；之后跟着 reportStore 刷新
 
         // 面板（Tab 切换，高度随当前 Tab 内容自适应，超过屏幕才滚动）。所有动作都在面板里，菜单只留退出。
         var actions = PanelActions()
-        actions.cleanOrphans = { [weak self] in
+        actions.cleanOrphans = { [weak self] shown in
             self?.menu.cancelTracking()
-            self?.cleanOrphansAction()
+            self?.cleanOrphans(shown)
         }
         actions.cleanNPX = { [weak self] in
             self?.menu.cancelTracking()
@@ -428,16 +429,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.uninstallProxy()
         }
         actions.copyProxyPrefix = { [weak self] in self?.copyProxyPrefix() }
-        actions.purgeLogs = { [weak self] in
+        actions.purgeLogs = { [weak self] shown in
             self?.menu.cancelTracking()
-            self?.purgeLogsAction()
+            self?.purgeLogs(shown)
         }
         actions.relayout = { [weak self] in self?.relayoutMenuPanel() }
         actions.quit = { NSApp.terminate(nil) }
         actions.setQuotaBridge = { [weak self] tool, on in self?.setQuotaBridge(tool, on: on) }
 
         let dashboard = DashboardView(
-            report: report,
+            store: reportStore,
             settings: PanelSettings(autoClean: isAutoCleanEnabled,
                                     launchAtLogin: isLaunchAtLoginEnabled(),
                                     thresholdNotify: isThresholdNotifyEnabled,
@@ -477,8 +478,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Actions
     // kill 里有 300ms 等待，rm -rf 走盘：都不在主线程做
-    @objc func cleanOrphansAction() {
-        let targets = currentReport.orphans
+    @objc func cleanOrphansAction() { cleanOrphans(currentReport.orphans) }
+
+    /// targets = 用户在面板上看到的那一份；killProcesses 发信号前还会逐个复核 pid 与命令行
+    private func cleanOrphans(_ targets: [OrphanProc]) {
         guard !targets.isEmpty else { return }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -494,9 +497,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 删文件是不可逆动作 → 先弹确认，把"删什么、删多少、会失去什么、能不能捞回来"全写清楚
-    @objc func purgeLogsAction() {
+    @objc func purgeLogsAction() { purgeLogs(currentReport.disk.filter { $0.purgeable && $0.oldMB >= 1 }) }
+
+    private func purgeLogs(_ items: [DiskItem]) {
         let days = ProcessScanner.shared.logRetentionDays
-        let items = currentReport.disk.filter { $0.purgeable && $0.oldMB >= 1 }
         let totalMB = items.reduce(0.0) { $0 + $1.oldMB }
         let totalFiles = items.reduce(0) { $0 + $1.oldFiles }
         guard totalFiles > 0 else { return }

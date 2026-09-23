@@ -92,9 +92,17 @@ struct SwipeScroll<Content: View>: NSViewRepresentable {
     }
 }
 
+/// 面板和后台扫描共用的最新快照：面板开着也跟着 8 秒一次的全量扫描更新（内存 / 磁盘 / 孤儿列表），
+/// 清理动作拿的是面板此刻显示的这一份，看到的和动手的是同一版本。
+public final class ReportStore: ObservableObject {
+    @Published public var report: ScanReport
+    public init(_ report: ScanReport) { self.report = report }
+}
+
 /// 面板能触发的动作（由 AppDelegate 注入；SwiftUI 视图自己关不了菜单，需要关的由闭包里 cancelTracking）
 public struct PanelActions {
-    public var cleanOrphans: () -> Void = {}
+    /// 参数 = 面板上正显示的孤儿进程（杀之前 killProcesses 还会逐个复核命令行）
+    public var cleanOrphans: ([OrphanProc]) -> Void = { _ in }
     public var cleanNPX: () -> Void = {}
     public var rescan: () -> Void = {}
     public var setAutoClean: (Bool) -> Void = { _ in }
@@ -104,7 +112,8 @@ public struct PanelActions {
     public var installProxy: () -> Void = {}
     public var uninstallProxy: () -> Void = {}
     public var copyProxyPrefix: () -> Void = {}
-    public var purgeLogs: () -> Void = {}
+    /// 参数 = 面板上正显示的可清理目录（确认框按这份列数字）
+    public var purgeLogs: ([DiskItem]) -> Void = { _ in }
     /// Tab 切换后内容高度变了 → 让宿主按新 fittingSize 重排
     public var relayout: () -> Void = {}
     public var quit: () -> Void = {}
@@ -129,7 +138,8 @@ public struct PanelSettings {
 /// 菜单里的面板：顶部 Tab 切换（订阅 / API / 统计 / 网络 / 系统），高度随当前 Tab 内容自适应（实测 macOS 14 NSMenu 会跟着
 /// 自定义视图的 frame 实时重排），只有超过屏幕可用高度才在内部滚动。
 public struct DashboardView: View {
-    public var report: ScanReport
+    @ObservedObject private var store: ReportStore
+    public var report: ScanReport { store.report }
     public var actions: PanelActions
 
     static let panelWidth: CGFloat = 355
@@ -160,9 +170,9 @@ public struct DashboardView: View {
 
     private let liveTicker = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
-    public init(report: ScanReport, settings: PanelSettings, actions: PanelActions) {
+    public init(store: ReportStore, settings: PanelSettings, actions: PanelActions) {
         Self.migrateTabSelection()
-        self.report = report
+        self.store = store
         self.actions = actions
         _autoCleanOn = State(initialValue: settings.autoClean)
         _launchAtLoginOn = State(initialValue: settings.launchAtLogin)
@@ -174,7 +184,7 @@ public struct DashboardView: View {
     private var isDemo = false
 
     init(demo report: ScanReport, history: UsageHistory.Snapshot, network: NetworkSnapshot, drillDown: String? = nil) {
-        self.init(report: report, settings: PanelSettings(autoClean: true, launchAtLogin: true), actions: PanelActions())
+        self.init(store: ReportStore(report), settings: PanelSettings(autoClean: true, launchAtLogin: true), actions: PanelActions())
         _history = State(initialValue: history)
         _network = State(initialValue: network)
         _drillDown = State(initialValue: drillDown)
@@ -986,7 +996,7 @@ public struct DashboardView: View {
             }
 
             if report.purgeableMB >= 100 {
-                Button(action: actions.purgeLogs) {
+                Button(action: { actions.purgeLogs(report.disk.filter { $0.purgeable && $0.oldMB >= 1 }) }) {
                     HStack {
                         Image(systemName: "trash").font(.system(size: 9))
                         Text(String(format: L("清理 %d 天前的会话记录 · %@", "Clean sessions older than %d days · %@"), ProcessScanner.shared.logRetentionDays, sizeText(report.purgeableMB)))
@@ -1068,7 +1078,7 @@ public struct DashboardView: View {
         if report.totalOrphanCount > 0 || report.npxCacheMB > 100 {
             VStack(spacing: 5) {
                 if report.totalOrphanCount > 0 {
-                    Button(action: actions.cleanOrphans) {
+                    Button(action: { actions.cleanOrphans(report.orphans) }) {
                         HStack {
                             Text(L("清理断链 AI 残留进程", "Reap orphaned AI processes"))
                                 .font(.system(size: 10.5, weight: .medium))
