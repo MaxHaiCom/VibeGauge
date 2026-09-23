@@ -1,5 +1,14 @@
 import Foundation
 
+/// 自测断言：-O 构建里标准库 precondition 不带消息直接崩，CI 上只看到 Illegal instruction。这里打印位置和消息再退出
+fileprivate func precondition(_ ok: @autoclosure () -> Bool, _ message: @autoclosure () -> String = "",
+                              file: StaticString = #fileID, line: UInt = #line) {
+    if !ok() {
+        FileHandle.standardError.write(Data("自测失败 / self-test failed: \(file):\(line) \(message())\n".utf8))
+        exit(1)
+    }
+}
+
 // 真实日志结构 fixture：按上游 CLI 版本留样，键名和嵌套照抄真实文件，正文/ID/路径全部替换成占位。
 // 上游改了格式 → 在这里加一组新版本样本，旧版本样本保留（用户机器上新旧日志会同时存在）。
 enum SelfTestFixtures {

@@ -48,9 +48,9 @@ public extension ScanReport {
             let pct = w.effectivePct()
             var detail = L("已用 \(pct)%", "\(pct)% used")
             if let r = w.resetText() { detail += " · " + r }
-            // 去重键按周期分；滚动窗口的「下一笔释放」每来一笔请求都变，按它分键会每次扫描都重新提醒
-            let stamp = w.isRolling ? "rolling" : (w.resetsAt.flatMap { $0.isFinite && abs($0) < 1e15 ? String(Int($0)) : nil } ?? "na")
-            out.append(PressureSignal(key: "quota:\(keyID ?? platform):\(keyPool ?? pool)@\(stamp)",
+            // 去重键只认「哪个池」，不带重置时间：agy 等按「现在 + 剩余秒数」算重置点，每次刷新都差几秒，
+            // 带进键里会让同一个满额池隔几分钟就当成新周期再报一遍。新周期靠用量回落到警告线以下自然重新布防
+            out.append(PressureSignal(key: "quota:\(keyID ?? platform):\(keyPool ?? pool)",
                                       short: "\(platform) \(pool)", pct: pct, detail: detail, kind: .quota))
         }
 

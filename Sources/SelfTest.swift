@@ -1,5 +1,14 @@
 import Cocoa
 
+/// 自测断言：-O 构建里标准库 precondition 不带消息直接崩，CI 上只看到 Illegal instruction。这里打印位置和消息再退出
+fileprivate func precondition(_ ok: @autoclosure () -> Bool, _ message: @autoclosure () -> String = "",
+                              file: StaticString = #fileID, line: UInt = #line) {
+    if !ok() {
+        FileHandle.standardError.write(Data("自测失败 / self-test failed: \(file):\(line) \(message())\n".utf8))
+        exit(1)
+    }
+}
+
 // `--selftest`：离线确定性测试。只用临时目录和内置 fixture，不读本机真实日志、不联网，CI 必跑。
 // 新逻辑配一条 precondition：逻辑坏了它就失败。
 enum SelfTest {
@@ -51,6 +60,17 @@ enum SelfTest {
             precondition(!w.isExpired(now: t + 7200) && w.effectivePct(now: t + 7200) == 30 && w.burn(now: t) == nil)
             precondition(w.resetText(now: t) == L("1h0m 后释放 2 次", "frees 2 in 1h0m"), w.resetText(now: t) ?? "nil")
             precondition(w.resetText(now: t + 3601) == L("待刷新", "refreshing") && w.shortResetText(now: t + 3601) == L("待刷新", "refreshing"))
+            // 通知去重键不能带重置时间：agy 的重置点每次刷新漂几秒，同一个满额池不能被当成新周期反复提醒
+            do {
+                func keys(_ reset: TimeInterval) -> [String] {
+                    var g = DetectedLLMRuntime(name: "Gemini", isRunning: true, tier: "", detail: "", fiveHour: nil, sevenDay: nil, quotaSubtitle: "")
+                    g.secondaryPoolName = "三方"
+                    g.secondaryFiveHour = QuotaWindow(usedPct: 100, resetsAt: reset, capturedAt: reset - 60, windowSeconds: 5 * 3600)
+                    var r = ScanReport(); r.detectedLLMs = [g]
+                    return r.pressures.filter { $0.kind == .quota }.map(\.key)
+                }
+                precondition(!keys(1_790_164_718.1).isEmpty && keys(1_790_164_718.1) == keys(1_790_164_721.7), "去重键随重置点漂移：\(keys(1_790_164_718.1))")
+            }
             var r = ScanReport(); var p = APIProviderStatus(host: "h", provider: "P"); p.fiveHour = w; r.api.providers = [p]
             var later = r; later.api.providers[0].fiveHour?.resetsAt = t + 3700
             precondition(r.pressures.first { $0.kind == .quota }?.key == later.pressures.first { $0.kind == .quota }?.key, "滚动窗口通知键不能随释放时刻变")
