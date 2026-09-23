@@ -33,7 +33,7 @@
     <td align="center" valign="top" width="33%"><img src="assets/screenshots/zh-network.png" alt="AI 出口 IP 与泄漏体检" /><br /><sub>AI 出口 IP 与泄漏体检</sub></td>
   </tr>
   <tr>
-    <td align="center" valign="top" width="33%"><img src="assets/screenshots/zh-stats.png" alt="近 42 天用量与成本" /><br /><sub>近 42 天用量与成本</sub></td>
+    <td align="center" valign="top" width="33%"><img src="assets/screenshots/zh-stats.png" alt="月历、时段与成本" /><br /><sub>月历、时段与成本</sub></td>
     <td align="center" valign="top" width="33%"><img src="assets/screenshots/zh-mac.png" alt="孤儿进程清理、磁盘与设置" /><br /><sub>孤儿进程清理、磁盘与设置</sub></td>
     <td align="center" valign="top" width="33%"><img src="assets/screenshots/zh-api.png" alt="API key 与官方额度来源" /><br /><sub>API key 与官方额度来源</sub></td>
   </tr>
@@ -66,6 +66,8 @@
   - **Codex**：解析主桶配额与打满状态，智能识别 `usage_limit_exceeded` 确切解封时刻；支持远程机器 SSH 免密拉取同步。
   - **Gemini / Antigravity**：实时跟踪官方池与三方池额度、重置周期。
   - **Grok**：实时读取周用量百分比与周期重置时间。
+  - **Kimi Code**：读取本机 `kimi web` 服务给的官方 5 小时 / 周 / 月额度。
+  - **Coding Plan 官方真值**：火山方舟、阿里云百炼 Coding Plan 通过厂商官方命令行工具读取（在「订阅」页点一下，终端里完成安装和登录）；智谱 GLM、Z.ai、MiniMax、DeepSeek、OpenRouter、Moonshot 可登记 API key（存本机钥匙串），直接查该厂商自己的用量接口。不装记账代理也能用；没接官方来源时，按记账请求数估算并标明「估算」。
   - **待处理会话**（可选，Claude Code Hook）：哪个会话在等你批准或输入、等了多久，超过 1 分钟提醒一次。只观察：记事件类型和时间，从不替你批准。
   - **会话上下文**：每个活跃的 Claude / Codex 会话上下文用了多少、今天压缩过几次。
   - **本地运行探测**：Ollama、LM Studio（含独立版 llmster）、llama.cpp（`llama-server`）、MLX（`mlx_lm.server`）：区分「在线 · 已加载哪些模型」「在线但空载」「进程在跑但接口没应答」。只发本机只读请求，不会触发加载模型。
@@ -74,6 +76,7 @@
   - 汇总今日总调用轮次、亿级上下文规模、输出 Token、思考（Thinking）Token。
   - 实时计算 Prompt Cache 命中率（精准展示 97%+ 缓存命中）。
   - 最近 3 轮交互动态回放（模型类型、耗时、思考消耗、缓存命中度）。
+  - **历史统计**：按月日历显示每日强度（点一下切成近 7 天 × 24 小时），各工具累计 token 与 API 等价成本，今日模型构成。
 - 🔌 **内置无感 API Key 记账代理（可选）**：
   - 针对直接调用 API Key 的场景（如 Claude Code 接国内模型、脚本接入、Hermes 等），提供极轻量本地代理（监听 `127.0.0.1:18790`）。
   - 支持 **GLM Coding Plan**、**OpenRouter**、**DeepSeek**、**Kimi**、**MiniMax** 等国内外厂商的自动余额与套餐抓取。
@@ -143,6 +146,8 @@ open VibeGauge.app
 | **Gemini** | 检测本地鉴权标识与登录态 | agy 交给状态栏的官方额度，区分 Gemini 主池与三方池<br>（卡片上点 **「一键连接额度」**） | agy 每次刷新状态栏时 |
 | **Grok** | `~/.grok/settings_cache.json` | `~/.grok/logs/unified.jsonl`<br>（解析 billing 信用百分比与周期截止时刻） | Grok 运行期间由后台定期刷回本地 |
 | **Kimi Code** | `~/.kimi-code` | 官方本机服务 `kimi web` 的 `GET /api/v1/oauth/usage`<br>（5h / 周 / 月额度与加油包余额） | 仅在 `kimi web` 运行时可读 |
+| **火山方舟 / 阿里云百炼 Coding Plan** | 官方命令行工具登录（`arkcli`、`bl`） | `arkcli usage plan` / `bl usage coding-plan`<br>（5h / 周 / 月；「订阅」页点 **「安装并登录」**） | 每 5 分钟 |
+| **智谱 GLM / Z.ai / MiniMax / DeepSeek / OpenRouter / Moonshot** | 你登记的 key（钥匙串）或代理见过的 key | 该厂商自己的用量 / 余额接口 | 每 5 分钟 |
 | **Ollama / LM Studio / llama.cpp / MLX** | 进程识别 + 本机只读接口（`/api/ps`、`/api/v1/models`、`/v1/models`） | 无云端额度约束（显示在线状态与已加载模型） | 10 秒缓存 |
 
 > 🔗 **「一键连接额度」怎么工作**：Claude Code 和 agy 每次刷新状态栏，都会把官方额度交给状态栏命令。连接后，状态栏命令换成 VibeGauge 自带的小脚本（`~/.config/vibegauge/vibegauge-statusline.py`，纯 Python 标准库）：截下一份额度，再把同一份输入原样交给你原来的状态栏，显示不变。改动前自动备份 `settings.json`（`settings.json.vibegauge-backup`），在 **系统 → 设置** 里关掉即还原。不读任何凭据，不发任何请求。

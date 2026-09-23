@@ -33,7 +33,7 @@
     <td align="center" valign="top" width="33%"><img src="assets/screenshots/en-network.png" alt="AI egress IP &amp; leak checks" /><br /><sub>AI egress IP &amp; leak checks</sub></td>
   </tr>
   <tr>
-    <td align="center" valign="top" width="33%"><img src="assets/screenshots/en-stats.png" alt="42-day history &amp; cost" /><br /><sub>42-day history &amp; cost</sub></td>
+    <td align="center" valign="top" width="33%"><img src="assets/screenshots/en-stats.png" alt="Month calendar, hours &amp; cost" /><br /><sub>Month calendar, hours &amp; cost</sub></td>
     <td align="center" valign="top" width="33%"><img src="assets/screenshots/en-mac.png" alt="Orphan reaper, disk &amp; settings" /><br /><sub>Orphan reaper, disk &amp; settings</sub></td>
     <td align="center" valign="top" width="33%"><img src="assets/screenshots/en-api.png" alt="API keys &amp; official quota sources" /><br /><sub>API keys &amp; official quota sources</sub></td>
   </tr>
@@ -70,6 +70,8 @@ When using autonomous coding agents like **Claude Code**, **OpenAI Codex**, **Go
   - **Codex**: Detects primary `codex` bucket usage, identifies `usage_limit_exceeded` exact unlock timestamps, and supports optional passwordless SSH synchronization from remote dev machines.
   - **Gemini / Antigravity**: Tracks official and 3rd-party quota pools with respective reset dates.
   - **Grok**: Reads weekly credit usage and billing cycle reset boundaries.
+  - **Kimi Code**: Official 5-hour / weekly / monthly quota from the local `kimi web` service.
+  - **Coding Plans, official figures**: Volcengine Ark and Alibaba Model Studio Coding Plans read through the providers' own CLIs (one click installs and signs in, in Terminal); GLM, Z.ai, MiniMax, DeepSeek, OpenRouter and Moonshot keys you add to the Keychain are checked against each provider's own usage endpoint. Works without the proxy; otherwise plans are estimated from logged requests and labeled as estimates.
   - **Sessions waiting on you** (optional, Claude Code hooks): which sessions wait for approval or input, and for how long; a notification after a minute. Observe-only: it records event types and times, never answers a prompt.
   - **Session context**: how full each active Claude / Codex session's context window is, and today's compactions.
   - **Local Model Probing**: Ollama, LM Studio (including headless llmster), llama.cpp (`llama-server`), and MLX (`mlx_lm.server`): online with which models loaded, online but idle, or process running but not answering. Read-only local requests; never triggers a model load.
@@ -78,6 +80,7 @@ When using autonomous coding agents like **Claude Code**, **OpenAI Codex**, **Go
   - Aggregated daily stats: hundreds of millions in context tokens, output tokens, and thinking/reasoning tokens.
   - Real-time Prompt Cache hit rate calculations (e.g. 97.4% hit rate).
   - Live inspector capturing the latest 3 interaction rounds (model name, latency, cache hit %, tokens).
+  - **History**: a month calendar of daily intensity (tap for the last 7 days by hour), totals and API-equivalent cost per tool, and today's model mix.
 - 🔌 **Built-in Transparent API Key Proxy (Optional)**:
   - For direct API calls (e.g. routing Claude Code or scripts to GLM, DeepSeek, Kimi, MiniMax, OpenRouter).
   - Runs a local proxy daemon on `127.0.0.1:18790` with zero configuration needed.
@@ -147,6 +150,8 @@ All subscription tiers, quotas, and token metrics are read strictly from local s
 | **Gemini** | Local auth token verification | Official quota agy hands to its status line, Gemini & 3rd-party pools<br>(**one click**: “Connect quota” on the card) | Every agy status-line refresh |
 | **Grok** | `~/.grok/settings_cache.json` | `~/.grok/logs/unified.jsonl`<br>(Latest billing credits config & period end) | Periodically flushed by Grok CLI |
 | **Kimi Code** | `~/.kimi-code` | Official local service `kimi web`: `GET /api/v1/oauth/usage`<br>(5h / weekly / monthly, extra-usage balance) | Only while `kimi web` is running |
+| **Volcengine Ark / Alibaba Model Studio Coding Plan** | Official CLI sign-in (`arkcli`, `bl`) | `arkcli usage plan` / `bl usage coding-plan`<br>(5h / weekly / monthly; **one click** “Install & sign in” on the Plans tab) | Every 5 minutes |
+| **GLM / Z.ai / MiniMax / DeepSeek / OpenRouter / Moonshot** | Key you add (Keychain) or a key seen by the proxy | Each provider's own usage / balance endpoint | Every 5 minutes |
 | **Ollama / LM Studio / llama.cpp / MLX** | Process match + read-only local endpoints (`/api/ps`, `/api/v1/models`, `/v1/models`) | No cloud quota (online state and loaded models) | Cached 10 s |
 
 > 🔗 **How “Connect quota” works**: Claude Code and agy pass the official quota to their status-line command on every refresh. Connecting swaps in VibeGauge's small bridge script (`~/.config/vibegauge/vibegauge-statusline.py`, stdlib Python), which saves a copy and then hands the exact same input to your previous status line — what you see doesn't change. Your `settings.json` is backed up first (`settings.json.vibegauge-backup`); turn it off under **Mac → Settings** to restore it. No credentials are read and no requests are made.
@@ -162,7 +167,7 @@ The panel has five tabs: **Subscriptions / API / Statistics / Network / System**
 - **Network** probes only each AI domain's `/cdn-cgi/trace` endpoint (Anthropic, ChatGPT, OpenAI API and Grok), once per minute with fresh connections. Gemini has no trace endpoint; its route is shown only when the local clash connection table contains an active connection. Failures remain visible as unavailable.
 - The local clash API is read every 10 seconds (`clashAPI`, default `http://127.0.0.1:9090`; optional `clashSecret`). Only loopback addresses are accepted. Local interface, route and DNS information refresh every 30 seconds; byte counters are sampled at least two seconds apart. No network configuration is changed.
 - Every 10 minutes, an IPv6-only request to Cloudflare's trace endpoint checks IPv6 reachability, and local resolver addresses are checked for possible DNS leakage. These are indicators, not proof that all traffic follows the same route. Exit-change notifications are enabled by default, with a 10-minute cooldown per AI.
-- **Statistics** reads local Claude, Codex and API proxy logs in the background, then updates incrementally every five minutes. Claude requests are deduplicated across files; Codex uses per-request usage when available and cumulative differences otherwise. Events are grouped by their timestamps in the local timezone.
+- **Statistics** reads local Claude, Codex and API proxy logs in the background, then updates incrementally every five minutes. Claude requests are deduplicated across files; Codex uses per-request usage when available and cumulative differences otherwise. Events are grouped by their timestamps in the local timezone. The daily-intensity card shows a Monday-first month calendar (‹ › to page back); tap it for the last 7 days × 24 hours. Hourly detail exists only for the last 8 days, because older records are kept as daily totals.
 - History is stored in `~/.config/vibegauge/usage-daily.json`. Removing old logs retains their already-cached history; rewriting a file replaces its contribution. Session counts are distinct log files. CLI and API proxy sources can include the same call and are not deduplicated against each other.
 - API-equivalent cost uses only `~/.config/vibegauge/prices.json`. Unpriced models are explicitly excluded; there are no built-in production prices. Token totals include cached input and output; reasoning tokens are part of output.
 
