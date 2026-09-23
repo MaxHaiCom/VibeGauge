@@ -171,6 +171,8 @@ Request caps for coding plans that have no usage API. VibeGauge never probes tho
 
 `0` or a missing window = don't estimate that window. Only calls with `sent` true are counted.
 
+These windows are **rolling**: each request frees its share when it turns 5 hours / 7 days / 30 days old. There is no reset point, so the panel shows when the next request frees up ("frees 2 in 1h0m") instead of a reset time, and the burn-rate forecast is not applied to them.
+
 ## Internal files
 
 - `quota-samples.json`: `{"<quota>@<resets_at>": [[t, pct], …], "final2|<quota>": [[resets_at, pct]]}`. Recent quota observations for burn-rate estimates (kept 6 hours) plus the last finished cycle per quota.

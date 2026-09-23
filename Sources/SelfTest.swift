@@ -37,6 +37,17 @@ enum SelfTest {
             let ids = Set(calls.map { ProcessScanner.cardID(host: $0.host, provider: $0.provider, key: $0.key, split: split) })
             precondition(ids == ["a.test|A", "b.test|B#k1", "b.test|B#k2", "b.test|B#-", "v.test|V Coding", "v.test|V 按量"], "卡片 ID：\(ids.sorted())")
         }
+        // 滚动窗口：过了「下一笔释放」不归零、不做到期预测、不按释放时刻分通知周期
+        do {
+            let t: TimeInterval = 1_790_000_000
+            let w = ProcessScanner.rollingWindow([t - 4 * 3600, t - 4 * 3600 + 30, t - 3600, t - 6 * 3600], seconds: 5 * 3600, limit: 10, now: t)!
+            precondition(w.isRolling && w.usedPct == 30 && w.resetsAt == t + 3600 && w.releaseCount == 2, "滚动窗口：\(w)")
+            precondition(!w.isExpired(now: t + 7200) && w.effectivePct(now: t + 7200) == 30 && w.burn(now: t) == nil)
+            precondition(w.resetText(now: t) == L("1h0m 后释放 2 次", "frees 2 in 1h0m"), w.resetText(now: t) ?? "nil")
+            var r = ScanReport(); var p = APIProviderStatus(host: "h", provider: "P"); p.fiveHour = w; r.api.providers = [p]
+            var later = r; later.api.providers[0].fiveHour?.resetsAt = t + 3700
+            precondition(r.pressures.first { $0.kind == .quota }?.key == later.pressures.first { $0.kind == .quota }?.key, "滚动窗口通知键不能随释放时刻变")
+        }
         precondition(ProxyManager.validPort(0) == 18790 && ProxyManager.validPort(80) == 18790 && ProxyManager.validPort(18791) == 18791 && ProxyManager.validPort(70000) == 18790)
 
         // Codex 跨零点：total_token_usage 是会话累计，今天只算零点后新增的；请求数只数今天的事件

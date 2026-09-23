@@ -109,7 +109,10 @@ extension ProcessScanner {
         guard limit > 0 else { return nil }
         let inWindow = stamps.filter { $0 >= now - seconds }
         let pct = min(100, Int((Double(inWindow.count) / Double(limit) * 100).rounded()))
-        return QuotaWindow(usedPct: pct, resetsAt: inWindow.min().map { $0 + seconds }, capturedAt: now, windowSeconds: seconds)
+        var w = QuotaWindow(usedPct: pct, resetsAt: inWindow.min().map { $0 + seconds }, capturedAt: now, windowSeconds: seconds)
+        w.isRolling = true
+        if let first = inWindow.min() { w.releaseCount = inWindow.filter { $0 < first + 60 }.count }
+        return w
     }
 
     func priceTable() -> PriceTable {

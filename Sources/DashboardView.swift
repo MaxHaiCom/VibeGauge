@@ -259,7 +259,7 @@ public struct DashboardView: View {
             d.rows.append((L("注意", "Note"), L("走代理之外的调用算不进来，会偏低", "Calls outside the proxy are not counted; the estimate may be low")))
         }
         if let m = p.monthly {
-            d.rows.append((L("月窗口", "Monthly window"), "\(m.effectivePct(now: nowTS))%" + (Fmt.countdown(to: m.resetsAt, now: nowTS).map { L(" · 重置 \($0)", " · resets \($0)") } ?? "")))
+            d.rows.append((L("月窗口", "Monthly window"), "\(m.effectivePct(now: nowTS))%" + (m.resetText(now: nowTS).map { " · " + $0 } ?? "")))
         }
         if let c = p.cost {
             d.rows.append((L("今日花费（估）", "Today's cost (estimated)"), money(c, p.costCurrency) + (currentAPI.priceAsOf.isEmpty ? "" : L(" · 价目表 \(currentAPI.priceAsOf)", " · price table \(currentAPI.priceAsOf)"))))
@@ -1238,7 +1238,7 @@ public struct DashboardView: View {
             ("5H", llm.fiveHour), ("W", llm.sevenDay), (L("\(sp)5H", "\(sp) 5H"), llm.secondaryFiveHour), (L("\(sp)W", "\(sp) W"), llm.secondarySevenDay)
         ]
         let resets = windows.compactMap { label, w -> String? in
-            guard let w = w, let c = Fmt.countdown(to: w.resetsAt, now: nowTS) else { return nil }
+            guard let w = w, let c = w.shortResetText(now: nowTS) else { return nil }
             return "\(label) \(c)"
         }
         var stale: [String] = []
@@ -1508,8 +1508,8 @@ public struct DashboardView: View {
 
             Text(label)
                 .font(.system(size: 9.5, weight: .semibold))
-            if let c = Fmt.countdown(to: win.resetsAt, now: nowTS) {
-                Text(L("重置 \(c)", "resets \(c)"))
+            if let c = win.resetText(now: nowTS) {
+                Text(c)
                     .font(.system(size: 8))
                     .foregroundColor(.secondary)
             }
@@ -1609,7 +1609,7 @@ public struct DashboardView: View {
                         let pct = item.1.effectivePct(now: nowTS)
                         MiniProgressBar(value: Double(pct) / 100.0, color: quotaColor(pct), width: 40, height: 4)
                         Text("\(pct)%").font(.system(size: 9, weight: .bold)).fixedSize()
-                        if let c = Fmt.countdown(to: item.1.resetsAt, now: nowTS) {
+                        if let c = item.1.shortResetText(now: nowTS) {
                             Text(c).font(.system(size: 7.5)).foregroundColor(.secondary).fixedSize()
                         }
                     }

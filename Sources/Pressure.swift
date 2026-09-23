@@ -47,8 +47,9 @@ public extension ScanReport {
             guard let w = w else { return }
             let pct = w.effectivePct()
             var detail = L("已用 \(pct)%", "\(pct)% used")
-            if let c = Fmt.countdown(to: w.resetsAt) { detail += L(" · 重置 \(c)", " · resets \(c)") }
-            let stamp = w.resetsAt.map { String(Int($0)) } ?? "na"
+            if let r = w.resetText() { detail += " · " + r }
+            // 去重键按周期分；滚动窗口的「下一笔释放」每来一笔请求都变，按它分键会每次扫描都重新提醒
+            let stamp = w.isRolling ? "rolling" : (w.resetsAt.map { String(Int($0)) } ?? "na")
             out.append(PressureSignal(key: "quota:\(platform):\(keyPool ?? pool)@\(stamp)",
                                       short: "\(platform) \(pool)", pct: pct, detail: detail, kind: .quota))
         }

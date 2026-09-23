@@ -101,10 +101,26 @@ public struct QuotaWindow: Equatable {
     public var recentSpanMinutes: Int = 0
     /// 上一个周期结束时用到了百分之多少（采样器在跨过重置点时记下）。nil = 没赶上
     public var lastCyclePct: Int? = nil
+    /// 滚动窗口（按请求数估的 Coding Plan）：每笔请求满窗口时长后各自释放，没有整体重置点。
+    /// 此时 resetsAt = 下一笔释放的时刻，releaseCount = 那一分钟内释放几次；
+    /// 「过点归零」「到重置前会用到多少」都只对固定窗口成立。
+    public var isRolling = false
+    public var releaseCount = 0
 
     public func isExpired(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
-        guard let r = resetsAt else { return false }
+        guard !isRolling, let r = resetsAt else { return false }
         return now >= r
+    }
+
+    /// 「重置 1h2m」/ 滚动窗口「1h2m 后释放 3 次」；没有时刻就 nil
+    public func resetText(now: TimeInterval = Date().timeIntervalSince1970) -> String? {
+        guard let c = Fmt.countdown(to: resetsAt, now: now) else { return nil }
+        return isRolling ? L("\(c) 后释放 \(max(1, releaseCount)) 次", "frees \(max(1, releaseCount)) in \(c)") : L("重置 \(c)", "resets \(c)")
+    }
+    /// 窄位置用：固定窗口只写倒计时，滚动窗口加「释放」免得被读成重置
+    public func shortResetText(now: TimeInterval = Date().timeIntervalSince1970) -> String? {
+        guard let c = Fmt.countdown(to: resetsAt, now: now) else { return nil }
+        return isRolling ? L("\(c) 释放", "frees \(c)") : c
     }
 
     /// 过了重置点 → 缓存里的旧值作废，视为 0%
@@ -124,7 +140,7 @@ public struct QuotaWindow: Equatable {
     /// 窗口刚开头样本不够、没窗口长度、已过重置、已经打满 → 一律不推算。
     public func burn(now: TimeInterval = Date().timeIntervalSince1970, profile: ActivityProfile? = nil,
                      timeZone: TimeZone = .current) -> Burn? {
-        guard windowSeconds > 0, let reset = resetsAt else { return nil }
+        guard windowSeconds > 0, !isRolling, let reset = resetsAt else { return nil }   // 滚动窗口没有终点可推
         let remaining = reset - now
         guard remaining > 0 else { return nil }                       // 已过重置点，旧值作废
         let elapsed = windowSeconds - remaining
@@ -232,6 +248,7 @@ extension ProcessScanner {
 
     /// 记一笔样本，并把"近期速度"与"上周期终值"回填进窗口。lookback 内取最老的一个样本做两点差。
     func sampleAndFill(_ w: inout QuotaWindow, key rawKey: String, now: TimeInterval) {
+        guard !w.isRolling else { return }        // 「重置点」随每笔请求变，按它分键只会堆垃圾样本
         guard let reset = w.resetsAt else { return }
         loadSamples()
         let key = "\(rawKey)@\(Int(reset))"
