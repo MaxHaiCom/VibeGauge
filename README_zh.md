@@ -245,6 +245,10 @@ defaults delete com.haifeng.vibegauge
 - 如果你发现了新的 MCP 孤儿进程签名，欢迎补充至放行/识别规则中。
 - 如果某家 CLI 升级了日志格式或下发了新的额度字段，欢迎提 Issue 协助适配。
 
+## 🔗 友情链接
+
+- [LINUX DO](https://linux.do) — 新的理想型社区。感谢佬友们的反馈与支持。
+
 ---
 
 ## 📄 开源许可

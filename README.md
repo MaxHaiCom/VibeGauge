@@ -264,6 +264,10 @@ Contributions, feature requests, and bug reports are warmly welcomed — see [CO
 - Discover a new MCP process pattern? Please open a PR to update the signature filters.
 - Vendor changed their log format or introduced a new quota tier? Feel free to submit an issue.
 
+## 🔗 Community
+
+- [LINUX DO](https://linux.do) — a community of developers where VibeGauge is discussed. Thanks to everyone there for the feedback.
+
 ---
 
 ## 📄 License
