@@ -282,9 +282,6 @@ public struct DashboardView: View {
             d.rows.append((L("估算底数", "Estimate basis"), p.estimateNote))
             d.rows.append((L("注意", "Note"), L("走代理之外的调用算不进来，会偏低", "Calls outside the proxy are not counted; the estimate may be low")))
         }
-        if let m = p.monthly {
-            d.rows.append((L("月窗口", "Monthly window"), pctText(m) + (m.resetText(now: nowTS).map { " · " + $0 } ?? "")))
-        }
         if let c = p.cost {
             d.rows.append((L("今日花费（估）", "Today's cost (estimated)"), money(c, p.costCurrency) + (currentAPI.priceAsOf.isEmpty ? "" : L(" · 价目表 \(currentAPI.priceAsOf)", " · price table \(currentAPI.priceAsOf)"))))
         } else if p.calls > 0 {
@@ -1660,6 +1657,9 @@ public struct DashboardView: View {
                     if let sd = llm.sevenDay {
                         quotaRing(label: llm.name == "Grok" ? L("周窗口", "weekly window") : L("7 天窗口", "7d window"), win: sd).frame(maxWidth: .infinity)
                     }
+                    if let m = llm.monthly {
+                        quotaRing(label: L("月窗口", "Monthly window"), win: m).frame(maxWidth: .infinity)
+                    }
                     if let sf = llm.secondaryFiveHour {
                         quotaRing(label: "\(secondaryPoolDisplay(llm.secondaryPoolName)) 5H", win: sf).frame(maxWidth: .infinity)
                     }
@@ -1670,9 +1670,25 @@ public struct DashboardView: View {
             }
         }
 
+        // 1.2 按模型独立的额度池（plans.json 的 models）：每个模型一条
+        if !llm.subQuotas.isEmpty {
+            card {
+                sectionTitle(L("按模型独立额度", "Per-model pools"))
+                ForEach(llm.subQuotas) { q in
+                    HStack(spacing: 4) {
+                        Text(q.name).font(.system(size: 9)).lineLimit(1)
+                        Spacer(minLength: 4)
+                        MiniProgressBar(value: Double(q.window.effectivePct(now: nowTS)) / 100, color: quotaColor(q.window.effectivePct(now: nowTS)), width: 60, height: 4)
+                        Text(pctText(q.window)).font(.system(size: 9, weight: .bold)).frame(width: 34, alignment: .trailing)
+                        Text(q.window.resetText(now: nowTS) ?? "").font(.system(size: 7.5)).foregroundColor(.secondary).lineLimit(1)
+                    }
+                }
+            }
+        }
+
         // 1.5 燃烧速率（窗口长度已知才算）：5h 看近期节奏，周这类长窗口按近 7 天作息
         let profile = history.activityProfile(for: llm.name)
-        let burns: [(String, Burn)] = [(L("5 小时", "5h"), llm.fiveHour), (L("周", "weekly"), llm.sevenDay),
+        let burns: [(String, Burn)] = [(L("5 小时", "5h"), llm.fiveHour), (L("周", "weekly"), llm.sevenDay), (L("月", "monthly"), llm.monthly),
                                        ("\(secondaryPoolDisplay(llm.secondaryPoolName)) \(L("5 小时", "5h"))", llm.secondaryFiveHour),
                                        ("\(secondaryPoolDisplay(llm.secondaryPoolName)) \(L("周", "weekly"))", llm.secondarySevenDay)]
             .compactMap { label, w in w?.burn(now: nowTS, profile: profile).map { (label, $0) } }
