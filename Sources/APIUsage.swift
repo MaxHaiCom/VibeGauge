@@ -79,11 +79,49 @@ extension ProcessScanner {
     /// 而且厂商明令禁止用非编程工具去调它的端点（会被判滥用、可能停用订阅），
     /// 所以我们既不探测、也不猜价 —— 只拿本机记账的请求数 ÷ 上限估，并在面板上标明「估算」。
     /// 上限从 ~/.config/vibegauge/plans.json 读（照官方套餐页自己填）。
+    /// 套餐额度规则（plans.json 一项）。各家结构不同（调研见 docs/PROTOCOL.md「plans.json」）：
+    /// 共享池每次请求记 1、共享池按模型系数扣、每个模型独立一个池；窗口有滚动、首次请求起算、每周一、订阅日四种重置方式。
     public struct PlanLimit {
         public var label: String = ""
-        public var five: Int = 0
-        public var weekly: Int = 0
-        public var monthly: Int = 0
+        /// 窗口 → 上限（请求数；配了 weights 就是「系数折算后的请求数」）
+        public var limits: [String: Int] = [:]
+        /// 窗口 → 重置方式：rolling（默认）/ first_use / monday / subscription_day
+        public var resets: [String: String] = [:]
+        /// 模型名前缀 → 抵扣系数；"*" = 其余模型。没配 = 每次请求记 1
+        public var weights: [String: Double] = [:]
+        public var subscribedDay: Int? = nil
+        public var timeZone: TimeZone = .current
+        /// 独立额度的模型（前缀 → 自己的上限与重置）：这些模型的请求不进共享池
+        public var modelPools: [String: PlanLimit] = [:]
+
+        func weight(_ model: String) -> Double {
+            let m = model.lowercased()
+            if let w = weights.filter({ m.hasPrefix($0.key.lowercased()) && $0.key != "*" }).max(by: { $0.key.count < $1.key.count })?.value { return w }
+            return weights["*"] ?? 1
+        }
+    }
+
+    static let planWindows: [(key: String, seconds: Double)] = [("5h", 5 * 3600), ("weekly", 7 * 86400), ("monthly", 30 * 86400)]
+
+    static func parsePlan(_ d: [String: Any], label: String) -> PlanLimit {
+        var p = PlanLimit()
+        p.label = d["plan"] as? String ?? label
+        for (k, v) in d["requests"] as? [String: Any] ?? [:] { if let n = (v as? NSNumber)?.intValue, n > 0 { p.limits[k] = n } }
+        for (k, v) in d["reset"] as? [String: Any] ?? [:] { if let s = v as? String { p.resets[k] = s } }
+        for (k, v) in d["weights"] as? [String: Any] ?? [:] { if let n = (v as? NSNumber)?.doubleValue, n > 0 { p.weights[k] = n } }
+        if let day = Fmt.parseISODate((d["subscribed_on"] as? String).map { $0 + "T00:00:00Z" }) {
+            p.subscribedDay = Calendar(identifier: .gregorian).dateComponents(in: TimeZone(secondsFromGMT: 0)!, from: Date(timeIntervalSince1970: day)).day
+        }
+        if let tz = (d["timezone"] as? String).flatMap(TimeZone.init(identifier:)) { p.timeZone = tz }
+        for (k, v) in d["models"] as? [String: Any] ?? [:] {
+            guard let md = v as? [String: Any] else { continue }
+            var m = parsePlan(md, label: k)
+            if md["reset"] == nil { m.resets = p.resets }
+            if md["timezone"] == nil { m.timeZone = p.timeZone }
+            if md["subscribed_on"] == nil { m.subscribedDay = p.subscribedDay }
+            if !m.limits.isEmpty { p.modelPools[k] = m }
+        }
+        return p
     }
 
     func planLimits() -> [String: PlanLimit] {
@@ -95,12 +133,8 @@ extension ProcessScanner {
         var out: [String: PlanLimit] = [:]
         for (k, v) in readJSON(path) ?? [:] where !k.hasPrefix("_") {
             guard let d = v as? [String: Any] else { continue }
-            let req = d["requests"] as? [String: Any] ?? [:]
-            func n(_ key: String) -> Int { (req[key] as? NSNumber)?.intValue ?? 0 }
-            var p = PlanLimit()
-            p.label = d["plan"] as? String ?? k
-            p.five = n("5h"); p.weekly = n("weekly"); p.monthly = n("monthly")
-            if p.five > 0 || p.weekly > 0 || p.monthly > 0 { out[k] = p }
+            let p = Self.parsePlan(d, label: k)
+            if !p.limits.isEmpty || !p.modelPools.isEmpty { out[k] = p }
         }
         planCache = (mtime, out)
         return out
@@ -108,13 +142,93 @@ extension ProcessScanner {
 
     /// 滚动窗口内的请求数 → 额度窗口。重置点 = 窗口内最早那次调用 + 窗口长度（容量什么时候开始回来）
     public static func rollingWindow(_ stamps: [TimeInterval], seconds: Double, limit: Int, now: TimeInterval) -> QuotaWindow? {
+        planWindow(stamps.map { ($0, 1.0) }, kind: "rolling", seconds: seconds, limit: limit, now: now)
+    }
+
+    /// 按记账估一个套餐窗口。calls = (时刻, 这次请求的抵扣系数)；
+    /// rolling = 每笔满窗口时长后各自释放；first_use = 首次请求起算、到点整体刷新（下一笔请求再开新窗口）；
+    /// monday = 每周一 00:00 重置；subscription_day = 每订阅月同一日 00:00 重置（没给订阅日就退回滚动 30 天）
+    public static func planWindow(_ calls: [(t: TimeInterval, w: Double)], kind: String, seconds: Double, limit: Int, now: TimeInterval,
+                                  timeZone: TimeZone = .current, subscribedDay: Int? = nil) -> QuotaWindow? {
         guard limit > 0 else { return nil }
-        let inWindow = stamps.filter { $0 >= now - seconds }
-        let pct = min(100, Int((Double(inWindow.count) / Double(limit) * 100).rounded()))
-        var w = QuotaWindow(usedPct: pct, resetsAt: inWindow.min().map { $0 + seconds }, capturedAt: now, windowSeconds: seconds)
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = timeZone
+        let sorted = calls.filter { $0.t <= now }.sorted { $0.t < $1.t }
+        var start: TimeInterval?, end: TimeInterval?
+        switch kind {
+        case "first_use":
+            var s: TimeInterval?
+            for c in sorted where s == nil || c.t >= s! + seconds { s = c.t }
+            if let s, now < s + seconds { start = s; end = s + seconds }
+            else { start = now; end = nil }                      // 上个窗口已过、还没新请求：窗口没开始
+        case "monday":
+            var comps = cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: Date(timeIntervalSince1970: now))
+            comps.weekday = 2
+            if let s = cal.date(from: comps)?.timeIntervalSince1970 {
+                start = s > now ? s - 7 * 86400 : s
+                end = start! + 7 * 86400
+            }
+        case "subscription_day" where subscribedDay != nil:
+            let day = subscribedDay!
+            func anchor(_ monthOffset: Int) -> TimeInterval? {
+                guard let base = cal.date(byAdding: .month, value: monthOffset, to: Date(timeIntervalSince1970: now)) else { return nil }
+                var c = cal.dateComponents([.year, .month], from: base)
+                c.day = min(day, cal.range(of: .day, in: .month, for: base)?.count ?? day)
+                return cal.date(from: c)?.timeIntervalSince1970
+            }
+            if let this = anchor(0) {
+                start = this <= now ? this : anchor(-1)
+                end = this <= now ? anchor(1) : this
+            }
+        default: break
+        }
+        if let start {
+            let used = sorted.filter { $0.t >= start && (end == nil || $0.t < end!) }.reduce(0) { $0 + $1.w }
+            var w = QuotaWindow(usedPct: min(100, Int((used / Double(limit) * 100).rounded())), resetsAt: end, capturedAt: now,
+                                windowSeconds: end.map { $0 - start } ?? seconds)
+            w.isEstimate = true
+            return w
+        }
+        // rolling（及缺订阅日的 subscription_day）
+        let inWindow = sorted.filter { $0.t >= now - seconds }
+        let used = inWindow.reduce(0) { $0 + $1.w }
+        var w = QuotaWindow(usedPct: min(100, Int((used / Double(limit) * 100).rounded())), resetsAt: inWindow.first.map { $0.t + seconds },
+                            capturedAt: now, windowSeconds: seconds)
         w.isRolling = true
-        if let first = inWindow.min() { w.releaseCount = inWindow.filter { $0 < first + 60 }.count }
+        w.isEstimate = true
+        if let first = inWindow.first { w.releaseCount = inWindow.filter { $0.t < first.t + 60 }.count }
         return w
+    }
+
+    static func windowLabel(_ key: String) -> String { key == "5h" ? "5h" : key == "weekly" ? L("周", "weekly") : L("月", "monthly") }
+
+    /// 一个套餐按记账算出各窗口 + 独立模型池 + 口径说明
+    static func estimatePlan(_ plan: PlanLimit, calls: [(t: TimeInterval, model: String)], now: TimeInterval)
+        -> (windows: [String: QuotaWindow], pools: [SubQuota], note: String) {
+        func pool(_ model: String) -> String? {
+            plan.modelPools.keys.filter { model.lowercased().hasPrefix($0.lowercased()) }.max { $0.count < $1.count }
+        }
+        func windows(_ p: PlanLimit, _ cs: [(t: TimeInterval, model: String)]) -> [String: QuotaWindow] {
+            var out: [String: QuotaWindow] = [:]
+            for w in planWindows {
+                guard let limit = p.limits[w.key] else { continue }
+                out[w.key] = planWindow(cs.map { ($0.t, p.weight($0.model)) }, kind: p.resets[w.key] ?? "rolling", seconds: w.seconds,
+                                        limit: limit, now: now, timeZone: p.timeZone, subscribedDay: p.subscribedDay)
+            }
+            return out
+        }
+        let shared = calls.filter { pool($0.model) == nil }
+        var pools: [SubQuota] = []
+        for (name, mp) in plan.modelPools.sorted(by: { $0.key < $1.key }) {
+            let ws = windows(mp, calls.filter { pool($0.model) == name })
+            // 每个模型池只挂最紧的那个窗口在卡片上（详情看 planLimitText）
+            if let tight = ws.values.max(by: { $0.usedPct < $1.usedPct }) { pools.append(SubQuota(name: name, window: tight)) }
+        }
+        let in5h = shared.filter { $0.t >= now - 5 * 3600 }.count
+        let basis = plan.weights.isEmpty ? L("每次请求记 1（模型系数未配置）", "1 per request (no model weights set)")
+                                         : L("按模型系数折算", "weighted by model")
+        let note = L("本机记账 5h 内 \(in5h) 次 · \(basis) · 真值以厂商控制台为准",
+                     "\(in5h) logged in 5h · \(basis) · the provider console is authoritative")
+        return (windows(plan, shared), pools, note)
     }
 
     func priceTable() -> PriceTable {
@@ -412,8 +526,8 @@ extension ProcessScanner {
         // 订阅制 Coding Plan：厂商不给用量接口 → 按本机记账的请求数估。滚动窗口，标明是估算。
         let plans = planLimits()
         if !plans.isEmpty {
-            var stamps: [String: [TimeInterval]] = [:]       // 卡片 → 各次调用时刻（31 天内）
-            for c in apiCalls where c.sent { stamps[card(c), default: []].append(c.ts) }
+            var stamps: [String: [(t: TimeInterval, model: String)]] = [:]       // 卡片 → 各次调用（31 天内）
+            for c in apiCalls where c.sent { stamps[card(c), default: []].append((c.ts, c.model)) }
             for (key, plan) in plans {
                 // 今天还没调用，但周 / 月窗口里还有用量：过了零点卡片不能消失
                 for c in apiCalls where (c.provider == key || c.host == key) && byHost[card(c)] == nil {
@@ -421,15 +535,17 @@ extension ProcessScanner {
                 }
                 // 拆了账户就每个账户各按自己的请求数估：每个账户各有一份套餐上限
                 for host in byHost.keys where byHost[host]!.provider == key || byHost[host]!.host == key {
-                guard let ts = stamps[host] else { continue }
+                guard let calls = stamps[host] else { continue }
                 byHost[host]?.plan = plan.label
                 byHost[host]?.quotaIsEstimate = true
-                let in5h = ts.filter { $0 >= now - 5 * 3600 }.count
-                byHost[host]?.estimateNote = plan.five > 0 ? L("本机记账 \(in5h) 次 / \(plan.five)", "\(in5h) locally logged / \(plan.five) requests") : L("本机记账 \(in5h) 次", "\(in5h) locally logged")
-                byHost[host]?.planLimitText = L("5h \(plan.five) · 周 \(plan.weekly) · 月 \(plan.monthly) 次", "5h \(plan.five) · weekly \(plan.weekly) · monthly \(plan.monthly) requests")
-                byHost[host]?.fiveHour = Self.rollingWindow(ts, seconds: 5 * 3600, limit: plan.five, now: now)
-                byHost[host]?.sevenDay = Self.rollingWindow(ts, seconds: 7 * 86400, limit: plan.weekly, now: now)
-                byHost[host]?.monthly = Self.rollingWindow(ts, seconds: 30 * 86400, limit: plan.monthly, now: now)
+                let est = Self.estimatePlan(plan, calls: calls, now: now)
+                byHost[host]?.fiveHour = est.windows["5h"]
+                byHost[host]?.sevenDay = est.windows["weekly"]
+                byHost[host]?.monthly = est.windows["monthly"]
+                byHost[host]?.subQuotas = est.pools
+                byHost[host]?.estimateNote = est.note
+                byHost[host]?.planLimitText = plan.limits.isEmpty ? "" : Self.planWindows.compactMap { w in
+                    plan.limits[w.key].map { "\(Self.windowLabel(w.key)) \($0)" } }.joined(separator: " · ") + L(" 次", " requests")
                 }
             }
         }

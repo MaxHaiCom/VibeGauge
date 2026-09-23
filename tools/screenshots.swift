@@ -115,12 +115,15 @@ struct Screenshots {
         // 经记账代理的 Coding Plan 订阅：按请求数估算的滚动窗口，显示在订阅页
         var plan = APIProviderStatus(host: "ark.cn-beijing.volces.com", provider: L("火山方舟 Coding", "Volcano Ark Coding"))
         plan.cardID = "demo-plan"; plan.plan = "Coding Plan Lite"; plan.calls = 186; plan.lastTS = now - 40
-        plan.models = ["kimi-k2.7-code", "glm-5.3"]; plan.ctx = 9_800_000; plan.out = 61_000
-        let stamps = (0..<186).map { now - Double($0) * 55 }
-        plan.fiveHour = ProcessScanner.rollingWindow(stamps, seconds: fiveH, limit: 1200, now: now)
-        plan.sevenDay = ProcessScanner.rollingWindow(stamps, seconds: week, limit: 9000, now: now)
+        plan.ctx = 9_800_000; plan.out = 61_000
+        let calls = (0..<186).map { (t: now - Double($0) * 55, w: 1.0) }
+        plan.fiveHour = ProcessScanner.planWindow(calls, kind: "first_use", seconds: fiveH, limit: 1200, now: now)
+        plan.sevenDay = ProcessScanner.planWindow(calls, kind: "monday", seconds: week, limit: 9000, now: now)
+        plan.monthly = ProcessScanner.planWindow(calls, kind: "subscription_day", seconds: 30 * day, limit: 18000, now: now, subscribedDay: 18)
         plan.quotaIsEstimate = true
-        plan.estimateNote = L("本机记账 186 次 / 1200", "186 locally logged / 1200 requests")
+        plan.estimateNote = L("本机记账 5h 内 186 次 · 每次请求记 1（模型系数未配置） · 真值以厂商控制台为准",
+                              "186 logged in 5h · 1 per request (no model weights set) · the provider console is authoritative")
+        plan.models = ["kimi-k2.7-code", "glm-5.3", "minimax-m3", "deepseek-v4-flash"]
         r.api.providers = [plan]
 
         var t = TokenStats()

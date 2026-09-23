@@ -216,7 +216,8 @@ public struct DashboardView: View {
         do {
             var tokens = ""
             if p.calls > 0 {
-                let models = p.models.prefix(2).joined(separator: " / ") + (p.models.count > 2 ? " …" : "")
+                let shown = p.plan.isEmpty ? 2 : 4          // 套餐卡整行，列得下更多今日用过的模型
+                let models = p.models.prefix(shown).joined(separator: " / ") + (p.models.count > shown ? " …" : "")
                 tokens = "\(models)" + L(" · 上下文 \(formatTokens(p.ctx)) · 输出 \(formatTokens(p.out))", " · context \(formatTokens(p.ctx)) · output \(formatTokens(p.out))") + (p.ctx > 0 ? String(format: L(" · 命中 %.0f%%", " · %.0f%% hit"), p.cacheHitRate) : "")
             }
             // 上游在真实调用里给了限流头 → 拿来当余量显示（被动，不额外发请求）
@@ -246,6 +247,9 @@ public struct DashboardView: View {
                 platformDetail: apiDetail(p)
             )
             card.cardID = p.id
+            card.monthly = p.monthly
+            card.subQuotas = p.subQuotas
+            card.isFullWidth = !p.plan.isEmpty     // 一个订阅含多家模型（像 Gemini 双池那样）独占一行，半宽太挤
             return card
         }
     }
@@ -1255,15 +1259,17 @@ public struct DashboardView: View {
     private func footerParts(for llm: DetectedLLMRuntime) -> (resets: String, stale: String) {
         let sp = secondaryPoolDisplay(llm.secondaryPoolName)
         let windows: [(String, QuotaWindow?)] = [
-            ("5H", llm.fiveHour), ("W", llm.sevenDay), (L("\(sp)5H", "\(sp) 5H"), llm.secondaryFiveHour), (L("\(sp)W", "\(sp) W"), llm.secondarySevenDay)
+            ("5H", llm.fiveHour), ("W", llm.sevenDay), ("M", llm.monthly), (L("\(sp)5H", "\(sp) 5H"), llm.secondaryFiveHour), (L("\(sp)W", "\(sp) W"), llm.secondarySevenDay)
         ]
-        // 滚动窗口（按请求数估的套餐）没有重置点，只有「下一笔请求到期释放」
-        let rolling = windows.contains { $0.1?.isRolling == true }
+        // 滚动窗口（按请求数估的套餐）没有重置点，只有「下一笔请求到期释放」；同一张卡可能固定、滚动混着
+        let present = windows.compactMap { $0.1 }
+        let allRolling = !present.isEmpty && present.allSatisfy(\.isRolling)
+        let rolling = allRolling
         let resets = windows.compactMap { label, w -> String? in
             guard let w = w else { return nil }
             if w.isRolling, let r = w.resetsAt, r <= nowTS { return "\(label) " + L("待刷新", "refreshing") }
             guard let c = Fmt.countdown(to: w.resetsAt, now: nowTS) else { return nil }
-            return "\(label) \(c)"
+            return w.isRolling && !allRolling ? "\(label) \(c)" + L("释放", " frees") : "\(label) \(c)"
         }
         var stale: [String] = []
         if let a = [llm.fiveHour, llm.sevenDay].compactMap({ $0?.ageSeconds(now: nowTS) }).max(), a > 300 {
@@ -1478,12 +1484,16 @@ public struct DashboardView: View {
             cardHeader(for: llm)
 
             HStack(spacing: 6) {
-                if llm.fiveHour != nil || llm.sevenDay != nil {
+                if llm.fiveHour != nil || llm.sevenDay != nil || llm.monthly != nil {
                     HStack(spacing: 3.5) {
                         if let fh = llm.fiveHour { quotaBar(label: "5H", win: fh) }
                         if let sd = llm.sevenDay {
                             if llm.fiveHour != nil { dot() }
                             quotaBar(label: "W", win: sd)
+                        }
+                        if let m = llm.monthly {
+                            if llm.fiveHour != nil || llm.sevenDay != nil { dot() }
+                            quotaBar(label: "M", win: m)
                         }
                     }
                     .padding(.horizontal, 6)
@@ -1517,6 +1527,18 @@ public struct DashboardView: View {
             }
 
             quotaFooter(for: llm)
+            // 套餐类（火山方舟 Coding Plan 等一个订阅含多家模型）也走整行：估算口径、模型与 token、延迟错误各占一行
+            if !llm.quotaNote.isEmpty {
+                Text(llm.quotaNote).font(.system(size: 7.5)).foregroundColor(.orange.opacity(0.85))
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+            if !llm.extraLine.isEmpty {
+                Text(llm.extraLine).font(.system(size: 7.5)).foregroundColor(.secondary).lineLimit(1)
+            }
+            if !llm.extraLine2.isEmpty {
+                Text(llm.extraLine2).font(.system(size: 7.5))
+                    .foregroundColor(llm.extraLine2.contains(L("错", "errors")) ? .orange : .secondary).lineLimit(1)
+            }
             subQuotaRows(for: llm)
         }
         .padding(.horizontal, 7)

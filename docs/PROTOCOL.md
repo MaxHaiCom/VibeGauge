@@ -182,16 +182,39 @@ Prices per **million** tokens. Without this file no cost is shown; there are no 
 
 ### `plans.json` (Stable)
 
-Request caps for coding plans that have no usage API. VibeGauge never probes those endpoints; it divides requests counted by the proxy by your cap and labels the result "estimated". See `Resources/plans.example.json`.
+Estimates for subscription plans that have no public usage API (the coding plans most Chinese providers sell, for example). VibeGauge never probes those endpoints; it counts the calls the proxy recorded and labels the result "estimated". See `Resources/plans.example.json`.
+
+Plans differ in how they meter, so the file describes the rules rather than assuming one:
+
+| Structure | Examples (as of 2026-09) | How to write it |
+|---|---|---|
+| One shared pool, one unit per request | Alibaba Bailian Coding Plan, Tencent Coding Plan | `requests` only |
+| One shared pool, models weighted | Volcano Ark Coding Plan (weights not published), Zhipu GLM Coding Plan | `requests` + `weights` |
+| A pool per model | OpenCode Go, Cursor (own models vs. others) | `models` |
+| Shared pool with a model sub-limit | Claude Max (Fable), Antigravity (Gemini vs. third-party) | reported by the CLIs themselves; not configured here |
 
 ```json
-{ "<provider as in api-calls.jsonl>": { "plan": "Coding Plan Lite",
-    "requests": { "5h": 1200, "weekly": 9000, "monthly": 18000 } } }
+{ "<provider as in api-calls.jsonl>": {
+    "plan": "Coding Plan Lite",
+    "requests": { "5h": 1200, "weekly": 9000, "monthly": 18000 },
+    "reset":    { "5h": "first_use", "weekly": "monday", "monthly": "subscription_day" },
+    "subscribed_on": "2026-09-18",
+    "timezone": "Asia/Shanghai",
+    "weights":  { "glm-5.3": 3, "*": 1 },
+    "models":   { "kimi-k3": { "requests": { "5h": 100 } } } } }
 ```
 
-`0` or a missing window = don't estimate that window. Only calls with `sent` true are counted.
-
-These windows are **rolling**: each request frees its share when it turns 5 hours / 7 days / 30 days old. There is no reset point, so the panel shows when the next request frees up ("frees 2 in 1h0m") instead of a reset time, and the burn-rate forecast is not applied to them.
+- `requests`: cap per window (`5h`, `weekly`, `monthly`). With `weights`, the cap is in weighted requests. `0` or a missing window = not estimated.
+- `reset` per window, default `rolling`:
+  - `rolling`: each request frees its share when it turns 5 h / 7 d / 30 d old. The panel shows when the next one frees ("frees 2 in 1h0m"), not a reset.
+  - `first_use`: the window starts at the first request and resets as a whole when it ends; the next request opens a new one.
+  - `monday`: resets every Monday 00:00 in `timezone`.
+  - `subscription_day`: resets on the same day of each month as `subscribed_on` (clamped to the month's last day), 00:00 in `timezone`. Without `subscribed_on` it falls back to rolling 30 days.
+- `weights`: model name prefix (case-insensitive, longest match) → units per request; `"*"` = all other models. Missing = 1 per request. Enter only published coefficients.
+- `models`: models with their own pool (prefix → their own `requests`, optionally `reset`); their calls are not counted in the shared pool. Each appears as its own bar on the card.
+- `timezone`: IANA name; defaults to the Mac's time zone.
+- Only calls with `sent` true are counted. Calls that bypass the proxy (other machines, other tools, the web console) are not, so estimates run low; the provider's console is authoritative.
+- Estimated windows never trigger forecast notifications.
 
 ## Internal files
 

@@ -106,6 +106,8 @@ public struct QuotaWindow: Equatable {
     /// 「过点归零」「到重置前会用到多少」都只对固定窗口成立。
     public var isRolling = false
     public var releaseCount = 0
+    /// 本机按记账估出来的（套餐请求数 / 系数估算），不是厂商回报：不做预测提醒，界面标「估算」
+    public var isEstimate = false
 
     public func isExpired(now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
         guard !isRolling, let r = resetsAt else { return false }
@@ -116,7 +118,7 @@ public struct QuotaWindow: Equatable {
     public enum Trust: Equatable { case reported, estimated, stale, awaiting }
     public func trust(now: TimeInterval = Date().timeIntervalSince1970) -> Trust {
         if isExpired(now: now) { return .awaiting }
-        if isRolling { return .estimated }
+        if isRolling || isEstimate { return .estimated }
         // 数据源只在 CLI 被用时刷新：超过窗口 1/5（5h → 1h，周 → 约 1.4 天）没更新，期间别处的用量可能没算进来
         if windowSeconds > 0, let age = ageSeconds(now: now), Double(age) > windowSeconds / 5 { return .stale }
         return .reported

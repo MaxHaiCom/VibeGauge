@@ -1,11 +1,21 @@
 {
-  "_comment": "复制到 ~/.config/vibegauge/plans.json。国内这些订阅制 Coding Plan 都不给公开的用量接口，而且厂商明确禁止用「非 AI 编程工具」去调它的端点（会被判滥用，可能停订阅甚至封号），所以 VibeGauge 既不探测也不猜：额度 = 经本机记账代理的请求数 ÷ 你填的上限，面板上一律标「估算」。走代理之外的调用（别的机器、别的工具）不会被算进来，估算会偏低。",
-  "_comment_en": "Copy to ~/.config/vibegauge/plans.json. Subscription coding plans that offer no usage API (and forbid probing their endpoints from non-coding tools) are estimated, never probed: quota = requests counted by the local accounting proxy / the limit you enter here, always labelled 'estimated'. Calls that bypass the proxy are not counted, so the estimate runs low. Key = upstream name shown in the panel (the provider field in api-calls.jsonl); requests = per-window request caps (not tokens); 0 or omitted = skip that window.",
-  "_howto": "键 = 面板上看到的上游名（代理写进 api-calls.jsonl 的 provider 字段）。requests 填每个滚动窗口的「请求次数」上限，不是 token。填 0 或省略 = 不估那个窗口。",
-
+  "_comment": "复制到 ~/.config/vibegauge/plans.json。给没有公开用量接口的订阅套餐（国内各家 Coding Plan 等）按本机记账估额度；厂商禁止用非编程工具探测这些端点，所以 VibeGauge 不探测、不猜，面板一律标「估算」，真值以厂商控制台为准。经代理之外的调用（别的机器、别的工具）算不进来，估算会偏低。",
+  "_comment_en": "Copy to ~/.config/vibegauge/plans.json. Estimates subscription plans that have no public usage API from calls counted by the local accounting proxy. Always labelled 'estimated'; the provider console is authoritative. Calls that bypass the proxy are not counted.",
+  "_fields": "键 = 面板上的上游名（api-calls.jsonl 的 provider）。requests：各窗口上限（5h / weekly / monthly；配了 weights 就是折算后的请求数）。reset：各窗口重置方式 rolling（每笔满时长后各自释放，默认）/ first_use（首次请求起算、到点整体刷新）/ monday（每周一 00:00）/ subscription_day（每订阅月同一日 00:00，需 subscribed_on）。weights：模型名前缀 → 抵扣系数，\"*\" = 其余模型，没配 = 每次请求记 1。models：有独立额度的模型（前缀 → 自己的 requests / reset），这些模型的请求不进共享池。timezone：重置用的时区（IANA 名）。完整说明见 docs/PROTOCOL.md。",
   "火山方舟 Coding": {
     "plan": "Coding Plan Lite",
-    "_source": "火山官方套餐页，2026-09-18 抄：Lite 每 5 小时约 1200 次 / 周 9000 次 / 月 18000 次；Pro 是 5 倍（6000 / 45000 / 90000）",
-    "requests": { "5h": 1200, "weekly": 9000, "monthly": 18000 }
+    "_source": "5h / 周 / 月上限按官方套餐页当时的『约 N 次』填，数字以你购买时的页面为准；重置规则来自火山官方文档（2026-09-23 核实）。火山按模型抵扣系数扣额度，系数数值未公开，所以这里不配 weights = 每次请求记 1（粗估）。",
+    "requests": {
+      "5h": 1200,
+      "weekly": 9000,
+      "monthly": 18000
+    },
+    "reset": {
+      "5h": "first_use",
+      "weekly": "monday",
+      "monthly": "subscription_day"
+    },
+    "subscribed_on": "2026-09-18",
+    "timezone": "Asia/Shanghai"
   }
 }

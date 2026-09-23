@@ -118,6 +118,37 @@ enum SelfTest {
             precondition(mix.map(\.model) == ["gpt-6-astra", "claude-opus-5", "shared"] && mix[2].usage.ctx == 10, "模型构成：\(mix)")
             precondition(UsageHistory.modelMix(nil).isEmpty)
         }
+        // 套餐估算：四种重置方式、模型系数、独立模型池（结构来自各家官方规则调研）
+        do {
+            let sh = TimeZone(identifier: "Asia/Shanghai")!
+            func at(_ s: String) -> TimeInterval { Fmt.parseISODate(s)! }
+            // 首次请求起算：09:00 开窗到 14:00；15:00 的请求开新窗口到 20:00；20:00 以后没新请求 = 窗口没开始
+            let fu = [(at("2026-09-23T01:00:00Z"), 1.0), (at("2026-09-23T02:00:00Z"), 1.0), (at("2026-09-23T07:00:00Z"), 1.0)]
+            let w1 = ProcessScanner.planWindow(fu, kind: "first_use", seconds: 5 * 3600, limit: 10, now: at("2026-09-23T08:00:00Z"))!
+            precondition(w1.usedPct == 10 && w1.resetsAt == at("2026-09-23T12:00:00Z") && !w1.isRolling && w1.isEstimate, "首次请求起算：\(w1)")
+            let w1b = ProcessScanner.planWindow(fu, kind: "first_use", seconds: 5 * 3600, limit: 10, now: at("2026-09-23T13:00:00Z"))!
+            precondition(w1b.usedPct == 0 && w1b.resetsAt == nil)
+            // 每周一 00:00（北京时间）：周日 23:00 的不算，周一 01:00 的算；周日看也是本周一开始
+            let wk = [(at("2026-09-20T15:00:00Z"), 1.0), (at("2026-09-20T17:00:00Z"), 1.0)]
+            let w2 = ProcessScanner.planWindow(wk, kind: "monday", seconds: 7 * 86400, limit: 100, now: at("2026-09-23T02:00:00Z"), timeZone: sh)!
+            precondition(w2.usedPct == 1 && w2.resetsAt == at("2026-09-27T16:00:00Z"), "周一重置：\(w2)")
+            let w2b = ProcessScanner.planWindow(wk, kind: "monday", seconds: 7 * 86400, limit: 100, now: at("2026-09-27T04:00:00Z"), timeZone: sh)!
+            precondition(w2b.resetsAt == at("2026-09-27T16:00:00Z"), "周日还在本周")
+            // 订阅日：18 号开通 → 9/18–10/18；31 号开通、2 月没有 31 号 → 按 2/28
+            let w3 = ProcessScanner.planWindow([], kind: "subscription_day", seconds: 30 * 86400, limit: 100, now: at("2026-09-23T02:00:00Z"), timeZone: sh, subscribedDay: 18)!
+            precondition(w3.resetsAt == at("2026-10-17T16:00:00Z") && !w3.isRolling, "订阅日：\(w3)")
+            let w3b = ProcessScanner.planWindow([], kind: "subscription_day", seconds: 30 * 86400, limit: 100, now: at("2026-02-15T02:00:00Z"), timeZone: sh, subscribedDay: 31)!
+            precondition(w3b.resetsAt == at("2026-02-27T16:00:00Z"), "月底对齐：\(String(describing: w3b.resetsAt))")
+            precondition(ProcessScanner.planWindow([], kind: "subscription_day", seconds: 30 * 86400, limit: 100, now: at("2026-09-23T02:00:00Z"))!.isRolling, "没给订阅日退回滚动")
+            // 模型系数 + 独立模型池 + 旧格式默认滚动
+            let plan = ProcessScanner.parsePlan(["plan": "P", "requests": ["5h": 100], "weights": ["glm-5.3": 3, "*": 1],
+                                                 "models": ["kimi-k3": ["requests": ["5h": 10]]]], label: "P")
+            let now = at("2026-09-23T02:00:00Z")
+            let calls: [(t: TimeInterval, model: String)] = [(now - 60, "glm-5.3-0801"), (now - 50, "auto"), (now - 40, "Kimi-K3")]
+            let est = ProcessScanner.estimatePlan(plan, calls: calls, now: now)
+            precondition(est.windows["5h"]?.usedPct == 4 && est.windows["5h"]?.isRolling == true, "系数：glm-5.3 记 3 + auto 记 1 = 4%，实际 \(String(describing: est.windows["5h"]?.usedPct))")
+            precondition(est.pools.map(\.name) == ["kimi-k3"] && est.pools.first?.window.usedPct == 10, "独立模型池：\(est.pools.map { ($0.name, $0.window.usedPct) })")
+        }
         precondition(ProxyManager.validPort(0) == 18790 && ProxyManager.validPort(80) == 18790 && ProxyManager.validPort(18791) == 18791 && ProxyManager.validPort(70000) == 18790)
 
         // Codex 跨零点：total_token_usage 是会话累计，今天只算零点后新增的；请求数只数今天的事件

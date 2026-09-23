@@ -153,6 +153,8 @@ public struct DetectedLLMRuntime: Identifiable {
     public let detail: String
     public var fiveHour: QuotaWindow? = nil
     public var sevenDay: QuotaWindow? = nil
+    /// 月窗口（Coding Plan 类套餐有 5h / 周 / 月三层）
+    public var monthly: QuotaWindow? = nil
     public var secondaryPoolName: String = ""
     public var secondaryFiveHour: QuotaWindow? = nil
     public var secondarySevenDay: QuotaWindow? = nil
@@ -171,7 +173,7 @@ public struct DetectedLLMRuntime: Identifiable {
 
     public var platformDetail: PlatformDetail = PlatformDetail()
 
-    public var hasQuota: Bool { fiveHour != nil || sevenDay != nil || secondaryFiveHour != nil || secondarySevenDay != nil }
+    public var hasQuota: Bool { fiveHour != nil || sevenDay != nil || monthly != nil || secondaryFiveHour != nil || secondarySevenDay != nil }
 }
 
 /// 一个 API Key（只存代理写下的 SHA-256 前 8 位指纹，永不落明文）今日的用量
@@ -219,6 +221,8 @@ public struct APIProviderStatus: Identifiable {
     /// 估算的底数，要显示给用户看清这数怎么来的："本机记账 213 次 / 1200"
     public var estimateNote: String = ""
     public var planLimitText: String = ""
+    /// 套餐里有独立额度的模型（plans.json 的 models）：每个模型一条
+    public var subQuotas: [SubQuota] = []
     public var balanceText: String = ""
     public var quotaError: String = ""
     public var cacheHitRate: Double { ctx > 0 ? Double(cacheRead) / Double(ctx) * 100.0 : 0.0 }
