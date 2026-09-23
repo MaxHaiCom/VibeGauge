@@ -51,7 +51,7 @@ e.g. ANTHROPIC_BASE_URL=http://127.0.0.1:18790/https://api.anthropic.com
 - Only requests whose `Host` is `127.0.0.1:<port>` or `localhost:<port>` and that carry no browser headers (`Origin`, `Sec-Fetch-Site`, `Sec-Fetch-Dest`) are accepted. Anything else gets `403`.
 - Responses are streamed through unchanged. Only `POST` requests are recorded.
 - Usage is read from Anthropic, OpenAI (Chat Completions and Responses), Gemini, and Ollama responses, streamed (SSE, or NDJSON for Ollama's native `/api/chat` and `/api/generate`) or not. OpenAI-compatible **streams only carry usage when the client asks for it** (`"stream_options": {"include_usage": true}`); without it the call is recorded with `parsed: false` and the panel counts it as "without usage" instead of zero tokens.
-- `GET /_vibegauge/health` returns `{"ok", "port", "uptime_s", "calls", "parsed", "errors", "hosts", "dir", "upstream"}`; `upstream` is the proxy the next request would use (`direct`, or `http://host:port` with credentials removed).
+- `GET /_vibegauge/health` returns `{"ok", "port", "uptime_s", "calls", "parsed", "errors", "hosts", "dir", "upstream", "upstream_error"}`; `upstream` is the proxy the next request would use (`direct`, or `http://host:port` with credentials removed) and `upstream_error` says what is wrong in `proxy.json`, if anything.
 
 ### Reaching the upstream (`proxy.json`, Stable)
 
@@ -65,7 +65,8 @@ The accounting proxy connects to upstreams itself, so it needs its own route out
 { "upstream": "http://127.0.0.1:7890", "no_proxy": ["bigmodel.cn", "deepseek.com"] }
 ```
 
-- Loopback upstreams (`localhost`, `127.x`, `::1`) always go direct.
+- Loopback upstreams (`localhost`, `127.x`, `::1`) and IPv6 literal upstreams always go direct.
+- A `proxy.json` with a wrong type (for example `"upstream": 7`) means direct, with the problem reported in `upstream_error`; a malformed `no_proxy` is ignored.
 - `no_proxy` entries match a host or any subdomain; they apply to rule 1 (rule 3 uses the system bypass list).
 - Only HTTP proxies are supported, through a `CONNECT` tunnel for both `https` and `http` upstreams. A `socks5://` value is ignored and the request goes direct.
 - Provider usage queries (`api-quota.json`) use the same route.
