@@ -8,6 +8,8 @@ enum SelfTest {
         precondition(Fmt.modelDisplayName("claude-opus-5") == "Opus 5")
         precondition(Fmt.modelDisplayName("claude-sonnet-4-5-20250929") == "Sonnet 4.5")
         precondition(Fmt.modelDisplayName("claude-3-7-sonnet-20250219") == "Sonnet 3.7")
+        precondition(Fmt.modelDisplayName("gpt-6-astra") == "gpt-6-astra" && Fmt.modelDisplayName("deepseek-v4-flash-ga-260731") == "deepseek-v4-flash-ga-260731")
+        precondition(Fmt.modelDisplayName("models/gemini-3.8-flash") == "gemini-3.8-flash" && Fmt.modelDisplayName("anthropic/claude-opus-5") == "Opus 5")
         precondition(ProcessScanner.codexPlanLabel("prolite") == "Pro Lite")
         precondition(ProcessScanner.codexPlanLabel("plus") == "Plus")
         let now = Date().timeIntervalSince1970

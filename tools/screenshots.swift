@@ -109,7 +109,19 @@ struct Screenshots {
         let grok = DetectedLLMRuntime(
             name: "Grok", isRunning: false, tier: "SuperGrok", detail: L("0 会话", "0 sessions"),
             sevenDay: win(18, resetIn: 2 * day + 5 * hour, window: week))
-        r.detectedLLMs = [claude, codex, gemini, grok]
+        let ollama = DetectedLLMRuntime(name: "Ollama", isRunning: true, tier: L("本地", "Local"), detail: L("在线", "Online"),
+                                        quotaSubtitle: L("在线 · 无已加载模型", "Online · no model loaded"))
+        r.detectedLLMs = [claude, codex, gemini, grok, ollama]
+        // 经记账代理的 Coding Plan 订阅：按请求数估算的滚动窗口，显示在订阅页
+        var plan = APIProviderStatus(host: "ark.cn-beijing.volces.com", provider: L("火山方舟 Coding", "Volcano Ark Coding"))
+        plan.cardID = "demo-plan"; plan.plan = "Coding Plan Lite"; plan.calls = 186; plan.lastTS = now - 40
+        plan.models = ["kimi-k2.7-code", "glm-5.3"]; plan.ctx = 9_800_000; plan.out = 61_000
+        let stamps = (0..<186).map { now - Double($0) * 55 }
+        plan.fiveHour = ProcessScanner.rollingWindow(stamps, seconds: fiveH, limit: 1200, now: now)
+        plan.sevenDay = ProcessScanner.rollingWindow(stamps, seconds: week, limit: 9000, now: now)
+        plan.quotaIsEstimate = true
+        plan.estimateNote = L("本机记账 186 次 / 1200", "186 locally logged / 1200 requests")
+        r.api.providers = [plan]
 
         var t = TokenStats()
         t.todayTurns = 412; t.todayContext = 86_400_000; t.todayCacheRead = 83_900_000

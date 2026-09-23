@@ -7,9 +7,11 @@ public enum Fmt {
     public static func modelDisplayName(_ raw: String) -> String {
         if raw.isEmpty { return "AI" }
         var s = raw.lowercased()
-        for prefix in ["anthropic/", "models/", "claude-"] where s.hasPrefix(prefix) {
-            s.removeFirst(prefix.count)
-        }
+        for prefix in ["anthropic/", "models/"] where s.hasPrefix(prefix) { s.removeFirst(prefix.count) }
+        // 只美化 Claude 的命名（claude-opus-5 → Opus 5）；别家的型号名（gpt-6-astra、glm-5.3、deepseek-v4-flash-…）原样显示，
+        // 按同一套规则拆会把 gpt-6-astra 变成「Gpt Astra 6」
+        guard s.hasPrefix("claude-") else { return String(raw.dropFirst(raw.count - s.count)) }
+        s.removeFirst("claude-".count)
         var parts = s.split(separator: "-").map(String.init)
         if let last = parts.last, last.count == 8, Int(last) != nil { parts.removeLast() } // 日期后缀
         let words = parts.filter { Int($0) == nil }.map { $0.prefix(1).uppercased() + $0.dropFirst() }

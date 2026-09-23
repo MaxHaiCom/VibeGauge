@@ -205,9 +205,15 @@ public struct DashboardView: View {
     private var currentCLI: [CLIUsage] { dynamicCLI ?? report.cliUsage }
     private var currentInteractions: [InteractionRecord] { Array(currentTokens.recentInteractions.prefix(3)) }
 
+    /// 经记账代理的上游分两类：有套餐的（plans.json 或厂商用量接口给出套餐名，如火山方舟 Coding Plan、
+    /// GLM Coding Plan）是订阅，放订阅页和 Claude / Codex 并列；只有余额或什么都没有的是按量 API key，留在 API 页
+    private var apiCards: [DetectedLLMRuntime] { currentAPI.providers.filter { $0.plan.isEmpty }.map(upstreamCard) }
+    private var planCards: [DetectedLLMRuntime] { currentAPI.providers.filter { !$0.plan.isEmpty }.map(upstreamCard) }
+    private var allCards: [DetectedLLMRuntime] { currentLLMs + planCards + apiCards }
+
     /// API 上游 → 复用平台卡片：档位 = 套餐名或 "API Key"，额度条 / 余额 / 今日 token 叠加
-    private var apiCards: [DetectedLLMRuntime] {
-        currentAPI.providers.map { p in
+    private func upstreamCard(_ p: APIProviderStatus) -> DetectedLLMRuntime {
+        do {
             var tokens = ""
             if p.calls > 0 {
                 let models = p.models.prefix(2).joined(separator: " / ") + (p.models.count > 2 ? " …" : "")
@@ -338,7 +344,7 @@ public struct DashboardView: View {
         var groups: [ModelDisplayGroup] = []
         var currentRegular: [DetectedLLMRuntime] = []
 
-        for llm in currentLLMs {
+        for llm in currentLLMs + planCards {
             if llm.isFullWidth {
                 if !currentRegular.isEmpty {
                     groups.append(ModelDisplayGroup(id: "reg-\(groups.count)", isFullWidth: false, models: currentRegular))
@@ -404,7 +410,7 @@ public struct DashboardView: View {
                         .foregroundColor(.blue)
                     }
                     .buttonStyle(.plain)
-                    Text((currentLLMs + apiCards).first { $0.id == key }?.name ?? key)
+                    Text(allCards.first { $0.id == key }?.name ?? key)
                         .font(.system(size: 11, weight: .bold))
                     Spacer()
                 } else {
@@ -437,7 +443,7 @@ public struct DashboardView: View {
 
             SwipeScroll(
                 content: VStack(alignment: .leading, spacing: 10) {
-                    if let key = drillDown, let llm = (currentLLMs + apiCards).first(where: { $0.id == key }) {
+                    if let key = drillDown, let llm = allCards.first(where: { $0.id == key }) {
                         detailPage(for: llm)
                     } else {
                         switch tab {
@@ -508,8 +514,8 @@ public struct DashboardView: View {
 
     /// Tab 栏右侧只留紧凑摘要，五个入口仍能在菜单栏宽度内完整显示。
     private var tabStatusText: String {
-        let active = currentLLMs.filter { $0.isRunning }.count
-        let calls = currentAPI.providers.reduce(0) { $0 + $1.calls }
+        let active = (currentLLMs + planCards).filter { $0.isRunning }.count
+        let calls = currentAPI.providers.filter { $0.plan.isEmpty }.reduce(0) { $0 + $1.calls }
         switch tab {
         case 1: return L("今日 \(calls) 次", "\(calls) calls")
         case 2: return history.isScanning ? L("汇总中", "Scanning") : L("\(history.activeDays) 活跃天", "\(history.activeDays) days")
@@ -675,7 +681,7 @@ public struct DashboardView: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.secondary)
                 Spacer()
-                let activeCount = currentLLMs.filter { $0.isRunning }.count
+                let activeCount = (currentLLMs + planCards).filter { $0.isRunning }.count
                 HStack(spacing: 4) {
                     Circle()
                         .fill(activeCount > 0 ? Color.green : Color.secondary.opacity(0.4))
@@ -694,11 +700,7 @@ public struct DashboardView: View {
                             fullWidthModelCard(for: model)
                         }
                     } else {
-                        LazyVGrid(columns: gridCols, spacing: 5) {
-                            ForEach(group.models) { llm in
-                                modelCard(for: llm)
-                            }
-                        }
+                        cardGrid(group.models)
                     }
                 }
             }
@@ -807,13 +809,14 @@ public struct DashboardView: View {
                                     .foregroundColor(.secondary)
                                     .frame(width: 66, alignment: .leading)
                                 if u.hasTokens {
-                                    Text(L("上下文 \(formatTokens(u.ctx))", "context \(formatTokens(u.ctx))"))
-                                    Text("·")
-                                    Text(L("输出 \(formatTokens(u.out))", "output \(formatTokens(u.out))"))
-                                    if u.think > 0 {
-                                        Text("·")
-                                        Text(L("思考 \(formatTokens(u.think))", "reasoning \(formatTokens(u.think))"))
-                                    }
+                                    // 一行写完：窄了先略缩字号再截尾，不折成两行（「1.34 亿」被拆开很难读）
+                                    Text([L("上下文 \(formatTokens(u.ctx))", "context \(formatTokens(u.ctx))"),
+                                          L("输出 \(formatTokens(u.out))", "output \(formatTokens(u.out))"),
+                                          u.think > 0 ? L("思考 \(formatTokens(u.think))", "reasoning \(formatTokens(u.think))") : ""]
+                                            .filter { !$0.isEmpty }.joined(separator: " · "))
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.85)
+                                        .truncationMode(.tail)
                                     Spacer(minLength: 2)
                                     if u.ctx > 0 {
                                         Text(String(format: L("命中 %.0f%%", "%.0f%% hit"), u.cacheHitRate))
@@ -897,7 +900,13 @@ public struct DashboardView: View {
                 }
             }
 
-            if apiCards.isEmpty {
+            if apiCards.isEmpty && !planCards.isEmpty {
+                Text(L("这里只放按量计费的 API key。经代理的 Coding Plan 等订阅（\(planCards.map(\.name).joined(separator: "、"))）在「订阅」页。",
+                       "Pay-as-you-go API keys only. Subscriptions through the proxy (\(planCards.map(\.name).joined(separator: ", "))) are on the Plans tab."))
+                    .font(.system(size: 8.5))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if apiCards.isEmpty {
                 Text(currentAPI.installed
                      ? L("还没有调用经过代理。把别名里的 BASE_URL 前面加上 http://127.0.0.1:\(currentAPI.port)/ 即可记账。", "No calls have passed through the proxy. Prefix the alias BASE_URL with http://127.0.0.1:\(currentAPI.port)/ to log them.")
                      : L("菜单里「安装 API 记账代理」，再把别名里的 BASE_URL 前面加上 http://127.0.0.1:\(currentAPI.port)/ 即可记账。", "Choose “Install API accounting proxy” in the menu, then prefix the alias BASE_URL with http://127.0.0.1:\(currentAPI.port)/ to log calls."))
@@ -905,11 +914,7 @@ public struct DashboardView: View {
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                LazyVGrid(columns: gridCols, spacing: 5) {
-                    ForEach(apiCards) { card in
-                        modelCard(for: card)
-                    }
-                }
+                cardGrid(apiCards)
             }
 
             Divider().opacity(0.35)
@@ -1252,8 +1257,12 @@ public struct DashboardView: View {
         let windows: [(String, QuotaWindow?)] = [
             ("5H", llm.fiveHour), ("W", llm.sevenDay), (L("\(sp)5H", "\(sp) 5H"), llm.secondaryFiveHour), (L("\(sp)W", "\(sp) W"), llm.secondarySevenDay)
         ]
+        // 滚动窗口（按请求数估的套餐）没有重置点，只有「下一笔请求到期释放」
+        let rolling = windows.contains { $0.1?.isRolling == true }
         let resets = windows.compactMap { label, w -> String? in
-            guard let w = w, let c = w.shortResetText(now: nowTS) else { return nil }
+            guard let w = w else { return nil }
+            if w.isRolling, let r = w.resetsAt, r <= nowTS { return "\(label) " + L("待刷新", "refreshing") }
+            guard let c = Fmt.countdown(to: w.resetsAt, now: nowTS) else { return nil }
             return "\(label) \(c)"
         }
         var stale: [String] = []
@@ -1263,7 +1272,8 @@ public struct DashboardView: View {
         if let a = [llm.secondaryFiveHour, llm.secondarySevenDay].compactMap({ $0?.ageSeconds(now: nowTS) }).max(), a > 300 {
             stale.append(L("\(sp) 记录于 \(Fmt.agoShort(a))", "\(sp) recorded \(Fmt.agoShort(a))"))
         }
-        return (resets.isEmpty ? "" : L("重置 ", "Resets ") + resets.joined(separator: " · "), stale.joined(separator: " · "))
+        let prefix = rolling ? L("下一笔释放 ", "Next frees ") : L("重置 ", "Resets ")
+        return (resets.isEmpty ? "" : prefix + resets.joined(separator: " · "), stale.joined(separator: " · "))
     }
 
     /// 「按当前节奏会不会超额」——挑最吃紧的那个窗口，一直显示，不只是超额时才提示。
@@ -1352,23 +1362,28 @@ public struct DashboardView: View {
                 .fill(llm.isRunning ? Color.green : Color.secondary.opacity(0.3))
                 .frame(width: 5, height: 5)
 
-            Text(llm.name)
+            // 半宽卡片挤不下时：先不显示套餐徽标（截成一两个字母没意义），再截名字；右侧次数始终完整
+            let name = Text(llm.name)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(llm.isRunning ? .primary : .secondary)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)   // 平台名永远完整；挤不下时截后面的会话数
-
-            if !llm.tier.isEmpty {
-                Text(llm.tier)
-                    .font(.system(size: 7.5, weight: .bold))
-                    .padding(.horizontal, 3.5)
-                    .padding(.vertical, 1)
-                    .background(tierColor(llm.tier).opacity(0.18))
-                    .foregroundColor(tierColor(llm.tier))
-                    .cornerRadius(2.5)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 3.5) {
+                    name.fixedSize()
+                    if !llm.tier.isEmpty {
+                        Text(llm.tier)
+                            .font(.system(size: 7.5, weight: .bold))
+                            .padding(.horizontal, 3.5)
+                            .padding(.vertical, 1)
+                            .background(tierColor(llm.tier).opacity(0.18))
+                            .foregroundColor(tierColor(llm.tier))
+                            .cornerRadius(2.5)
+                            .fixedSize()
+                    }
+                }
+                name.fixedSize()
+                name.lineLimit(1).truncationMode(.tail)
             }
+            .help(llm.tier.isEmpty ? llm.name : "\(llm.name) · \(llm.tier)")
 
             Spacer(minLength: 2)
 
@@ -1380,12 +1395,26 @@ public struct DashboardView: View {
         }
     }
 
+    /// 双列卡片矩阵：同一行两张卡等高（Grid 行共享高度，卡片填满格子）；单数时最后一张仍是半宽
+    private func cardGrid(_ cards: [DetectedLLMRuntime]) -> some View {
+        Grid(horizontalSpacing: 5, verticalSpacing: 5) {
+            ForEach(Array(stride(from: 0, to: cards.count, by: 2)), id: \.self) { i in
+                GridRow {
+                    modelCard(for: cards[i])
+                    if i + 1 < cards.count { modelCard(for: cards[i + 1]) } else { Color.clear.frame(height: 0) }
+                }
+            }
+        }
+    }
+
     // 普通卡片（双列）
     @ViewBuilder
     private func modelCard(for llm: DetectedLLMRuntime) -> some View {
-        VStack(alignment: .leading, spacing: 3.5) {
+        // 标题固定在顶部；被同行更高的卡拉高时，其余内容在剩余高度里垂直居中，不全堆在上面留一块空
+        VStack(alignment: .leading, spacing: 0) {
             cardHeader(for: llm)
-
+            Spacer(minLength: 3.5)
+            VStack(alignment: .leading, spacing: 3.5) {
             if llm.hasQuota {
                 HStack(spacing: 3) {
                     if let fh = llm.fiveHour { quotaBar(label: "5H", win: fh) }
@@ -1430,9 +1459,12 @@ public struct DashboardView: View {
                     .lineLimit(1)
             }
             subQuotaRows(for: llm)
+            }
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)   // 填满格子：同行矮的那张跟高的一样高
         .background(llm.isRunning ? Color.secondary.opacity(0.08) : Color.secondary.opacity(0.03))
         .cornerRadius(6)
         .contentShape(Rectangle())
