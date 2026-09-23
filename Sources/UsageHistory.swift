@@ -90,6 +90,17 @@ public final class UsageHistory {
     /// 经记账代理的上游（"API · GLM" 这类）：同一请求多半已在 CLI 日志里，不进总数
     public static func isProxySource(_ source: String) -> Bool { source.hasPrefix("API") }
 
+    /// 某一天各模型的用量（只算 CLI 日志，和总数同口径），按 token 从多到少。
+    /// 同名模型跨 Claude / Codex 来源合并。这是 token 构成，不是订阅额度占比。
+    public static func modelMix(_ day: Day?) -> [(model: String, usage: ModelTotals)] {
+        var merged: [String: ModelTotals] = [:]
+        for (source, totals) in day?.sources ?? [:] where !isProxySource(source) {
+            for (model, usage) in totals.models { merged[model, default: ModelTotals()].add(usage) }
+        }
+        return merged.map { (model: $0.key, usage: $0.value) }
+            .sorted { $0.usage.tokenTotal == $1.usage.tokenTotal ? $0.model < $1.model : $0.usage.tokenTotal > $1.usage.tokenTotal }
+    }
+
     /// 同值同档，零日留空；档位只由非零日的最近秩分位数决定。
     public static func levels(_ values: [Int64]) -> [Int] {
         let positive = values.filter { $0 > 0 }.sorted()

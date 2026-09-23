@@ -25,6 +25,7 @@ public struct StatsTabView: View {
             metrics
             heatmap
             distribution
+            todayModels
             providers
             Text(L("总数与热力图只算 CLI 日志；经记账代理的 API 调用多半已在 CLI 日志里，单列不重复计入。会话数按不同日志文件计，思考包含在输出中。", "Totals and the heatmap use CLI logs only. Most API calls through the accounting proxy are already in CLI logs, so they are not counted twice. Sessions count distinct log files; reasoning is included in output."))
                 .font(.system(size: 8)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -135,6 +136,47 @@ public struct StatsTabView: View {
                     Text(hasRecords ? Fmt.tokens(part.1) : L("未检测到", "Unavailable"))
                     if part.0 == L("输出", "Output"), all.think > 0 { Text(L("含思考 \(Fmt.tokens(all.think))", "includes \(Fmt.tokens(all.think)) reasoning")) }
                 }.font(.system(size: 9)).foregroundColor(.secondary)
+            }
+        }
+    }
+
+    private static let mixColors: [Color] = [.blue, .orange, .purple, .green, .pink, .teal]
+
+    private var todayModels: some View {
+        let today = UsageHistory.dayKey(timestamp: Date().timeIntervalSince1970)
+        let mix = UsageHistory.modelMix(snapshot.days.first { $0.date == today })
+        let total = max(1, mix.reduce(Int64(0)) { $0 + $1.usage.tokenTotal })
+        let shown = Array(mix.prefix(6))
+        let rest = mix.dropFirst(6).reduce(Int64(0)) { $0 + $1.usage.tokenTotal }
+        return section(L("今日模型构成", "Today's model mix")) {
+            if mix.isEmpty {
+                Text(L("今天还没有 CLI 用量", "No CLI usage today")).font(.system(size: 9)).foregroundColor(.secondary)
+            } else {
+                GeometryReader { geo in
+                    HStack(spacing: 0) {
+                        ForEach(Array(shown.enumerated()), id: \.offset) { i, m in
+                            Rectangle().fill(Self.mixColors[i].opacity(0.8)).frame(width: geo.size.width * CGFloat(Double(m.usage.tokenTotal) / Double(total)))
+                        }
+                    }.cornerRadius(3)
+                }.frame(height: 7)
+                ForEach(Array(shown.enumerated()), id: \.offset) { i, m in
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 4) {
+                            Circle().fill(Self.mixColors[i]).frame(width: 5, height: 5)
+                            Text(m.model == "?" ? L("未知模型", "Unknown model") : Fmt.modelDisplayName(m.model)).lineLimit(1)
+                            Spacer()
+                            Text(Fmt.tokens(m.usage.tokenTotal))
+                            Text(String(format: "%.0f%%", Double(m.usage.tokenTotal) / Double(total) * 100)).frame(width: 30, alignment: .trailing)
+                        }.font(.system(size: 9))
+                        Text(L("缓存读 \(Fmt.tokens(m.usage.cacheRead)) · 输出 \(Fmt.tokens(m.usage.out))", "cache read \(Fmt.tokens(m.usage.cacheRead)) · output \(Fmt.tokens(m.usage.out))"))
+                            .font(.system(size: 8)).foregroundColor(.secondary).padding(.leading, 9)
+                    }
+                }
+                if rest > 0 {
+                    Text(L("其他 \(mix.count - shown.count) 个模型 \(Fmt.tokens(rest))", "\(mix.count - shown.count) other models \(Fmt.tokens(rest))")).font(.system(size: 8)).foregroundColor(.secondary)
+                }
+                Text(L("按 token 计（输入含缓存 + 输出）。不是订阅额度占比：各家额度按模型怎么折算不公开。", "By tokens (input including cache + output). Not a share of your subscription quota: how plans weight each model is not published."))
+                    .font(.system(size: 8)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }

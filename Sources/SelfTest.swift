@@ -97,6 +97,20 @@ enum SelfTest {
             _ = AppDelegate.dueForecasts([], firstSeen: &seen, notified: [], now: t + 1100)
             precondition(AppDelegate.dueForecasts(found, firstSeen: &seen, notified: [], now: t + 1200).isEmpty, "预测消失后重新计时")
         }
+        // 今日模型构成：跨 CLI 来源同名合并、不含经代理的 API、按 token 降序
+        do {
+            func totals(_ models: [String: (Int64, Int64)]) -> UsageHistory.Totals {
+                var t = UsageHistory.Totals()
+                for (m, v) in models { t.models[m] = UsageHistory.ModelTotals(ctx: v.0, out: v.1) }
+                return t
+            }
+            let day = UsageHistory.Day(date: "2026-09-23", sources: ["Claude": totals(["claude-opus-5": (100, 10), "shared": (5, 0)]),
+                                                                  "Codex": totals(["gpt-6-astra": (300, 20), "shared": (5, 0)]),
+                                                                  "API · GLM": totals(["glm-5": (999, 9)])])
+            let mix = UsageHistory.modelMix(day)
+            precondition(mix.map(\.model) == ["gpt-6-astra", "claude-opus-5", "shared"] && mix[2].usage.ctx == 10, "模型构成：\(mix)")
+            precondition(UsageHistory.modelMix(nil).isEmpty)
+        }
         precondition(ProxyManager.validPort(0) == 18790 && ProxyManager.validPort(80) == 18790 && ProxyManager.validPort(18791) == 18791 && ProxyManager.validPort(70000) == 18790)
 
         // Codex 跨零点：total_token_usage 是会话累计，今天只算零点后新增的；请求数只数今天的事件
