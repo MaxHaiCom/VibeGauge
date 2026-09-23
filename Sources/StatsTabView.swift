@@ -85,7 +85,8 @@ public struct StatsTabView: View {
                     .font(.system(size: 8)).foregroundColor(.secondary)
             }
             .font(.system(size: 9)).foregroundColor(.secondary)
-            if heatmapHourly { hourlyGrid } else { monthGrid }
+            // 两种视图同一高度（按时段视图 7 行定），切换时面板不跳；月历 5 / 6 周自己分行高
+            Group { if heatmapHourly { hourlyGrid } else { monthGrid } }.frame(height: Self.heatmapHeight)
             HStack {
                 Text(heatmapHourly ? L("更早的记录已按天汇总，没有时段", "Older records are daily totals only") : maxDayText)
                 Spacer()
@@ -101,6 +102,8 @@ public struct StatsTabView: View {
         .contentShape(Rectangle())
         .onTapGesture { heatmapHourly.toggle() }
     }
+
+    static let heatmapHeight: CGFloat = 116
 
     private func heatColor(_ level: Int) -> Color {
         level == 0 ? Color.secondary.opacity(0.10) : Color.green.opacity(0.15 + Double(level) * 0.15)
@@ -131,7 +134,7 @@ public struct StatsTabView: View {
         let grades = Array(UsageHistory.levels(reference + values).suffix(values.count))
         let today = cal.startOfDay(for: Date())
         let heads = [L("一", "Mo"), L("二", "Tu"), L("三", "We"), L("四", "Th"), L("五", "Fr"), L("六", "Sa"), L("日", "Su")]
-        return VStack(spacing: 4) {
+        return VStack(spacing: 3) {
             HStack(spacing: 4) {
                 ForEach(0..<7, id: \.self) { i in
                     Text(heads[i]).font(.system(size: 8)).foregroundColor(.secondary).frame(maxWidth: .infinity)
@@ -144,7 +147,7 @@ public struct StatsTabView: View {
                         if let d = cells[i] {
                             dayCell(d, today: today, grade: grades[i], tip: "\(keys[i] ?? "") · \(Fmt.tokens(values[i])) token")
                         } else {
-                            Color.clear.frame(maxWidth: .infinity).frame(height: 16)
+                            Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                     }
                 }
@@ -160,7 +163,7 @@ public struct StatsTabView: View {
             .overlay(RoundedRectangle(cornerRadius: 3).stroke(border, lineWidth: 1))
             .overlay(Text("\(Calendar.current.component(.day, from: d))").font(.system(size: 7.5))
                 .foregroundColor(grade >= 4 ? Color.black.opacity(0.7) : Color.secondary))
-            .frame(maxWidth: .infinity).frame(height: 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .help(tip)
     }
 
@@ -176,8 +179,9 @@ public struct StatsTabView: View {
             HStack(spacing: 1.5) {
                 Text("").frame(width: 34)
                 ForEach(0..<24, id: \.self) { h in
-                    Text(h % 6 == 0 ? "\(h)" : " ").font(.system(size: 7.5)).foregroundColor(.secondary)
-                        .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    // 刻度标在格子左沿（0 / 6 / 12 / 18），最后一格右沿补 24，看得出一天到哪结束
+                    Text(h % 6 == 0 ? "\(h)" : h == 23 ? "24" : " ").font(.system(size: 7.5)).foregroundColor(.secondary)
+                        .lineLimit(1).fixedSize().frame(maxWidth: .infinity, alignment: h == 23 ? .trailing : .leading)
                 }
             }
             ForEach(0..<7, id: \.self) { row in
