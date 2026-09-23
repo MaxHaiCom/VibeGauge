@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MaxHaiCom/vibe-gauge/releases"><img src="https://img.shields.io/github/v/release/MaxHaiCom/vibe-gauge?style=flat-square&color=blue" alt="Release"></a>
+  <a href="https://github.com/MaxHaiCom/VibeGauge/releases"><img src="https://img.shields.io/github/v/release/MaxHaiCom/VibeGauge?style=flat-square&color=blue" alt="Release"></a>
   <img src="https://img.shields.io/badge/Platform-macOS%2014%2B-lightgrey?style=flat-square&logo=apple" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Language-Swift%20%2F%20SwiftUI-orange?style=flat-square&logo=swift" alt="Swift Native">
   <img src="https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Native)-success?style=flat-square" alt="Zero Dependencies">
@@ -93,7 +93,7 @@ When using autonomous coding agents like **Claude Code**, **OpenAI Codex**, **Go
 
 > Universal app — runs on **Apple Silicon and Intel** Macs with **macOS 14+**. UI in English / 简体中文 — follows your system, switch anytime at the panel's bottom-right.
 
-1. Download the latest `VibeGauge.zip` from [GitHub Releases](https://github.com/MaxHaiCom/vibe-gauge/releases).
+1. Download the latest `VibeGauge.zip` from [GitHub Releases](https://github.com/MaxHaiCom/VibeGauge/releases).
 2. Unzip and drag `VibeGauge.app` into your `/Applications` folder.
 3. Launch it. The icon will appear in your top menu bar.
 4. Using Claude Code or agy? Click **Connect quota** on its card once — the quota appears after your next message.
@@ -108,8 +108,8 @@ No heavy Xcode installation required — only macOS standard command line tools 
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/MaxHaiCom/vibe-gauge.git
-cd vibe-gauge
+git clone https://github.com/MaxHaiCom/VibeGauge.git
+cd VibeGauge
 
 # 2. Build and bundle
 ./build.sh
@@ -208,7 +208,7 @@ Everything works with zero config. These files and settings are only needed for 
 **Price table** — `~/.config/vibegauge/prices.json`. VibeGauge ships no built-in prices (they change too often; a wrong number is worse than none). Without it, "API-equivalent cost" is simply hidden.
 ```bash
 mkdir -p ~/.config/vibegauge
-curl -fsSL https://raw.githubusercontent.com/MaxHaiCom/vibe-gauge/main/Resources/prices.example.json -o ~/.config/vibegauge/prices.json
+curl -fsSL https://raw.githubusercontent.com/MaxHaiCom/VibeGauge/main/Resources/prices.example.json -o ~/.config/vibegauge/prices.json
 # then fill in per-million-token prices; model names match by longest prefix
 ```
 

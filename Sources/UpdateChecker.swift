@@ -6,7 +6,7 @@ import os
 /// 不自动下载安装 —— 没有开发者签名的 App 不该从网上拉东西替换自己。
 final class UpdateChecker {
     static let shared = UpdateChecker()
-    static let repo = "MaxHaiCom/vibe-gauge"
+    static let repo = "MaxHaiCom/VibeGauge"
     /// 底栏「新版本」打开的地址：固定写死本仓库的最新发布页，不用接口返回的网址（带 ../ 的地址能骗过前缀检查）
     static let releasePage = URL(string: "https://github.com/\(repo)/releases/latest")!
 

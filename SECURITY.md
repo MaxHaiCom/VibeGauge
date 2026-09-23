@@ -5,7 +5,7 @@
 Please **do not** open a public issue for security problems.
 
 Report privately via GitHub: **Security → Report a vulnerability** on this repository
-(<https://github.com/MaxHaiCom/vibe-gauge/security/advisories/new>).
+(<https://github.com/MaxHaiCom/VibeGauge/security/advisories/new>).
 
 Include what you found, how to reproduce it, and the version (`v1.x.x` from Releases or commit SHA).
 You should get a first response within 7 days.

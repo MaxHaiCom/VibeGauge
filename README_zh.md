@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MaxHaiCom/vibe-gauge/releases"><img src="https://img.shields.io/github/v/release/MaxHaiCom/vibe-gauge?style=flat-square&color=blue" alt="Release"></a>
+  <a href="https://github.com/MaxHaiCom/VibeGauge/releases"><img src="https://img.shields.io/github/v/release/MaxHaiCom/VibeGauge?style=flat-square&color=blue" alt="Release"></a>
   <img src="https://img.shields.io/badge/Platform-macOS%2014%2B-lightgrey?style=flat-square&logo=apple" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Language-Swift%20%2F%20SwiftUI-orange?style=flat-square&logo=swift" alt="Swift Native">
   <img src="https://img.shields.io/badge/Dependencies-Zero%20(Pure%20Native)-success?style=flat-square" alt="Zero Dependencies">
@@ -89,7 +89,7 @@
 
 > Universal 通用包：**Apple Silicon 与 Intel** Mac 均可运行，需 **macOS 14+**。界面支持简体中文 / English，默认跟随系统，面板右下角可随时切换。
 
-1. 前往 [GitHub Releases](https://github.com/MaxHaiCom/vibe-gauge/releases) 下载最新版 `VibeGauge.zip`。
+1. 前往 [GitHub Releases](https://github.com/MaxHaiCom/VibeGauge/releases) 下载最新版 `VibeGauge.zip`。
 2. 解压并将 `VibeGauge.app` 拖入 `/Applications`（应用程序）目录。
 3. 双击打开，图标即会常驻在菜单栏右上角。
 4. 用 Claude Code 或 agy 的话，在对应卡片上点一次 **「一键连接额度」**，下一条消息后额度就会出现。
@@ -104,8 +104,8 @@
 
 ```bash
 # 1. 克隆代码仓库
-git clone https://github.com/MaxHaiCom/vibe-gauge.git
-cd vibe-gauge
+git clone https://github.com/MaxHaiCom/VibeGauge.git
+cd VibeGauge
 
 # 2. 一键编译并打包
 ./build.sh
@@ -189,7 +189,7 @@ open VibeGauge.app
 **价目表** — `~/.config/vibegauge/prices.json`。VibeGauge 不内置价格（价格常变，编一个错的比不显示更糟）；不配就不显示「API 等价成本」。
 ```bash
 mkdir -p ~/.config/vibegauge
-curl -fsSL https://raw.githubusercontent.com/MaxHaiCom/vibe-gauge/main/Resources/prices.example.json -o ~/.config/vibegauge/prices.json
+curl -fsSL https://raw.githubusercontent.com/MaxHaiCom/VibeGauge/main/Resources/prices.example.json -o ~/.config/vibegauge/prices.json
 # 然后填每百万 token 单价；模型名按最长前缀匹配
 ```
 

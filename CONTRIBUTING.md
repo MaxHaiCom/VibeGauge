@@ -42,7 +42,7 @@ CI runs the same checks on every push and PR.
 
 ## Reporting
 
-- Bugs / feature ideas: [open an issue](https://github.com/MaxHaiCom/vibe-gauge/issues/new/choose).
+- Bugs / feature ideas: [open an issue](https://github.com/MaxHaiCom/VibeGauge/issues/new/choose).
 - Security problems: **do not** open a public issue — see [SECURITY.md](SECURITY.md).
 
 ## Releasing (maintainers)
