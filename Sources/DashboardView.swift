@@ -188,6 +188,7 @@ public struct DashboardView: View {
 
     /// 截图 / 预览用：只显示灌进来的演示数据，不启动实时刷新 —— 读不到本机任何真实用量（tools/screenshots.swift）
     private var isDemo = false
+    @State private var showAllPlanSources = false
 
     init(demo report: ScanReport, history: UsageHistory.Snapshot, network: NetworkSnapshot, drillDown: String? = nil) {
         self.init(store: ReportStore(report), settings: PanelSettings(autoClean: true, launchAtLogin: true), actions: PanelActions())
@@ -715,6 +716,8 @@ public struct DashboardView: View {
                 }
             }
 
+            planSourceRows
+
             if !report.pending.isEmpty {
                 Divider().opacity(0.35)
                 pendingSection(report.pending)
@@ -982,7 +985,7 @@ public struct DashboardView: View {
             }
 
             Divider().opacity(0.35)
-            officialQuotaRows
+            keySourceRows
         }
         .padding(10)
         .background(Color.secondary.opacity(0.06))
@@ -1091,18 +1094,17 @@ public struct DashboardView: View {
         .cornerRadius(8)
     }
 
-    /// 官方额度来源：不经代理也能看到订阅 / 余额的真值
-    private var officialQuotaRows: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(L("官方额度来源", "Official quota sources")).font(.system(size: 9.5, weight: .medium))
-            Text(L("不走记账代理也能看到真实用量。火山、阿里用官方命令行工具：点按钮会打开「终端」完成安装和登录（一次即可）；其他厂商可登记 API key，只存本机钥匙串、只发给该厂商自己的用量接口。",
-                   "See real usage without the proxy. Volcengine and Alibaba use their official CLIs: the button opens Terminal to install and sign in (once). For other providers, add an API key: it stays in your Keychain and goes only to that provider's own usage endpoint."))
-                .font(.system(size: 8)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
-            ForEach(OfficialCLI.allCases, id: \.self) { c in
-                let st: OfficialQuota.CLIState = isDemo ? (c == .ark ? .connected(CLIQuota(), at: nowTS - 120) : .notInstalled) : OfficialQuota.shared.state(c)
+    /// 订阅页：火山 / 阿里 Coding Plan 的官方额度（官方 CLI）。有对应订阅卡或已装 CLI 才列出，否则只留一个入口
+    private var planSourceRows: some View {
+        let shown = OfficialCLI.allCases.filter { c in
+            isDemo ? c == .ark : (showAllPlanSources || Self.cliRelevant(c, cards: planCards))
+        }
+        return VStack(alignment: .leading, spacing: 4) {
+            ForEach(shown, id: \.self) { c in
+                let st: OfficialQuota.CLIState = isDemo ? .notInstalled : OfficialQuota.shared.state(c)
                 HStack(spacing: 6) {
                     Circle().fill(st.isConnected ? Color.green : Color.secondary.opacity(0.4)).frame(width: 5, height: 5)
-                    Text(c.title).font(.system(size: 9))
+                    Text(L("\(c.title) 官方额度", "\(c.title) official quota")).font(.system(size: 9))
                     Text(st.text(nowTS)).font(.system(size: 8)).foregroundColor(.secondary).lineLimit(1)
                     Spacer()
                     if !st.isConnected {
@@ -1111,7 +1113,31 @@ public struct DashboardView: View {
                         }.buttonStyle(.plain).foregroundColor(.blue)
                     }
                 }
+                .help(L("用厂商官方命令行工具读取套餐真实用量：点按钮会打开「终端」完成安装和登录（一次即可），凭据由它自己保管",
+                        "Reads the plan's real usage with the provider's official CLI. The button opens Terminal to install and sign in (once); the CLI keeps its own credentials"))
             }
+            if shown.count < OfficialCLI.allCases.count {
+                Button { showAllPlanSources = true } label: {
+                    Text(L("有火山 / 阿里 Coding Plan？连接官方额度", "Volcengine / Alibaba Coding Plan? Connect official quota"))
+                        .font(.system(size: 8.5))
+                }.buttonStyle(.plain).foregroundColor(.blue)
+            }
+        }
+    }
+
+    static func cliRelevant(_ c: OfficialCLI, cards: [DetectedLLMRuntime]) -> Bool {
+        if case .connected = OfficialQuota.shared.state(c) { return true }
+        if OfficialQuota.binary(c.bin) != nil { return true }
+        return cards.contains { $0.cardID.contains(c.provider) || $0.cardID.contains(c.host) || (c == .bailian && $0.cardID.contains("coding.dashscope")) }
+    }
+
+    /// API 页：登记 API key 查额度 / 余额（按量 key 的厂商接口）
+    private var keySourceRows: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L("查额度的 API key", "API keys for quota")).font(.system(size: 9.5, weight: .medium))
+            Text(L("不走记账代理也能看到余额 / 额度：key 只存本机钥匙串，只发给该厂商自己的用量接口。",
+                   "See balance / quota without the proxy: the key stays in your Keychain and goes only to that provider's own usage endpoint."))
+                .font(.system(size: 8)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             let keys = isDemo ? [OfficialQuota.RegisteredKey(account: "api.deepseek.com#3f9a1c20", host: "api.deepseek.com", fingerprint: "3f9a1c20", name: "DeepSeek")]
                               : OfficialQuota.shared.registered()
             ForEach(keys) { k in
