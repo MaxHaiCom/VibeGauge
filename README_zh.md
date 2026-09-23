@@ -202,6 +202,9 @@ curl -fsSL https://raw.githubusercontent.com/MaxHaiCom/vibe-gauge/main/Resources
 | `clashAPI` | `http://127.0.0.1:9090` | 网络 Tab 读取的 Clash / mihomo / sing-box 控制端口（只允许本机地址） |
 | `clashSecret` | — | 控制端口密钥（如果设了） |
 | `codexRemoteHost` | 关闭 | `user@host`，需免密 SSH；合并另一台 Mac 的 Codex 额度 |
+| `proxyPort` | `18790` | 记账代理端口，18790 被占用时改（1024–65535），改完在菜单里重装代理 |
+
+所有数据文件、字段和开关的完整说明见 [docs/PROTOCOL.md](docs/PROTOCOL.md)（英文）。
 
 ---
 

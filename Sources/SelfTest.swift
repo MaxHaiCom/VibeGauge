@@ -24,6 +24,7 @@ enum SelfTest {
         precondition(ProcessScanner.memoryPressurePageSize("The system has 8589934592 (2097152 pages with a page size of 4096).") == 4096, "Intel 4KB 页")
         precondition(ProcessScanner.memoryPressurePageSize("The system has 25769803776 (1572864 pages with a page size of 16384).") == 16384)
         precondition(ProcessScanner.memoryPressurePageSize("garbage") == nil)
+        precondition(ProxyManager.validPort(0) == 18790 && ProxyManager.validPort(80) == 18790 && ProxyManager.validPort(18791) == 18791 && ProxyManager.validPort(70000) == 18790)
 
         // Codex 跨零点：total_token_usage 是会话累计，今天只算零点后新增的；请求数只数今天的事件
         do {

@@ -221,6 +221,9 @@ curl -fsSL https://raw.githubusercontent.com/MaxHaiCom/vibe-gauge/main/Resources
 | `clashAPI` | `http://127.0.0.1:9090` | Clash / mihomo / sing-box controller for the Network tab (loopback only) |
 | `clashSecret` | — | Controller secret, if you set one |
 | `codexRemoteHost` | off | `user@host` with password-less SSH; merges Codex quota from another Mac |
+| `proxyPort` | `18790` | Accounting proxy port, if 18790 is taken (1024–65535); reinstall the proxy from the menu afterwards |
+
+All files, fields, and switches are specified in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ---
 

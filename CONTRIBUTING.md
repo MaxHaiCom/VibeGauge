@@ -27,6 +27,7 @@ CI runs the same checks on every push and PR.
 | Network | `NetworkScanner.swift`, `NetworkTabView.swift` |
 | UI and app | `DashboardView.swift`, `StatsTabView.swift`, `AppDelegate.swift`, `ProxyManager.swift`, `UpdateChecker.swift`, `main.swift` |
 | Tests | `SelfTest.swift` (`--selftest`), `SelfTestFixtures.swift`, `Diagnostics.swift` (`--diagnose`) |
+| Data formats | `docs/PROTOCOL.md`: every file, field, setting, and flag. Update it when you add or change one |
 | Python helpers | `Resources/vibegauge-proxy.py` (accounting proxy), `Resources/vibegauge-statusline.py` (statusline bridge) |
 
 ## Guidelines

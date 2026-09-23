@@ -5,7 +5,10 @@ import Foundation
 final class ProxyManager {
     static let shared = ProxyManager()
 
-    let port = 18790
+    /// 默认 18790；被别的程序占了可改：`defaults write com.haifeng.vibegauge proxyPort 18791`，再在菜单里重装代理。
+    /// 端口只在这里定，经 LaunchAgent 的 VIBEGAUGE_PROXY_PORT 传给 Python 代理，界面和覆盖体检都读这里。
+    var port: Int { Self.validPort(UserDefaults.standard.integer(forKey: "proxyPort")) }
+    static func validPort(_ v: Int) -> Int { (1024...65535).contains(v) ? v : 18790 }
     let label = "com.haifeng.vibegauge.proxy"
     private let home = FileManager.default.homeDirectoryForCurrentUser.path
 
