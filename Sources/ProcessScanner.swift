@@ -258,6 +258,7 @@ public final class ProcessScanner {
         report.api = scanAPI()
         report.cliUsage = scanCLIUsage(claude: report.tokens)
         report.sessions = scanSessions()
+        report.pending = scanPending()
         return report
     }
 

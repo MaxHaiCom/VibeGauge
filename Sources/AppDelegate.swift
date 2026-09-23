@@ -298,6 +298,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                           + signals.prefix(8).map { "\($0.short)  \($0.pct)%" + ($0.level > 0 ? "  ⚠︎" : "") }).joined(separator: "\n")
         evaluateThresholds(signals)
         evaluateForecasts(report)
+        evaluatePending(report)
     }
 
     // MARK: - 预计打满提醒（每池每周期一次；预测要持续 15 分钟才算稳定；重启不重报）
@@ -490,6 +491,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         actions.relayout = { [weak self] in self?.relayoutMenuPanel() }
         actions.quit = { NSApp.terminate(nil) }
         actions.setQuotaBridge = { [weak self] tool, on in self?.setQuotaBridge(tool, on: on) }
+        actions.setPendingHooks = { [weak self] on in self?.setPendingHooks(on) }
 
         let dashboard = DashboardView(
             store: reportStore,
@@ -617,6 +619,45 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 连接 / 断开状态栏桥接（改的是 Claude Code / agy 的 settings.json，脚本会先备份）
+    /// 待处理会话：往 Claude Code 的 hooks 里写（或删）本脚本的观察型 Hook
+    func setPendingHooks(_ on: Bool) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var title = on ? L("待处理会话已开启", "Pending sessions on") : L("待处理会话已关闭", "Pending sessions off")
+            var body = on
+                ? L("新开的 Claude Code 会话生效。只记事件类型和时间，不代你批准；原配置已备份为 settings.json.vibegauge-hooks-backup。",
+                    "Takes effect in new Claude Code sessions. Only event types and times are recorded; it never answers for you. Settings backed up to settings.json.vibegauge-hooks-backup.")
+                : L("已从 Claude Code 配置里删掉 VibeGauge 的 Hook，其他 Hook 不动。", "VibeGauge's hooks were removed from Claude Code settings; other hooks are untouched.")
+            do {
+                if on { try StatuslineBridge.shared.connectHooks() } else { try StatuslineBridge.shared.disconnectHooks() }
+            } catch {
+                title = on ? L("开启失败", "Couldn't turn on") : L("关闭失败", "Couldn't turn off")
+                body = error.localizedDescription
+            }
+            DispatchQueue.main.async {
+                self?.sendNotification(title: title, body: body)
+                self?.updateStatus()
+            }
+        }
+    }
+
+    // MARK: - 等你处理的会话提醒：等批准超过 1 分钟，每次等待只提醒一次
+    private var pendingNotified = Set<String>()
+    static let pendingNotifyAfter: TimeInterval = 60
+
+    private func evaluatePending(_ report: ScanReport) {
+        let now = Date().timeIntervalSince1970
+        let live = Set(report.pending.map { "\($0.id)@\(Int($0.since))" })
+        pendingNotified = pendingNotified.filter { live.contains($0) }
+        for p in report.pending where p.kind == .permission && now - p.since >= Self.pendingNotifyAfter {
+            let key = "\(p.id)@\(Int(p.since))"
+            guard pendingNotified.insert(key).inserted else { continue }
+            let dir = (p.cwd as NSString).lastPathComponent
+            sendNotification(title: L("⏸ 会话在等你批准", "⏸ A session is waiting for approval"),
+                             body: L("\(dir.isEmpty ? "Claude Code" : dir)：\(p.tool.isEmpty ? "工具调用" : p.tool) 已等 \(Int((now - p.since) / 60)) 分钟",
+                                     "\(dir.isEmpty ? "Claude Code" : dir): \(p.tool.isEmpty ? "a tool call" : p.tool) waiting for \(Int((now - p.since) / 60)) min"))
+        }
+    }
+
     func setQuotaBridge(_ raw: String, on: Bool) {
         guard let tool = StatuslineBridge.Tool(rawValue: raw) else { return }
         let name = tool == .claude ? "Claude Code" : "agy"

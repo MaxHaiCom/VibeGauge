@@ -120,3 +120,39 @@ extension ProcessScanner {
         return out.sorted { $0.updatedAt > $1.updatedAt }
     }
 }
+
+/// 在等你处理的会话（来自 Claude Code 的观察型 Hook；只有事件类型、时间、会话 ID、目录、工具名）
+public struct PendingSession: Identifiable, Equatable {
+    public enum Kind: Equatable { case permission, input }
+    public var id: String
+    public var kind: Kind
+    public var since: TimeInterval
+    public var tool: String
+    public var cwd: String
+}
+
+extension ProcessScanner {
+    /// PermissionRequest 之后可能被别的 Hook 自动处理掉：记下 8 秒后还没清除，或收到 Claude 自己的
+    /// permission_prompt 通知（约 6 秒后发），才算真的在等你
+    static let permissionConfirmAfter: TimeInterval = 8
+
+    static func parsePending(_ json: [String: Any]?, now: TimeInterval) -> [PendingSession] {
+        let rows = json?["sessions"] as? [String: Any] ?? [:]
+        return rows.compactMap { sid, v -> PendingSession? in
+            guard let r = v as? [String: Any], let state = r["state"] as? String,
+                  let since = (r["since"] as? NSNumber)?.doubleValue else { return nil }
+            let kind: PendingSession.Kind
+            switch state {
+            case "permission": kind = .permission
+            case "permission_pending" where now - since >= permissionConfirmAfter: kind = .permission
+            case "input": kind = .input
+            default: return nil
+            }
+            return PendingSession(id: sid, kind: kind, since: since, tool: r["tool"] as? String ?? "", cwd: r["cwd"] as? String ?? "")
+        }.sorted { $0.since < $1.since }
+    }
+
+    func scanPending(now: TimeInterval = Date().timeIntervalSince1970) -> [PendingSession] {
+        Self.parsePending(readJSON("\(home)/.config/vibegauge/claude-waiting.json"), now: now)
+    }
+}

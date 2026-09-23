@@ -187,6 +187,20 @@ enum SelfTest {
             precondition(err.fiveHour == nil && err.error?.contains("upstream 502") == true)
             precondition(ProcessScanner.parseKimiUsage(["unexpected": true], capturedAt: 1).error != nil)
         }
+        // 待处理会话：刚记下的等权限要等 8 秒（可能被别的 Hook 自动处理），有 permission_prompt 确认就立刻算
+        do {
+            let t: TimeInterval = 1_790_000_000
+            let json: [String: Any] = ["sessions": [
+                "fresh": ["state": "permission_pending", "since": t - 3, "tool": "Bash", "cwd": "/Users/x/a"],
+                "held": ["state": "permission_pending", "since": t - 30, "tool": "Edit", "cwd": "/Users/x/b"],
+                "confirmed": ["state": "permission", "since": t - 2, "tool": "Bash"],
+                "idle": ["state": "input", "since": t - 90],
+                "odd": ["state": "working", "since": t - 5]]]
+            let p = ProcessScanner.parsePending(json, now: t)
+            precondition(Set(p.map(\.id)) == ["held", "confirmed", "idle"], "待处理：\(p.map(\.id))")
+            precondition(p.first { $0.id == "idle" }?.kind == .input && p.first { $0.id == "held" }?.tool == "Edit")
+            precondition(ProcessScanner.parsePending(nil, now: t).isEmpty)
+        }
         precondition(ProxyManager.validPort(0) == 18790 && ProxyManager.validPort(80) == 18790 && ProxyManager.validPort(18791) == 18791 && ProxyManager.validPort(70000) == 18790)
 
         // Codex 跨零点：total_token_usage 是会话累计，今天只算零点后新增的；请求数只数今天的事件

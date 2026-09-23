@@ -8,6 +8,9 @@ Claude Code / Antigravity CLI (agy) 每次刷新状态栏，都会把官方下�
   vibegauge-statusline.py claude|agy              作为状态栏命令运行
   vibegauge-statusline.py --install claude|agy    接管状态栏（先备份配置文件，记下原命令）
   vibegauge-statusline.py --uninstall claude|agy  还原成原来的状态栏
+  vibegauge-statusline.py --install-hooks claude    写入「待处理会话」Hook（合并进 settings.json 的 hooks，先备份）
+  vibegauge-statusline.py --uninstall-hooks claude  只删自己的 Hook 条目
+  vibegauge-statusline.py --hook claude             作为 Hook 命令运行（只记事件类型 / 时间 / 会话 ID，永不输出）
   vibegauge-statusline.py --selftest
 """
 import fcntl
@@ -334,6 +337,132 @@ def uninstall(tool: str) -> str:
     return result
 
 
+# ---------------------------------------------------------------- 待处理会话（Claude Code Hook）
+# 只观察，不替你批准：PermissionRequest 的 Hook 往 stdout 写 JSON 就等于代你答复，所以这里永远不输出任何东西。
+# 只记事件类型、时间、会话 ID、工作目录、工具名；不记命令内容和消息正文。
+HOOK_FLAG = "--hook"
+HOOK_EVENTS = ["PermissionRequest", "Notification", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop", "SessionEnd"]
+CLEAR_EVENTS = {"PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop", "SessionEnd"}
+WAITING_KEEP = 24 * 3600
+
+
+def waiting_path() -> str:
+    return os.path.join(data_dir(), "claude-waiting.json")
+
+
+def hook_command(tool: str) -> str:
+    return "/usr/bin/python3 %s %s %s" % (shlex.quote(script_path()), HOOK_FLAG, tool)
+
+
+def is_our_hook(h) -> bool:
+    return isinstance(h, dict) and MARK in str(h.get("command", "")) and HOOK_FLAG in str(h.get("command", ""))
+
+
+def hooks_installed(settings: dict) -> bool:
+    hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
+    return any(is_our_hook(h) for groups in hooks.values() if isinstance(groups, list)
+               for g in groups if isinstance(g, dict) for h in (g.get("hooks") or []))
+
+
+def install_hooks(tool: str) -> str:
+    path = settings_path(tool)
+    bpath = path + ".vibegauge-hooks-backup"
+    def change(settings, raw):
+        if hooks_installed(settings):
+            return None, "already"
+        if raw is not None:                      # 同状态栏：备份 0600，不跟随软链接
+            if os.path.lexists(bpath):
+                os.unlink(bpath)
+            fd = os.open(bpath, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(raw)
+        private_dir()
+        hooks = dict(settings.get("hooks")) if isinstance(settings.get("hooks"), dict) else {}
+        for ev in HOOK_EVENTS:
+            groups = list(hooks.get(ev)) if isinstance(hooks.get(ev), list) else []
+            groups.append({"hooks": [{"type": "command", "command": hook_command(tool), "timeout": 5}]})
+            hooks[ev] = groups
+        return dict(settings, hooks=hooks), "installed"
+    return edit_settings(path, change)
+
+
+def uninstall_hooks(tool: str) -> str:
+    path = settings_path(tool)
+    def change(settings, raw):
+        if not hooks_installed(settings):
+            return None, "not-installed"
+        hooks = {}
+        for ev, groups in settings["hooks"].items():
+            if not isinstance(groups, list):
+                hooks[ev] = groups
+                continue
+            kept = []
+            for g in groups:
+                if isinstance(g, dict) and isinstance(g.get("hooks"), list):
+                    rest = [h for h in g["hooks"] if not is_our_hook(h)]
+                    if rest:
+                        kept.append(dict(g, hooks=rest))
+                    elif not g["hooks"]:
+                        kept.append(g)
+                else:
+                    kept.append(g)
+            if kept:
+                hooks[ev] = kept
+        new = dict(settings)
+        if hooks:
+            new["hooks"] = hooks
+        else:
+            new.pop("hooks", None)
+        return new, "uninstalled"
+    return edit_settings(path, change)
+
+
+def record_hook(data, now: float) -> None:
+    if not isinstance(data, dict):
+        return
+    sid, ev = data.get("session_id"), data.get("hook_event_name")
+    if not isinstance(sid, str) or not sid or not isinstance(ev, str):
+        return
+    state = None
+    if ev == "PermissionRequest":
+        state = "permission_pending"             # 还可能被别的 Hook 自动处理掉：界面要等一会儿或等 permission_prompt 确认
+    elif ev == "Notification":
+        state = {"permission_prompt": "permission", "idle_prompt": "input",
+                 "elicitation_dialog": "input", "elicitation_url_dialog": "input"}.get(data.get("notification_type"))
+        if state is None:
+            return
+    elif ev not in CLEAR_EVENTS:
+        return
+    path = waiting_path()
+    if state is None:                             # 清除事件每次工具调用都来：没记着这个会话就不动文件
+        cur = read_json(path, {}).get("sessions")
+        if not isinstance(cur, dict) or sid not in cur:
+            return
+    with open(os.path.join(private_dir(), ".claude-waiting.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        cache = read_json(path, {})
+        sessions = cache.get("sessions") if isinstance(cache.get("sessions"), dict) else {}
+        if state is None:
+            sessions.pop(sid, None)
+        else:
+            old = sessions.get(sid) if isinstance(sessions.get(sid), dict) else {}
+            waiting_same = old.get("state") in ("permission_pending", "permission") and state == "permission"
+            tool_name = data.get("tool_name") if isinstance(data.get("tool_name"), str) else old.get("tool")
+            sessions[sid] = {"state": state, "since": old.get("since", now) if waiting_same else now,
+                             "tool": tool_name if state != "input" else None,
+                             "cwd": data.get("cwd") if isinstance(data.get("cwd"), str) else old.get("cwd"), "at": now}
+        sessions = {k: v for k, v in sessions.items() if isinstance(v, dict) and (v.get("at") or 0) > now - WAITING_KEEP}
+        write_json(path, {"sessions": sessions, "updated_at": now})
+
+
+def run_hook() -> None:
+    try:
+        raw = sys.stdin.buffer.read()
+        record_hook(json.loads(raw.decode("utf-8", errors="replace")) if raw.strip() else None, time.time())
+    except Exception:
+        pass                                       # Hook 出错绝不能影响会话；也绝不输出
+
+
 # ---------------------------------------------------------------- 自测
 
 def selftest() -> None:
@@ -384,6 +513,48 @@ def selftest() -> None:
         write_json(sessions_path(), stale)
         run_as_statusline("claude", {"session_id": "s-a", "context_window": {"used_percentage": 80}})
         assert "old" not in read_json(sessions_path(), {})["sessions"]
+        # 待处理会话 Hook：合并进已有 hooks，不动别人的；卸载只删自己的
+        s0 = load_settings(cpath)
+        s0["hooks"] = {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo user-hook"}]}],
+                       "Stop": [{"hooks": [{"type": "command", "command": "echo user-stop"}]}]}
+        write_json(cpath, s0, indent=2)
+        assert install_hooks("claude") == "installed" and install_hooks("claude") == "already"
+        h = load_settings(cpath)["hooks"]
+        assert set(HOOK_EVENTS) <= set(h) and h["PreToolUse"][0]["hooks"][0]["command"] == "echo user-hook", h
+        assert h["Stop"][0]["hooks"][0]["command"] == "echo user-stop" and is_our_hook(h["Stop"][1]["hooks"][0])
+        assert h["Stop"][1]["hooks"][0]["timeout"] == 5 and "matcher" not in h["Stop"][1]
+        assert os.stat(cpath + ".vibegauge-hooks-backup").st_mode & 0o777 == 0o600
+        def hook(payload):
+            r = subprocess.run([sys.executable, script_path(), HOOK_FLAG, "claude"], input=json.dumps(payload),
+                               capture_output=True, text=True, env=dict(os.environ, HOME=tmp), timeout=20)
+            assert r.returncode == 0 and r.stdout == "", ("Hook 必须零输出（否则等于替用户答复权限）", r.stdout)
+        def waiting():
+            return read_json(waiting_path(), {}).get("sessions", {})
+        hook({"session_id": "w1", "hook_event_name": "PostToolUse", "tool_name": "Bash"})
+        assert not os.path.exists(waiting_path()), "没记着的会话，清除事件不碰文件"
+        hook({"session_id": "w1", "hook_event_name": "PermissionRequest", "tool_name": "Bash", "cwd": "/Users/x/p",
+              "tool_input": {"command": "rm -rf secret-dir"}})
+        w = waiting()["w1"]
+        assert w["state"] == "permission_pending" and w["tool"] == "Bash" and w["cwd"] == "/Users/x/p"
+        assert "secret-dir" not in open(waiting_path(), encoding="utf-8").read(), "不记命令内容"
+        since = w["since"]
+        hook({"session_id": "w1", "hook_event_name": "Notification", "notification_type": "permission_prompt", "message": "私密正文"})
+        assert waiting()["w1"]["state"] == "permission" and waiting()["w1"]["since"] == since, "确认后等待起点不变"
+        assert "私密正文" not in open(waiting_path(), encoding="utf-8").read()
+        hook({"session_id": "w1", "hook_event_name": "PostToolUse", "tool_name": "Bash"})
+        assert "w1" not in waiting()
+        hook({"session_id": "w2", "hook_event_name": "Notification", "notification_type": "idle_prompt"})
+        hook({"session_id": "w2", "hook_event_name": "Notification", "notification_type": "auth_success"})
+        assert waiting()["w2"]["state"] == "input" and waiting()["w2"]["tool"] is None
+        hook({"session_id": "w2", "hook_event_name": "UserPromptSubmit", "prompt": "私密"})
+        assert "w2" not in waiting()
+        hook("not a dict")                                   # 坏输入也零输出、不报错
+        assert os.stat(waiting_path()).st_mode & 0o777 == 0o600
+        assert uninstall_hooks("claude") == "uninstalled" and uninstall_hooks("claude") == "not-installed"
+        h = load_settings(cpath)["hooks"]
+        assert h == {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo user-hook"}]}],
+                     "Stop": [{"hooks": [{"type": "command", "command": "echo user-stop"}]}]}, h
+        s0 = load_settings(cpath); s0.pop("hooks"); write_json(cpath, s0, indent=2)
         # 还原：恢复成原来的 statusLine，键顺序不变
         assert uninstall("claude") == "uninstalled"
         s = load_settings(cpath)
@@ -496,6 +667,15 @@ def main() -> None:
             print("error: %s: %s" % (settings_path(args[1]), e), file=sys.stderr)
             sys.exit(1)
         return
+    if len(args) == 2 and args[0] in ("--install-hooks", "--uninstall-hooks") and args[1] == "claude":
+        try:
+            print((install_hooks if args[0] == "--install-hooks" else uninstall_hooks)(args[1]))
+        except (OSError, ValueError) as e:
+            print("error: %s: %s" % (settings_path(args[1]), e), file=sys.stderr)
+            sys.exit(1)
+        return
+    if len(args) == 2 and args[0] == HOOK_FLAG and args[1] == "claude":
+        return run_hook()
     if len(args) == 1 and args[0] in ("claude", "agy"):
         return run(args[0])
     print(__doc__, file=sys.stderr)

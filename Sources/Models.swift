@@ -320,6 +320,8 @@ public struct ScanReport {
     public var cliUsage: [CLIUsage] = []
     /// 近期活跃会话的上下文水位与压缩记录
     public var sessions: [SessionContext] = []
+    /// 在等你批准 / 输入的会话（需开启「待处理会话」Hook）
+    public var pending: [PendingSession] = []
 
     // API Key 调用（记账代理）
     public var api: ProxyStatus = ProxyStatus()

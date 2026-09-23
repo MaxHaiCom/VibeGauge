@@ -129,6 +129,8 @@ struct Screenshots {
         s1.compactions = [Compaction(at: now - 2 * hour, pre: 812_000, post: 24_000)]
         let s2 = SessionContext(id: "demo-2", tool: "Codex", cwd: "~/code/api-server", model: "gpt-6-astra", usedPct: 34, window: 272_000, updatedAt: now - 300)
         r.sessions = [s1, s2]
+        r.pending = [PendingSession(id: "demo-p1", kind: .permission, since: now - 190, tool: "Bash", cwd: "~/code/api-server"),
+                     PendingSession(id: "demo-p2", kind: .input, since: now - 75, tool: "", cwd: "~/code/landing-page")]
 
         var t = TokenStats()
         t.todayTurns = 412; t.todayContext = 86_400_000; t.todayCacheRead = 83_900_000

@@ -119,6 +119,8 @@ public struct PanelActions {
     public var quit: () -> Void = {}
     /// 状态栏桥接：("claude" | "agy", 连接 / 断开)
     public var setQuotaBridge: (String, Bool) -> Void = { _, _ in }
+    /// 待处理会话 Hook（写入 / 删除 Claude Code 配置里的观察型 Hook）
+    public var setPendingHooks: (Bool) -> Void = { _ in }
     public init() {}
 }
 
@@ -707,6 +709,10 @@ public struct DashboardView: View {
                 }
             }
 
+            if !report.pending.isEmpty {
+                Divider().opacity(0.35)
+                pendingSection(report.pending)
+            }
             if !report.sessions.isEmpty {
                 Divider().opacity(0.35)
                 sessionContextSection(report.sessions)
@@ -1065,6 +1071,11 @@ public struct DashboardView: View {
                                isOn: Binding(get: { isDemo || StatuslineBridge.shared.isConnected(t) }, set: { actions.setQuotaBridge(tool, $0) }))
                 }
             }
+            if isDemo || StatuslineBridge.shared.toolInstalled(.claude) {
+                settingRow(L("待处理会话", "Pending sessions"),
+                           detail: L("往 Claude Code 写入只观察的 Hook：哪个会话在等你批准或输入。只记事件类型和时间，不代你批准；关掉即删除", "Adds observe-only hooks to Claude Code to show which sessions wait for approval or input. Records event types and times only; never answers for you; off removes them"),
+                           isOn: Binding(get: { isDemo || StatuslineBridge.shared.hooksConnected() }, set: { actions.setPendingHooks($0) }))
+            }
         }
         .padding(10)
         .background(Color.secondary.opacity(0.06))
@@ -1401,6 +1412,29 @@ public struct DashboardView: View {
                 .foregroundColor(llm.isRunning ? .secondary : .secondary.opacity(0.75))
                 .lineLimit(1)
                 .fixedSize()
+        }
+    }
+
+    /// 等你处理的会话：等批准的排前面，按等了多久
+    private func pendingSection(_ items: [PendingSession]) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(L("待处理", "Waiting on you")).font(.system(size: 11, weight: .bold)).foregroundColor(.orange)
+                Spacer()
+                Text(L("\(items.count) 个会话", "\(items.count) sessions")).font(.system(size: 9)).foregroundColor(.secondary)
+            }
+            ForEach(items.sorted { ($0.kind == .permission ? 0 : 1, $0.since) < ($1.kind == .permission ? 0 : 1, $1.since) }) { p in
+                HStack(spacing: 5) {
+                    Image(systemName: p.kind == .permission ? "hand.raised.fill" : "text.cursor")
+                        .font(.system(size: 8)).foregroundColor(p.kind == .permission ? .orange : .blue)
+                    Text((p.cwd as NSString).lastPathComponent.isEmpty ? "Claude Code" : (p.cwd as NSString).lastPathComponent)
+                        .font(.system(size: 9, weight: .semibold)).lineLimit(1)
+                    Text(p.kind == .permission ? L("等你批准", "needs approval") + (p.tool.isEmpty ? "" : " · \(p.tool)") : L("等你输入", "waiting for input"))
+                        .font(.system(size: 8.5)).foregroundColor(.secondary).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(Fmt.agoShort(Int(nowTS - p.since))).font(.system(size: 8.5)).foregroundColor(nowTS - p.since > 300 ? .orange : .secondary)
+                }
+            }
         }
     }
 

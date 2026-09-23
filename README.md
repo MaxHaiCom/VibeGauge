@@ -70,6 +70,8 @@ When using autonomous coding agents like **Claude Code**, **OpenAI Codex**, **Go
   - **Codex**: Detects primary `codex` bucket usage, identifies `usage_limit_exceeded` exact unlock timestamps, and supports optional passwordless SSH synchronization from remote dev machines.
   - **Gemini / Antigravity**: Tracks official and 3rd-party quota pools with respective reset dates.
   - **Grok**: Reads weekly credit usage and billing cycle reset boundaries.
+  - **Sessions waiting on you** (optional, Claude Code hooks): which sessions wait for approval or input, and for how long; a notification after a minute. Observe-only: it records event types and times, never answers a prompt.
+  - **Session context**: how full each active Claude / Codex session's context window is, and today's compactions.
   - **Local Model Probing**: Ollama, LM Studio (including headless llmster), llama.cpp (`llama-server`), and MLX (`mlx_lm.server`): online with which models loaded, online but idle, or process running but not answering. Read-only local requests; never triggers a model load.
   - **Forecast that knows you sleep**: Weekly quotas are projected from *your* last 7 days of usage — which hours you actually code (from local CLI logs) and how much you used last cycle — so a busy evening isn't extrapolated through the night. 5-hour windows use the recent pace.
 - 📈 **Today's Token Analytics & Prompt Cache ROI**:

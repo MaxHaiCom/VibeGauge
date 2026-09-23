@@ -219,9 +219,36 @@ final class StatuslineBridge {
         try runScript(["--uninstall", tool.rawValue])
     }
 
+    /// 待处理会话 Hook 已写进 Claude Code 配置（hooks 里有本脚本的 --hook 命令）
+    func hooksConnected() -> Bool {
+        guard let data = FileManager.default.contents(atPath: settingsPath(.claude)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let hooks = json["hooks"] as? [String: Any] else { return false }
+        return hooks.values.contains { groups in
+            (groups as? [[String: Any]] ?? []).contains { g in
+                (g["hooks"] as? [[String: Any]] ?? []).contains { ($0["command"] as? String).map { $0.contains("vibegauge-statusline.py") && $0.contains("--hook") } ?? false }
+            }
+        }
+    }
+
+    func connectHooks() throws {
+        lock.lock(); defer { lock.unlock() }
+        guard ProxyManager.pythonWorks() else {
+            throw NSError(domain: "VibeGauge", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                L("python3 不可用：请先在终端运行 xcode-select --install 安装命令行工具", "python3 is unavailable: run `xcode-select --install` in Terminal first")])
+        }
+        try syncScript()
+        try runScript(["--install-hooks", "claude"])
+    }
+
+    func disconnectHooks() throws {
+        lock.lock(); defer { lock.unlock() }
+        try runScript(["--uninstall-hooks", "claude"])
+    }
+
     /// App 启动时：连着的话把包里新版脚本同步过去（内容相同不写）
     func syncIfConnected() {
-        guard Tool.allCases.contains(where: isConnected) else { return }
+        guard Tool.allCases.contains(where: isConnected) || hooksConnected() else { return }
         try? syncScript()
     }
 

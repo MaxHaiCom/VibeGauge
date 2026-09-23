@@ -30,6 +30,7 @@ All files live in `~/.config/vibegauge/`. The app and helpers create the directo
 | `plans.json` | you | Stable | Plan estimates are no longer shown |
 | `proxy.json` | you | Stable | The accounting proxy goes back to environment / system proxy settings |
 | `claude-sessions.json` | statusline bridge | Internal | Session context levels disappear until each session's statusline refreshes |
+| `claude-waiting.json` | pending-session hook | Internal | Sessions currently waiting on you disappear from the list until their next event |
 | `statusline-claude.json`, `statusline-agy.json` | statusline bridge | Internal | **Your original statusline command is forgotten**; the bridge shows its own short line and `--uninstall` can no longer restore it |
 | `quota-samples.json` | app | Internal | Burn rate restarts from scratch; last-cycle finals are lost |
 | `usage-daily.json` | app | Internal | **History of session logs you already deleted is lost for good**; history of logs still on disk is rebuilt |
@@ -166,6 +167,12 @@ agy only reports the pool of the current model, so the bridge merges into the ex
 `{"sessions": {"<session_id>": {"used_pct", "window", "model", "cwd", "at"}}, "updated_at"}`: Claude Code's `context_window.used_percentage` (input tokens only: fresh + cache writes + cache reads, as Claude Code defines it) and `context_window_size` per session, saved on every statusline refresh under a lock. `used_pct` is null right after `/compact` until the next request. Only numbers, the model ID, the working directory, and a time are kept; sessions idle for 24 hours are dropped (at most 50).
 
 Codex context levels are read from its session logs instead: `info.last_token_usage.total_tokens ÷ info.model_context_window` from the latest `token_count` event (the cumulative total does not drop after compaction, so it cannot be used). Compactions are the `compacted` lines (Codex) and `system` / `compact_boundary` lines (Claude, with pre / post token counts).
+
+### Pending-session hooks and `claude-waiting.json` (Internal)
+
+Turning on "Pending sessions" (Mac → Settings) runs `vibegauge-statusline.py --install-hooks claude`: it backs up `~/.claude/settings.json` to `settings.json.vibegauge-hooks-backup` (0600) and appends one group per event to `hooks` — `PermissionRequest`, `Notification`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `SessionEnd` — each running `/usr/bin/python3 ~/.config/vibegauge/vibegauge-statusline.py --hook claude` with a 5 s timeout. Existing hooks are kept; turning it off removes only these entries.
+
+The hook **never writes to stdout** (for `PermissionRequest` that would answer the prompt for you) and always exits 0. It records per `session_id`: `state` (`permission_pending` → `permission` once Claude's `permission_prompt` notification arrives; `input` on `idle_prompt` or an MCP elicitation), `since`, `tool` (tool name only), `cwd`, `at`. Tool input, messages, and prompts are not stored. A later `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, or `SessionEnd` clears the session. The panel counts `permission_pending` only after 8 s (another hook may have answered it) and notifies once per wait after 60 s. Codex is not covered yet.
 
 ### `statusline-<tool>.json` (Internal)
 
