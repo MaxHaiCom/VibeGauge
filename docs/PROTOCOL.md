@@ -128,7 +128,7 @@ Written atomically every 30 s during the proxy's first minute, then every 300 s 
 
 Proxies before 1.2 keyed entries by host only. The proxy drops those entries when it writes; readers ignore a host-only entry for an upstream that has more than one account, because it cannot be attributed.
 
-`kind` is `quota` (percentage windows) or `balance` (money). Balance entries carry provider-specific extras (`usage`, `limit`, `limit_remaining`, `available`, `cash`, `voucher`, `credits_error`); `balance` itself can be null. Any entry may carry `error` (redacted, ≤ 160 chars) instead of data.
+`kind` is `quota` (percentage windows), `balance` (money), or `none` (the key has no plan to report, e.g. a pay-as-you-go GLM key; not an error). Balance entries carry provider-specific extras (`usage`, `limit`, `limit_remaining`, `available`, `cash`, `voucher`, `credits_error`); `balance` itself can be null. Any entry may carry `error` (redacted, ≤ 160 chars) instead of data.
 
 ### Official quota without the proxy (Internal)
 

@@ -780,6 +780,9 @@ def probe_glm(hdrs):
     host = "api.z.ai" if host_matches(hdrs.get(":host", ""), "z.ai") else "open.bigmodel.cn"
     j = _get_json(host, "/api/monitor/usage/quota/limit", _bearer(hdrs))
     if j.get("code") != 200 or not isinstance(j.get("data"), dict):
+        # 按量付费的 key 没有 Coding Plan：这不是错误，卡片照常只记调用
+        if "不存在codingplan" in str(j.get("msg") or "").replace(" ", "").lower():
+            return {"kind": "none"}
         return {"kind": "quota", "error": redact_text(str(j.get("msg") or j))[:120]}
     d = j["data"]
     limits = [l for l in (d.get("limits") or []) if isinstance(l, dict) and l.get("percentage") is not None]
@@ -898,6 +901,10 @@ def selftest() -> None:
     import tempfile
     from unittest.mock import patch
     global DIR, CALLS, QUOTA, PROXY_CONF
+    with patch(__name__ + "._get_json", return_value={"code": 500, "msg": "当前用户不存在coding plan", "success": False}):
+        assert probe_glm({":host": "open.bigmodel.cn", "authorization": "Bearer x"}) == {"kind": "none"}, "按量 key 没有套餐不算错误"
+    with patch(__name__ + "._get_json", return_value={"code": 1001, "msg": "token expired"}):
+        assert "error" in probe_glm({":host": "open.bigmodel.cn", "authorization": "Bearer x"})
     DIR = tempfile.mkdtemp(prefix="vibegauge-selftest-")
     CALLS, QUOTA = os.path.join(DIR, "api-calls.jsonl"), os.path.join(DIR, "api-quota.json")
     PROXY_CONF = os.path.join(DIR, "proxy.json")
