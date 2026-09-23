@@ -37,6 +37,7 @@ All files live in `~/.config/vibegauge/`. The app and helpers create the directo
 | `usage-daily.v3.json`, `usage-daily.*.json` | app | Internal | Safe: backups kept when the cache was upgraded or found unreadable |
 | `vibegauge-proxy.py`, `vibegauge-statusline.py` | app (copied from the bundle) | Internal | The proxy / statusline stops working until the app copies them again (reinstall from the menu) |
 | `proxy.log` | proxy | Internal | Safe |
+| `connect-ark.command`, `connect-bailian.command` | app (when you click "Install & sign in") | Internal | Safe: regenerated on the next click |
 
 ## Accounting proxy
 
@@ -128,6 +129,15 @@ Written atomically every 30 s during the proxy's first minute, then every 300 s 
 Proxies before 1.2 keyed entries by host only. The proxy drops those entries when it writes; readers ignore a host-only entry for an upstream that has more than one account, because it cannot be attributed.
 
 `kind` is `quota` (percentage windows) or `balance` (money). Balance entries carry provider-specific extras (`usage`, `limit`, `limit_remaining`, `available`, `cash`, `voucher`, `credits_error`); `balance` itself can be null. Any entry may carry `error` (redacted, ≤ 160 chars) instead of data.
+
+### Official quota without the proxy (Internal)
+
+Two more sources feed the same cards, refreshed every 5 minutes on a background queue (every 20 s for 10 minutes after you click a connect button). Their results live only in memory.
+
+- **Registered API keys** (API tab → "Add an API key for quota"): for GLM (`open.bigmodel.cn`), Z.ai (`api.z.ai`), MiniMax (`api.minimaxi.com`), DeepSeek (`api.deepseek.com`), OpenRouter (`openrouter.ai`), and Moonshot (`api.moonshot.cn`). The key is stored as a Keychain generic password (service `com.haifeng.vibegauge.usage-key`, account `<host>#<fingerprint>`, where the fingerprint is `sha256("Bearer " + key)[:8]`, the same as the proxy's) and nowhere else. The app runs `/usr/bin/python3 vibegauge-proxy.py --probe` from its bundle and passes `{"host", "key"}` on stdin (never argv); the helper calls only that provider's own usage / balance endpoint and prints one entry shaped like an `api-quota.json` value. It is merged with `api-quota.json` under the same key, newest `captured_at` winning. After an app update macOS may ask once to let the new build read the key; if you deny, the app does not ask again until it restarts.
+- **Official CLIs**: Volcengine Ark `arkcli usage plan --product coding-plan --format json` (`items[].periods[]`: `label` `session`/`5h`, `weekly`, `monthly`; `percent` 0–100; `reset_at` RFC 3339; `subscribed: false` or an empty list = no subscription; errors in `{ok: false, error: {message}}` or `items[].error`) and Alibaba Model Studio `bl usage coding-plan --output json` (`per5Hour`, `perWeek`, `perBillMonth`, each `usedQuota`, `totalQuota`, `percentage` 0–1, `resetTime` in seconds or milliseconds; `{}` = no subscription). The app looks for the binaries in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `~/.npm-global/bin`, `~/.volta/bin`, `~/.bun/bin`, and `~/.nvm/versions/node/*/bin`, runs them with those directories on `PATH` and a 25 s timeout, and never passes credentials: the CLIs use their own sign-in. The connect button writes `connect-<ark|bailian>.command` (0700) and opens it in Terminal: it installs the CLI if missing (`CI=1 npm install -g @volcengine/ark-cli@latest`, or the official `install.sh` with `BAILIAN_SKIP_SKILL_INIT=1`, so neither installer adds skills to your other AI tools), then runs `arkcli auth login volc-sso` / `bl auth login --console`.
+
+A CLI result replaces the local estimate on every card for that plan (Volcengine: provider `火山方舟 Coding`; Alibaba: host `coding.dashscope…`) and creates a subscription card if there is none; the card shows "Official CLI · <bin>". Per-model pools from `plans.json` are dropped then, because the official figure is for the whole plan. Tencent Cloud personal plans have no official usage interface and are not supported.
 
 ## Statusline quota files
 
@@ -264,6 +274,7 @@ The app also stores internal state: UI (`vg.tab`, `vg.fiveTabsMigrated`), notifi
 | `VibeGauge --diagnose` | Prints a snapshot of this machine for bug reports: egress and gateway IPs, command lines, and the remote Codex host are masked; provider host names are shown. Exit 1 if background collection timed out |
 | `VibeGauge --install-proxy` / `--uninstall-proxy` | Install / remove the accounting proxy LaunchAgent |
 | `python3 vibegauge-proxy.py --selftest` | Proxy self-test against a local fake upstream |
+| `python3 vibegauge-proxy.py --probe` | One usage query: reads `{"host", "key"}` from stdin, prints one `api-quota.json`-shaped entry, writes nothing |
 | `python3 vibegauge-statusline.py --install claude\|agy` | Take over the statusline (backs up the settings file, remembers the old command) |
 | `python3 vibegauge-statusline.py --uninstall claude\|agy` | Restore the original statusline |
 | `python3 vibegauge-statusline.py --selftest` | Bridge self-test in a temporary `HOME` |

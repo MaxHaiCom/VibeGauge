@@ -35,7 +35,7 @@
   <tr>
     <td align="center" valign="top" width="33%"><img src="assets/screenshots/zh-stats.png" alt="近 42 天用量与成本" /><br /><sub>近 42 天用量与成本</sub></td>
     <td align="center" valign="top" width="33%"><img src="assets/screenshots/zh-mac.png" alt="孤儿进程清理、磁盘与设置" /><br /><sub>孤儿进程清理、磁盘与设置</sub></td>
-    <td></td>
+    <td align="center" valign="top" width="33%"><img src="assets/screenshots/zh-api.png" alt="API key 与官方额度来源" /><br /><sub>API key 与官方额度来源</sub></td>
   </tr>
 </table>
 
@@ -228,7 +228,7 @@ defaults delete com.haifeng.vibegauge
 - 🔒 **数据 100% 留在本机**：不设置任何云端中转服务器，不上传任何用量数据、Token 记录与机器标识。
 - 🔄 **检查更新**：每天向 GitHub 公开接口查询一次最新版本号（不带任何标识、不上传任何数据），只提示、从不自动下载安装。可在 **系统 → 设置** 关闭。
 - 🔑 **API Key 零落盘**：记账代理截获的 API Key 仅暂存于内存中用于查询厂商余额，写入日志时强制抹除并仅保留 SHA-256 前 8 位脱敏指纹。
-- ⚙️ **无入侵性**：只读扫描本地日志。为显示套餐与登录状态，会读取各 CLI 本地认证文件里的少数字段：Codex `auth.json` 里 id_token 的套餐与订阅起止日期声明（卡片上的套餐优先取会话日志），以及 agy / Grok 的登录方式。Kimi Code 会读取本机 `kimi web` 的访问 token（`~/.kimi-code/server.token`），先确认端口由你自己账号的进程监听、且确实是 `kimi web`，再只发给 `127.0.0.1` 上的这个服务（不跟随重定向）。**token 从不复制、保存、记录或发出本机**，VibeGauge 也从不以你的身份登录任何服务；不代理 OAuth 登录流程。唯一会改的厂商配置是 `statusLine` 一项，且只在你点「一键连接额度」时改（先备份，可还原）。
+- ⚙️ **无入侵性**：只读扫描本地日志。为显示套餐与登录状态，会读取各 CLI 本地认证文件里的少数字段：Codex `auth.json` 里 id_token 的套餐与订阅起止日期声明（卡片上的套餐优先取会话日志），以及 agy / Grok 的登录方式。Kimi Code 会读取本机 `kimi web` 的访问 token（`~/.kimi-code/server.token`），先确认端口由你自己账号的进程监听、且确实是 `kimi web`，再只发给 `127.0.0.1` 上的这个服务（不跟随重定向）。**token 从不复制、保存、记录或发出本机**。你为查额度登记的 API key 只存本机钥匙串，只发给该厂商自己的用量接口；火山 / 阿里的官方命令行工具在本机用它们自己的登录运行，VibeGauge 拿不到那些凭据。VibeGauge 也从不以你的身份登录任何服务；不代理 OAuth 登录流程。会改的厂商配置只有两处：Claude Code / agy 的 `statusLine`，以及你开启「待处理会话」时写入的 VibeGauge 自己的只观察 Hook；都只在你打开开关时改（先备份，可还原）。
 - 🌐 **记账代理的余额查询**（仅在安装代理后）：经代理的 API Key 只存在代理内存里，每 5 分钟用它向同一家厂商查询余额 / 额度（DeepSeek、OpenRouter、Kimi 等）。
 - 🛡️ **严格的放行防护**：孤儿进程清理具备多重放行过滤器，确保绝对不误触系统关键进程与正常运行中的开发任务。
 

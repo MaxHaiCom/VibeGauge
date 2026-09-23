@@ -227,6 +227,8 @@ public struct APIProviderStatus: Identifiable {
     public var subQuotas: [SubQuota] = []
     public var balanceText: String = ""
     public var quotaError: String = ""
+    /// 额度是厂商官方给的：从哪来（「官方用量接口」「官方 CLI · arkcli」）；空 = 没有官方来源
+    public var quotaSource: String = ""
     public var cacheHitRate: Double { ctx > 0 ? Double(cacheRead) / Double(ctx) * 100.0 : 0.0 }
 
     // 可观测性（全部由 api-calls.jsonl 里已有的 status/ms/key 字段算出）

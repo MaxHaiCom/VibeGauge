@@ -21,7 +21,7 @@ CI runs the same checks on every push and PR.
 |---|---|
 | Scan loop and caches | `ProcessScanner.swift` (the class and all its stored state), `Platforms.swift` (one card per AI tool) |
 | Processes | `ProcessTable.swift` (read-only: sessions, services, redaction) · `Reaper.swift` (**destructive**: kill orphans, clear npx cache) |
-| Data sources | `QuotaSources.swift` (Claude / Codex / Grok / Gemini quotas and tiers) · `TokenUsage.swift` (session logs, today's usage) · `APIUsage.swift` (accounting proxy files, prices, rate-limit headers) · `UsageHistory.swift` (daily history cache) · `DiskInventory.swift` |
+| Data sources | `QuotaSources.swift` (Claude / Codex / Grok / Gemini quotas and tiers) · `TokenUsage.swift` (session logs, today's usage) · `APIUsage.swift` (accounting proxy files, prices, rate-limit headers) · `UsageHistory.swift` (daily history cache) · `DiskInventory.swift` · `SessionMonitor.swift` (context levels, pending sessions) · `OfficialQuota.swift` (Keychain-registered keys, Volcengine / Alibaba official CLIs) |
 | Forecast | `QuotaForecast.swift` (`QuotaWindow`, `Burn`, `ActivityProfile`, quota sampling) · `Pressure.swift` (menu-bar icon signal) |
 | Shared | `Models.swift`, `Formatting.swift` (`Fmt`), `Localization.swift` (`L()`) |
 | Network | `NetworkScanner.swift`, `NetworkTabView.swift` |

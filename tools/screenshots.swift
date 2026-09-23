@@ -1,5 +1,5 @@
 // README 截图：用虚构的演示数据离屏渲染面板（不截屏、不读本机任何真实用量）。
-// 用法：tools/screenshots.sh   → assets/screenshots/{zh,en}-{plans,forecast,network,stats,mac}.png
+// 用法：tools/screenshots.sh   → assets/screenshots/{zh,en}-{plans,forecast,network,stats,api,mac}.png
 import AppKit
 import SwiftUI
 
@@ -15,7 +15,7 @@ struct Screenshots {
         MainActor.assumeIsolated {
             for lang in ["zh", "en"] {
                 UserDefaults.standard.set(lang, forKey: "uiLanguage")
-                for (name, tab, drill) in [("plans", 0, nil), ("forecast", 0, "Claude"), ("network", 3, nil), ("stats", 2, nil), ("mac", 4, nil)] as [(String, Int, String?)] {
+                for (name, tab, drill) in [("plans", 0, nil), ("forecast", 0, "Claude"), ("network", 3, nil), ("stats", 2, nil), ("api", 1, nil), ("mac", 4, nil)] as [(String, Int, String?)] {
                     UserDefaults.standard.set(tab, forKey: "vg.tab")
                     render(DashboardView(demo: report(), history: history(), network: network(), drillDown: drill),
                            to: "\(out)/\(lang)-\(name).png")

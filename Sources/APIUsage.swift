@@ -554,7 +554,16 @@ extension ProcessScanner {
                 }
             }
         }
-        if let q = readJSON(pm.quotaPath) {
+        // 代理探针结果 + 钥匙串登记 key 的查询结果（同形，同一账户取较新的一条）
+        let official = OfficialQuota.shared.snapshot()
+        OfficialQuota.shared.refreshIfDue()
+        var quotaRows = readJSON(pm.quotaPath) ?? [:]
+        for (k, v) in official.keys {
+            let old = ((quotaRows[k] as? [String: Any])?["captured_at"] as? NSNumber)?.doubleValue ?? 0
+            if ((v["captured_at"] as? NSNumber)?.doubleValue ?? 0) >= old { quotaRows[k] = v }
+        }
+        do {
+            let q = quotaRows
             for (entry, v) in q {
                 guard let d = v as? [String: Any] else { continue }
                 // 新版代理按「host#指纹」分账户写，按账户精确对上卡片；旧版只写 host：
@@ -587,9 +596,34 @@ extension ProcessScanner {
                     }
                     if let w = win("5h") { p.fiveHour = w }
                     if let w = win("weekly") { p.sevenDay = w }
+                    if p.fiveHour != nil || p.sevenDay != nil { p.quotaSource = L("官方用量接口", "Official usage API"); p.quotaIsEstimate = false }
                 } else if kind == "balance" {
                     p.balanceText = balanceText(d)
                 }
+                byHost[id] = p
+            }
+        }
+        // 厂商官方 CLI：订阅额度的真值，替换本机估算；没有经代理的调用也单独出一张订阅卡
+        for c in OfficialCLI.allCases {
+            guard case let .connected(q, _) = official.cli[c], !q.noSubscription else { continue }
+            var ids = byHost.values.filter { c.matches($0) }.map(\.id)
+            if ids.isEmpty {
+                let id = Self.cardID(host: c.host, provider: c.provider, key: "")
+                byHost[id] = newCard(id, host: c.host, provider: c.provider, key: "")
+                ids = [id]
+            }
+            for id in ids {
+                guard var p = byHost[id] else { continue }
+                p.isSubscription = true
+                p.quotaIsEstimate = false
+                p.estimateNote = ""
+                p.subQuotas = []                  // 按模型拆的池是估算；官方只给整体
+                p.fiveHour = q.fiveHour
+                p.sevenDay = q.weekly
+                p.monthly = q.monthly
+                if !q.plan.isEmpty { p.plan = q.plan } else if p.plan.isEmpty { p.plan = c.title }
+                p.quotaSource = L("官方 CLI · \(c.bin)", "Official CLI · \(c.bin)")
+                p.quotaError = ""
                 byHost[id] = p
             }
         }

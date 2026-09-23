@@ -492,6 +492,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         actions.quit = { NSApp.terminate(nil) }
         actions.setQuotaBridge = { [weak self] tool, on in self?.setQuotaBridge(tool, on: on) }
         actions.setPendingHooks = { [weak self] on in self?.setPendingHooks(on) }
+        actions.addUsageKey = { [weak self] in
+            self?.menu.cancelTracking()
+            DispatchQueue.main.async { self?.addUsageKey() }
+        }
+        actions.removeUsageKey = { [weak self] account in
+            OfficialQuota.shared.remove(account)
+            self?.updateStatus()
+        }
+        actions.connectCLI = { [weak self] c in
+            self?.menu.cancelTracking()
+            OfficialQuota.shared.openConnect(c)
+        }
 
         let dashboard = DashboardView(
             store: reportStore,
@@ -616,6 +628,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.sendNotification(title: L("VibeGauge 有新版本 v\(v)", "VibeGauge v\(v) is available"),
                                    body: L("点面板底部的「新版本」打开下载页。", "Click “Update” at the bottom of the panel to open the download page."))
         }
+    }
+
+    /// 登记一个查额度用的 API key：选厂商 + 粘贴 key → 存钥匙串（不落任何文件），随后后台查一次
+    func addUsageKey() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = L("添加 API key 查额度", "Add an API key for quota")
+        alert.informativeText = L("key 只存进本机钥匙串，只发给该厂商自己的用量 / 余额接口，每 5 分钟查一次；不经过记账代理也能看到。",
+                                  "The key is stored only in your Keychain and sent only to that provider's own usage / balance endpoint, every 5 minutes. Works without the proxy.")
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 32, width: 300, height: 26), pullsDown: false)
+        popup.addItems(withTitles: OfficialQuota.providers.map { "\($0.name) · \($0.host)" })
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        field.placeholderString = "API key"
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 60))
+        box.addSubview(popup)
+        box.addSubview(field)
+        alert.accessoryView = box
+        alert.addButton(withTitle: L("保存", "Save"))
+        alert.addButton(withTitle: L("取消", "Cancel"))
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let p = OfficialQuota.providers[max(0, popup.indexOfSelectedItem)]
+        do {
+            try OfficialQuota.shared.register(host: p.host, key: field.stringValue)
+            sendNotification(title: L("已保存到钥匙串", "Saved to Keychain"),
+                             body: L("\(p.name) 的额度会在一分钟内出现在「API」或「订阅」页。", "\(p.name) usage shows up on the API or Plans tab within a minute."))
+        } catch {
+            sendNotification(title: L("没有保存", "Not saved"), body: error.localizedDescription)
+        }
+        updateStatus()
     }
 
     /// 连接 / 断开状态栏桥接（改的是 Claude Code / agy 的 settings.json，脚本会先备份）

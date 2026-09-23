@@ -193,6 +193,34 @@ enum SelfTest {
             precondition(Fmt.pct(1e308) == 100 && Fmt.pct(-1e308) == 0 && Fmt.pct(.nan) == nil && Fmt.pct(.infinity) == nil && Fmt.pct(42.4) == 42)
             precondition(Fmt.countdown(to: 1e308, now: 0) != nil && Fmt.countdown(to: .nan) == nil)
         }
+        // 官方 CLI：火山只给百分比 + RFC3339 重置点；阿里给 0–1 比例 + 毫秒时间戳；没订阅 = {}
+        do {
+            let ark: [String: Any] = ["items": [["product": "coding-plan", "subscribed": true, "periods": [
+                ["label": "session", "percent": 37, "reset_at": "2026-09-23T10:00:00+08:00"],
+                ["label": "weekly", "percent": 12.6], ["label": "monthly", "percent": 1e308]]] as [String: Any]]]
+            let a = OfficialCLI.parse(.ark, ark, capturedAt: 1)
+            precondition(a?.fiveHour?.usedPct == 37 && a?.fiveHour?.windowSeconds == 5 * 3600 && a?.fiveHour?.resetsAt == Fmt.parseISODate("2026-09-23T10:00:00+08:00")
+                         && a?.weekly?.usedPct == 13 && a?.monthly?.usedPct == 100, "火山：\(String(describing: a))")
+            precondition(OfficialCLI.parse(.ark, ["items": [Any]()], capturedAt: 1)?.noSubscription == true)
+            precondition(OfficialCLI.parse(.ark, ["items": [["product": "coding-plan", "subscribed": false, "periods": [Any]()] as [String: Any]]], capturedAt: 1)?.noSubscription == true)
+            precondition(OfficialCLI.parse(.ark, ["items": [["product": "coding-plan", "subscribed": true, "error": "AccessDenied"] as [String: Any]]], capturedAt: 1) == nil)
+            precondition(OfficialCLI.parse(.ark, ["unexpected": 1], capturedAt: 1) == nil)
+            let bl: [String: Any] = ["instanceType": "pro", "per5Hour": ["usedQuota": 120, "totalQuota": 1200, "percentage": 0.1, "resetTime": 1_790_000_000_000.0],
+                                     "perWeek": ["usedQuota": 300, "totalQuota": 1000], "perBillMonth": ["percentage": 0.5, "resetTime": 1_790_500_000]]
+            let b = OfficialCLI.parse(.bailian, bl, capturedAt: 1)
+            precondition(b?.fiveHour?.usedPct == 10 && b?.fiveHour?.resetsAt == 1_790_000_000 && b?.weekly?.usedPct == 30
+                         && b?.monthly?.resetsAt == 1_790_500_000 && b?.plan == "pro", "阿里：\(String(describing: b))")
+            precondition(OfficialCLI.parse(.bailian, [String: Any](), capturedAt: 1)?.noSubscription == true)
+            precondition(OfficialQuota.fingerprint("test-key-1234567890") == "ed8fa324", "钥匙串 key 指纹要和代理算法一致")
+            for c in OfficialCLI.allCases {         // 一键连接脚本语法要对：bash -n 只检查不执行
+                let f = FileManager.default.temporaryDirectory.appendingPathComponent("vg-connect-\(UUID().uuidString).command")
+                defer { try? FileManager.default.removeItem(at: f) }
+                try? OfficialQuota.connectScript(c, needsInstall: true).write(to: f, atomically: true, encoding: .utf8)
+                let r = OfficialQuota.run("/bin/bash", ["-n", f.path], stdin: nil, timeout: 10)
+                precondition(r.status == 0, "连接脚本语法：\(c) \(String(data: r.err, encoding: .utf8) ?? "")")
+            }
+            precondition(OfficialQuota.firstJSONObject(Data("update available\n{\"a\":1}".utf8)) != nil)
+        }
         // Codex 上下文水位：压缩后旧水位作废；只来新窗口不来用量 → 未知，不拿旧用量除新窗口
         do {
             func line(_ j: [String: Any]) -> Data { try! JSONSerialization.data(withJSONObject: j) }

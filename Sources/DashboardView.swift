@@ -121,6 +121,10 @@ public struct PanelActions {
     public var setQuotaBridge: (String, Bool) -> Void = { _, _ in }
     /// 待处理会话 Hook（写入 / 删除 Claude Code 配置里的观察型 Hook）
     public var setPendingHooks: (Bool) -> Void = { _ in }
+    /// 官方额度来源：登记 / 删除钥匙串里查额度的 key；打开终端安装并登录官方 CLI
+    public var addUsageKey: () -> Void = {}
+    public var removeUsageKey: (String) -> Void = { _ in }
+    public var connectCLI: (OfficialCLI) -> Void = { _ in }
     public init() {}
 }
 
@@ -234,6 +238,7 @@ public struct DashboardView: View {
             if !headerLine.isEmpty, p.balanceText.isEmpty, p.fiveHour == nil { sub = headerLine }
             else if !p.balanceText.isEmpty { sub = p.balanceText }
             else if !p.quotaError.isEmpty { sub = L("额度: ", "Quota: ") + String(p.quotaError.prefix(24)) }   // 如"当前用户不存在coding plan"
+            else if !p.quotaSource.isEmpty { sub = p.quotaSource }
             else { sub = p.calls > 0 ? L("无额度接口 · 只记调用", "No quota API · calls only") : L("今日无调用", "No calls today") }
 
             // 第四行：延迟 + 错误 + 花费，都从记账文件里已有的字段算，没有就不写
@@ -297,6 +302,7 @@ public struct DashboardView: View {
         }
         if !p.models.isEmpty { d.rows.append((L("模型", "Models"), p.models.joined(separator: ", "))) }
         if !p.balanceText.isEmpty { d.rows.append((L("余额", "Balance"), p.balanceText)) }
+        if !p.quotaSource.isEmpty { d.rows.append((L("额度来源", "Quota source"), p.quotaSource)) }
         if !p.quotaError.isEmpty { d.rows.append((L("额度接口", "Quota API"), p.quotaError)) }
         for k in p.keys {
             var v = L("\(k.calls) 次", "\(k.calls)")
@@ -974,6 +980,9 @@ public struct DashboardView: View {
                         .buttonStyle(.plain).foregroundColor(.blue)
                 }
             }
+
+            Divider().opacity(0.35)
+            officialQuotaRows
         }
         .padding(10)
         .background(Color.secondary.opacity(0.06))
@@ -1080,6 +1089,45 @@ public struct DashboardView: View {
         .padding(10)
         .background(Color.secondary.opacity(0.06))
         .cornerRadius(8)
+    }
+
+    /// 官方额度来源：不经代理也能看到订阅 / 余额的真值
+    private var officialQuotaRows: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L("官方额度来源", "Official quota sources")).font(.system(size: 9.5, weight: .medium))
+            Text(L("不走记账代理也能看到真实用量。火山、阿里用官方命令行工具：点按钮会打开「终端」完成安装和登录（一次即可）；其他厂商可登记 API key，只存本机钥匙串、只发给该厂商自己的用量接口。",
+                   "See real usage without the proxy. Volcengine and Alibaba use their official CLIs: the button opens Terminal to install and sign in (once). For other providers, add an API key: it stays in your Keychain and goes only to that provider's own usage endpoint."))
+                .font(.system(size: 8)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+            ForEach(OfficialCLI.allCases, id: \.self) { c in
+                let st: OfficialQuota.CLIState = isDemo ? (c == .ark ? .connected(CLIQuota(), at: nowTS - 120) : .notInstalled) : OfficialQuota.shared.state(c)
+                HStack(spacing: 6) {
+                    Circle().fill(st.isConnected ? Color.green : Color.secondary.opacity(0.4)).frame(width: 5, height: 5)
+                    Text(c.title).font(.system(size: 9))
+                    Text(st.text(nowTS)).font(.system(size: 8)).foregroundColor(.secondary).lineLimit(1)
+                    Spacer()
+                    if !st.isConnected {
+                        Button { actions.connectCLI(c) } label: {
+                            Text(st == .notInstalled ? L("安装并登录", "Install & sign in") : L("登录", "Sign in")).font(.system(size: 9, weight: .semibold))
+                        }.buttonStyle(.plain).foregroundColor(.blue)
+                    }
+                }
+            }
+            let keys = isDemo ? [OfficialQuota.RegisteredKey(account: "api.deepseek.com#3f9a1c20", host: "api.deepseek.com", fingerprint: "3f9a1c20", name: "DeepSeek")]
+                              : OfficialQuota.shared.registered()
+            ForEach(keys) { k in
+                HStack(spacing: 6) {
+                    Image(systemName: "key").font(.system(size: 7.5)).foregroundColor(.secondary)
+                    Text(k.name).font(.system(size: 9))
+                    Text("key \(k.fingerprint)").font(.system(size: 8, design: .monospaced)).foregroundColor(.secondary)
+                    Spacer()
+                    Button { actions.removeUsageKey(k.account) } label: { Text(L("删除", "Remove")).font(.system(size: 9)) }
+                        .buttonStyle(.plain).foregroundColor(.secondary)
+                }
+            }
+            Button(action: actions.addUsageKey) {
+                Text(L("＋ 添加 API key 查额度…", "+ Add an API key for quota…")).font(.system(size: 9, weight: .semibold))
+            }.buttonStyle(.plain).foregroundColor(.blue)
+        }
     }
 
     private func settingRow(_ title: String, detail: String, isOn: Binding<Bool>) -> some View {
