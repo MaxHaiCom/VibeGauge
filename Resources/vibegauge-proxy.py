@@ -1293,9 +1293,12 @@ def selftest() -> None:
     assert os.stat(QUOTA).st_mode & 0o777 == 0o600
 
     recs = [json.loads(l) for l in open(CALLS, encoding="utf-8")]
-    a, o = recs[0], recs[1]
-    assert len(recs) == 4 and recs[2]["status"] == 502, recs
-    assert "AIzaFAKE" not in recs[2]["error"] and "?…" in recs[2]["error"], recs[2]
+    # 几次请求是并发写入的，行的先后不固定：按内容认，不按位置
+    assert len(recs) == 4, recs
+    a = next(r for r in recs if r.get("model") == "glm-4.7")
+    o = next(r for r in recs if r.get("ctx") == 100)
+    err = next(r for r in recs if r.get("status") == 502)
+    assert "AIzaFAKE" not in err["error"] and "?…" in err["error"], err
     assert a["provider"] == "本地" and a["model"] == "glm-4.7" and a["stream"] is True
     assert a["ctx"] == 17 and a["cache_read"] == 5 and a["cache_write"] == 2 and a["out"] == 7 and a["parsed"], a
     assert o["ctx"] == 100 and o["cache_read"] == 60 and o["out"] == 20 and o["think"] == 4 and o["parsed"], o
