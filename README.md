@@ -176,7 +176,7 @@ When routing terminal tools or scripts directly to AI provider endpoints, route 
    ```bash
    ./VibeGauge.app/Contents/MacOS/VibeGauge --install-proxy
    ```
-   The proxy listens on `127.0.0.1:18790` (change it with `proxyPort`, see Configuration).
+   The proxy listens on `127.0.0.1:18790` (change it with `proxyPort`, see Configuration). It reaches upstreams through your macOS system proxy if one is set (or `HTTPS_PROXY`); to pin a route, write `{"upstream": "http://127.0.0.1:7890"}` or `{"upstream": "direct"}` to `~/.config/vibegauge/proxy.json`. Local models on `localhost` always go direct. Details: [docs/PROTOCOL.md](docs/PROTOCOL.md#reaching-the-upstream-proxyjson-stable).
 
 2. **Zero-Config Routing**:
    Simply prefix your existing endpoint URL:

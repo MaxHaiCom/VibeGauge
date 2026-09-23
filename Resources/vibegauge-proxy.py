@@ -24,6 +24,8 @@ import sys
 import threading
 import time
 import traceback
+import urllib.parse
+import urllib.request
 import zlib
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,6 +36,7 @@ DIR = os.path.expanduser(os.environ.get("VIBEGAUGE_DIR", "~/.config/vibegauge"))
 CALLS = os.path.join(DIR, "api-calls.jsonl")
 QUOTA = os.path.join(DIR, "api-quota.json")
 QUOTA_INTERVAL = int(os.environ.get("VIBEGAUGE_QUOTA_INTERVAL", "300"))
+PROXY_CONF = os.path.join(DIR, "proxy.json")
 START = time.time()
 
 # host 子串 → 展示名
@@ -79,6 +82,88 @@ def provider_of(host: str, path: str = "") -> str:
         if sub in h:
             return name
     return h.split(":")[0]
+
+
+# ---------------------------------------------------------------- 上游代理
+# 顺序：proxy.json 的 upstream（"direct" = 强制直连）> VIBEGAUGE_UPSTREAM_PROXY > 环境变量 / macOS 系统代理。
+# 后两者由 urllib.request.getproxies() 给出：LaunchAgent 不继承 shell 的 HTTPS_PROXY，但系统代理（ClashX 等
+# 「设置为系统代理」）照样读得到。只支持 http:// 代理（CONNECT 隧道）；本机回环地址永远直连。
+_proxy_cache: Dict[str, Any] = {"at": 0.0, "mtime": None, "conf": {}}
+
+
+def _proxy_conf() -> Dict[str, Any]:
+    now = time.time()
+    try:
+        mtime = os.stat(PROXY_CONF).st_mtime
+    except OSError:
+        mtime = None
+    c = _proxy_cache
+    if now - c["at"] < 30 and mtime == c["mtime"]:
+        return c["conf"]
+    conf: Dict[str, Any] = {}
+    if mtime is not None:
+        try:
+            j = json.load(open(PROXY_CONF, encoding="utf-8"))
+            conf = j if isinstance(j, dict) else {}
+        except (OSError, ValueError):
+            conf = {}
+    c.update(at=now, mtime=mtime, conf=conf)
+    return conf
+
+
+def _is_loopback(host: str) -> bool:
+    h = host.lower().strip("[]")
+    return h == "localhost" or h == "::1" or h.startswith("127.")
+
+
+def pick_proxy(scheme: str, host: str) -> Optional[str]:
+    """返回要走的 http:// 代理 URL，或 None = 直连。host 不含端口。"""
+    if _is_loopback(host):
+        return None
+    conf = _proxy_conf()
+    explicit = conf.get("upstream") if isinstance(conf.get("upstream"), str) else os.environ.get("VIBEGAUGE_UPSTREAM_PROXY")
+    if explicit is not None:
+        explicit = explicit.strip()
+        if explicit in ("", "direct"):
+            return None
+        if any(host == d or host.endswith("." + d.lstrip("*.")) for d in conf.get("no_proxy") or [] if isinstance(d, str)):
+            return None
+        return explicit if explicit.startswith("http://") else None
+    try:
+        if urllib.request.proxy_bypass(host):           # 系统代理的例外列表 / NO_PROXY
+            return None
+        url = urllib.request.getproxies().get(scheme)
+    except Exception:
+        return None
+    return url if url and url.startswith("http://") else None
+
+
+def redact_proxy(url: Optional[str]) -> str:
+    if not url:
+        return "direct"
+    p = urllib.parse.urlsplit(url)
+    return "http://%s:%s" % (p.hostname, p.port or 80) + (" (auth)" if p.username else "")
+
+
+def open_upstream(scheme: str, hostport: str, timeout: float, proxy: Optional[str] = None):
+    """建到上游的连接；proxy 非空时经 HTTP 代理 CONNECT 隧道（https 与 http 上游都走隧道）"""
+    cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+    if not proxy:
+        return cls(hostport, timeout=timeout)
+    p = urllib.parse.urlsplit(proxy)
+    headers = {}
+    if p.username:
+        import base64
+        cred = "%s:%s" % (urllib.parse.unquote(p.username), urllib.parse.unquote(p.password or ""))
+        headers["Proxy-Authorization"] = "Basic " + base64.b64encode(cred.encode()).decode()
+    conn = cls(p.hostname, p.port or 80, timeout=timeout)
+    conn.set_tunnel(hostport, headers=headers)
+    return conn
+
+
+def upstream(scheme: str, hostport: str, timeout: float):
+    host = urllib.parse.urlsplit("//" + hostport).hostname or hostport
+    return open_upstream(scheme, hostport, timeout, pick_proxy(scheme, host))
 
 
 def ensure_dir() -> None:
@@ -462,7 +547,8 @@ class Handler(BaseHTTPRequestHandler):
             with _lock:
                 return self._json(200, {"ok": True, "port": PORT, "uptime_s": int(time.time() - START),
                                         "calls": _stats["calls"], "parsed": _stats["parsed"], "errors": _stats["errors"],
-                                        "hosts": sorted(_hosts_seen.keys()), "dir": DIR})
+                                        "hosts": sorted(_hosts_seen.keys()), "dir": DIR,
+                                        "upstream": redact_proxy(pick_proxy("https", "api.example.com"))})
         m = re.match(r"^/(https?)://([^/]+)(/.*)?$", self.path)
         if not m:
             return self._json(400, {"error": "path must be /https://HOST/...  e.g. ANTHROPIC_BASE_URL=http://127.0.0.1:%d/https://api.anthropic.com" % PORT})
@@ -492,7 +578,6 @@ class Handler(BaseHTTPRequestHandler):
         record = self.command == "POST"          # GET /models、/auth/key 之类只转发不记账
 
         t0 = time.time()
-        conn_cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
         conn = None
         rec: Dict[str, Any] = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z", "epoch": round(t0, 3),
                                "host": hostport, "provider": provider_of(hostport, rest), "path": redact_path(rest),
@@ -505,7 +590,7 @@ class Handler(BaseHTTPRequestHandler):
         rec["status"] = 502
         sent = False            # 请求已完整发给上游：此后才算「到了厂商」（套餐按请求数估额度要用）
         try:
-            conn = conn_cls(hostport, timeout=600)
+            conn = upstream(scheme, hostport, 600)
             conn.request(self.command, rest, body=body, headers=hdrs)
             sent = True
             resp = conn.getresponse()
@@ -588,7 +673,7 @@ class Handler(BaseHTTPRequestHandler):
 # 只放有公开文档 / 已实测的接口，没有的厂商不猜。
 
 def _get_json(host: str, path: str, headers: Dict[str, str], timeout: int = 15) -> Any:
-    conn = http.client.HTTPSConnection(host, timeout=timeout)
+    conn = upstream("https", host, timeout)
     try:
         conn.request("GET", path, headers=dict(headers, **{"Accept": "application/json", "User-Agent": "VibeGauge/1"}))
         r = conn.getresponse()
@@ -766,9 +851,16 @@ def selftest() -> None:
     import struct
     import tempfile
     from unittest.mock import patch
-    global DIR, CALLS, QUOTA
+    global DIR, CALLS, QUOTA, PROXY_CONF
     DIR = tempfile.mkdtemp(prefix="vibegauge-selftest-")
     CALLS, QUOTA = os.path.join(DIR, "api-calls.jsonl"), os.path.join(DIR, "api-quota.json")
+    PROXY_CONF = os.path.join(DIR, "proxy.json")
+
+    def set_proxy_conf(conf: Dict[str, Any]) -> None:
+        with open(PROXY_CONF, "w", encoding="utf-8") as f:
+            json.dump(conf, f)
+        _proxy_cache["at"] = 0.0
+    set_proxy_conf({"upstream": "direct"})     # 自测结果不能取决于跑测试那台机器开没开系统代理
     _neg: Dict[str, Any] = {}
     _set(_neg, "out", -5); _set(_neg, "ctx", float("nan"))
     assert _neg == {}, _neg                      # 负数 / NaN 不记账
@@ -926,6 +1018,67 @@ def selftest() -> None:
     mock = ThreadingHTTPServer(("127.0.0.1", 0), Mock)
     mport = mock.server_address[1]
     threading.Thread(target=mock.serve_forever, daemon=True).start()
+    # 上游代理：选路规则 + 经 HTTP 代理 CONNECT 隧道的真实往返（带 Basic 认证）
+    tunnel_seen = []
+    tsock = socket.socket(); tsock.bind(("127.0.0.1", 0)); tsock.listen(4)
+    tport = tsock.getsockname()[1]
+
+    def tunnel_serve() -> None:
+        while True:
+            try:
+                cli, _ = tsock.accept()
+            except OSError:
+                return
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = cli.recv(4096)
+                if not chunk:
+                    break
+                head += chunk
+            tunnel_seen.append(head.decode("latin-1"))
+            target = head.split(b" ")[1].decode()
+            up = socket.create_connection((target.rsplit(":", 1)[0], int(target.rsplit(":", 1)[1])))
+            cli.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+
+            def pipe(a, b):
+                try:
+                    while True:
+                        d = a.recv(65536)
+                        if not d:
+                            break
+                        b.sendall(d)
+                except OSError:
+                    pass
+                finally:
+                    for s in (a, b):
+                        try:
+                            s.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+            threading.Thread(target=pipe, args=(cli, up), daemon=True).start()
+            threading.Thread(target=pipe, args=(up, cli), daemon=True).start()
+    threading.Thread(target=tunnel_serve, daemon=True).start()
+
+    purl = "http://u:p@127.0.0.1:%d" % tport
+    with patch.dict(os.environ, {"VIBEGAUGE_UPSTREAM_PROXY": "http://env.example:1"}):
+        set_proxy_conf({"upstream": purl, "no_proxy": ["skip.example"]})
+        assert pick_proxy("https", "api.example.com") == purl                 # proxy.json 优先于环境变量
+        assert pick_proxy("https", "a.skip.example") is None                  # no_proxy 后缀匹配
+        assert all(pick_proxy("https", h) is None for h in ("127.0.0.1", "localhost", "::1"))   # 回环永远直连
+        set_proxy_conf({"upstream": "socks5://127.0.0.1:1080"})
+        assert pick_proxy("https", "api.example.com") is None                 # 只支持 http:// 代理
+        set_proxy_conf({})
+        assert pick_proxy("https", "api.example.com") == "http://env.example:1"   # 没配 proxy.json 退到环境变量
+    assert redact_proxy(purl) == "http://127.0.0.1:%d (auth)" % tport and redact_proxy(None) == "direct"
+    tc = open_upstream("http", "127.0.0.1:%d" % mport, 10, purl)
+    tc.request("GET", "/2030-01-01T00:00:00Z")
+    tr = tc.getresponse(); tbody = tr.read(); tc.close()
+    assert tr.status == 200 and json.loads(tbody)["usage"]["used"] == 25, tbody
+    assert tunnel_seen and tunnel_seen[0].startswith("CONNECT 127.0.0.1:%d " % mport), tunnel_seen
+    assert "Proxy-Authorization: Basic dTpw" in tunnel_seen[0], tunnel_seen[0]
+    tsock.close()
+    set_proxy_conf({"upstream": "direct"})
+
     proxy = ProxyServer(("127.0.0.1", 0), Handler)
     pport = proxy.server_address[1]
     threading.Thread(target=proxy.serve_forever, daemon=True).start()
@@ -1200,7 +1353,7 @@ def selftest() -> None:
     with open(CALLS, encoding="utf-8") as f:
         ledger = f.read()
     assert "x" * 100 not in ledger and "test-key" not in ledger and '"usage"' not in ledger, "正文/凭据不得落盘"
-    print("selftest OK: Responses + Gemini 思考量 + >8MiB SSE/gzip + 流中断/客户端断开 + 时区 + 原有回归, 记录", CALLS)
+    print("selftest OK: 上游代理隧道 + Responses + Gemini 思考量 + >8MiB SSE/gzip + 流中断/客户端断开 + 时区 + 原有回归, 记录", CALLS)
     # 先停服务线程再退出：否则守护线程在解释器收尾时还握着 stderr 锁，
     # 会报 "Fatal Python error: _enter_buffered_busy"、退出码 134，CI 就红了（断言其实全过）
     proxy.shutdown(); mock.shutdown()

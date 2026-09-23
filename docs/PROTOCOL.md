@@ -28,6 +28,7 @@ All files live in `~/.config/vibegauge/`. The app and helpers create the directo
 | `agy-quota.json` | statusline bridge | Stable | Rewritten at the next statusline refresh (only the current model's pool at first) |
 | `prices.json` | you | Stable | Cost is no longer shown |
 | `plans.json` | you | Stable | Plan estimates are no longer shown |
+| `proxy.json` | you | Stable | The accounting proxy goes back to environment / system proxy settings |
 | `statusline-claude.json`, `statusline-agy.json` | statusline bridge | Internal | **Your original statusline command is forgotten**; the bridge shows its own short line and `--uninstall` can no longer restore it |
 | `quota-samples.json` | app | Internal | Burn rate restarts from scratch; last-cycle finals are lost |
 | `usage-daily.json` | app | Internal | **History of session logs you already deleted is lost for good**; history of logs still on disk is rebuilt |
@@ -49,7 +50,24 @@ e.g. ANTHROPIC_BASE_URL=http://127.0.0.1:18790/https://api.anthropic.com
 - Port: `18790` by default. To change it: `defaults write com.haifeng.vibegauge proxyPort <1024-65535>`, reinstall the proxy from the menu (the app writes the port into the LaunchAgent as `VIBEGAUGE_PROXY_PORT`), then update every `*_BASE_URL` prefix to the new port and restart those CLIs. Until you reinstall, the app keeps talking to the port the installed proxy actually uses.
 - Only requests whose `Host` is `127.0.0.1:<port>` or `localhost:<port>` and that carry no browser headers (`Origin`, `Sec-Fetch-Site`, `Sec-Fetch-Dest`) are accepted. Anything else gets `403`.
 - Responses are streamed through unchanged. Only `POST` requests are recorded.
-- `GET /_vibegauge/health` returns `{"ok", "port", "uptime_s", "calls", "parsed", "errors", "hosts", "dir"}`.
+- `GET /_vibegauge/health` returns `{"ok", "port", "uptime_s", "calls", "parsed", "errors", "hosts", "dir", "upstream"}`; `upstream` is the proxy the next request would use (`direct`, or `http://host:port` with credentials removed).
+
+### Reaching the upstream (`proxy.json`, Stable)
+
+The accounting proxy connects to upstreams itself, so it needs its own route out. It picks one per request, first match wins:
+
+1. `upstream` in `~/.config/vibegauge/proxy.json` (re-read within 30 s of a change): an `http://[user:pass@]host:port` proxy, or `"direct"`.
+2. `VIBEGAUGE_UPSTREAM_PROXY`, same values.
+3. `HTTPS_PROXY` / `HTTP_PROXY` in the proxy's environment, then the **macOS system proxy** (what ClashX-style apps set with "Set as system proxy"), including its bypass list.
+
+```json
+{ "upstream": "http://127.0.0.1:7890", "no_proxy": ["bigmodel.cn", "deepseek.com"] }
+```
+
+- Loopback upstreams (`localhost`, `127.x`, `::1`) always go direct.
+- `no_proxy` entries match a host or any subdomain; they apply to rule 1 (rule 3 uses the system bypass list).
+- Only HTTP proxies are supported, through a `CONNECT` tunnel for both `https` and `http` upstreams. A `socks5://` value is ignored and the request goes direct.
+- Provider usage queries (`api-quota.json`) use the same route.
 
 ### `api-calls.jsonl` (Stable)
 
@@ -216,4 +234,5 @@ The app also stores internal state: UI (`vg.tab`, `vg.fiveTabsMigrated`), notifi
 | `VIBEGAUGE_PROXY_PORT` | `18790` | proxy; set by the app's LaunchAgent from `proxyPort` |
 | `VIBEGAUGE_DIR` | `~/.config/vibegauge` | proxy only; tests (the app and the bridge ignore it) |
 | `VIBEGAUGE_QUOTA_INTERVAL` | `300` | proxy; seconds between provider usage queries |
+| `VIBEGAUGE_UPSTREAM_PROXY` | unset | proxy; upstream route when `proxy.json` sets none (see Reaching the upstream) |
 | `VIBEGAUGE_STATUSLINE_ACTIVE` | unset | bridge; set internally to stop a statusline command that calls back into the bridge |

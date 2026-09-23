@@ -157,7 +157,7 @@ open VibeGauge.app
    ```bash
    ./VibeGauge.app/Contents/MacOS/VibeGauge --install-proxy
    ```
-   代理常驻监听在 `127.0.0.1:18790`（可用 `proxyPort` 改，见配置）。
+   代理常驻监听在 `127.0.0.1:18790`（可用 `proxyPort` 改，见配置）。它访问上游时会自动走 macOS 系统代理（或 `HTTPS_PROXY`）；要固定线路，在 `~/.config/vibegauge/proxy.json` 写 `{"upstream": "http://127.0.0.1:7890"}` 或 `{"upstream": "direct"}`。本机 `localhost` 上的模型永远直连。细节见 [docs/PROTOCOL.md](docs/PROTOCOL.md#reaching-the-upstream-proxyjson-stable)。
 
 2. **零配置路由注入**：
    只需在目标服务的 `BASE_URL` 前追加代理前缀即可，例如：
