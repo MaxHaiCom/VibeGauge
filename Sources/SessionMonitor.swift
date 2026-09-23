@@ -28,6 +28,8 @@ public struct Compaction: Equatable {
 struct CodexCtxState {
     var offset: UInt64 = 0
     var size: UInt64 = 0
+    /// 已读部分最后 64 字节：文件被原样长度或别的长度重写时，这里对不上 → 从头重读
+    var tail = Data()
     var used: Int?
     var window: Int?
     var model = ""
@@ -62,19 +64,49 @@ extension ProcessScanner {
         switch j["type"] as? String {
         case "compacted":
             s.compactions.append(Compaction(at: ts, pre: nil, post: nil))
+            s.used = nil                                    // 压缩后旧水位作废，等下一次请求的回报
         case "turn_context", "session_meta":
             // session_meta 第一行常塞着整段系统提示词（远超 16 KB），只读文件开头取不到 cwd；在这里顺手记下
             if let m = payload["model"] as? String, !m.isEmpty { s.model = m }
             if let c = payload["cwd"] as? String, !c.isEmpty { s.cwd = c }
         case "event_msg" where payload["type"] as? String == "token_count":
             guard let info = payload["info"] as? [String: Any] else { return }
-            if let w = (info["model_context_window"] as? NSNumber)?.intValue, w > 0 { s.window = w }
-            if let last = info["last_token_usage"] as? [String: Any], let t = (last["total_tokens"] as? NSNumber)?.intValue {
+            // 用量和窗口成对更新：只来了新窗口没来用量，就别拿旧用量去除新窗口
+            let w = (info["model_context_window"] as? NSNumber)?.intValue
+            let t = ((info["last_token_usage"] as? [String: Any])?["total_tokens"] as? NSNumber)?.intValue
+            if let w, w > 0, w != s.window { s.window = w; if t == nil { s.used = nil } }
+            if let t, t >= 0 {
                 s.used = t
                 s.lastAt = max(s.lastAt, ts)
             }
         default: break
         }
+    }
+
+    /// 从上次读到的位置接着读；文件变小，或已读部分的末尾对不上（原样长度 / 变长重写）= 被重写，从头来
+    static func refreshCodexCtx(path: String, from old: CodexCtxState) -> CodexCtxState {
+        var st = old
+        let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.uint64Value ?? 0
+        if size < st.size { st = CodexCtxState() }
+        else if st.offset > 0, let fh = FileHandle(forReadingAtPath: path) {
+            let n = UInt64(st.tail.count)
+            try? fh.seek(toOffset: st.offset - n)
+            if (try? fh.read(upToCount: Int(n))) != st.tail { st = CodexCtxState() }
+            try? fh.close()
+        }
+        if size > st.offset, let fh = FileHandle(forReadingAtPath: path) {
+            var s2 = st
+            if let end = try? LineReader.read(fh, from: st.offset, to: size, { line, _ in consumeCodexContextLine(line, into: &s2) }) {
+                s2.offset = end
+                let n = min(end, 64)
+                try? fh.seek(toOffset: end - n)
+                s2.tail = (try? fh.read(upToCount: Int(n))) ?? Data()
+                st = s2
+            }
+            try? fh.close()
+        }
+        st.size = size
+        return st
     }
 
     func scanSessions(now: TimeInterval = Date().timeIntervalSince1970) -> [SessionContext] {
@@ -87,7 +119,9 @@ extension ProcessScanner {
             guard let r = v as? [String: Any], let at = (r["at"] as? NSNumber)?.doubleValue, now - at < Self.sessionActiveWindow else { continue }
             var s = SessionContext(id: sid, tool: "Claude", cwd: r["cwd"] as? String ?? "", model: r["model"] as? String ?? "",
                                    usedPct: (r["used_pct"] as? NSNumber)?.doubleValue, window: (r["window"] as? NSNumber)?.intValue, updatedAt: at)
-            s.compactions = fileStates.first { $0.key.hasSuffix("/\(sid).jsonl") }?.value.compactions.values
+            // 压缩记录按状态栏给的 transcript_path 精确对上；老数据没有这个字段才按文件名猜
+            let state = (r["transcript"] as? String).flatMap { fileStates[$0] } ?? fileStates.first { $0.key.hasSuffix("/\(sid).jsonl") }?.value
+            s.compactions = state?.compactions.values
                 .filter { $0.at >= startOfToday }.sorted { $0.at < $1.at } ?? []
             out.append(s)
         }
@@ -96,22 +130,11 @@ extension ProcessScanner {
         var seen = Set<String>()
         for f in codexSessionFiles(modifiedWithin: Self.sessionActiveWindow) {
             seen.insert(f.path)
-            var st = codexCtxStates[f.path] ?? CodexCtxState()
-            let size = (try? FileManager.default.attributesOfItem(atPath: f.path)[.size] as? NSNumber)?.uint64Value ?? 0
-            if size < st.size { st = CodexCtxState() }          // 文件变小 = 被重写，从头来
-            if size > st.offset, let fh = FileHandle(forReadingAtPath: f.path) {
-                var s2 = st
-                if let end = try? LineReader.read(fh, from: st.offset, to: size, { line, _ in Self.consumeCodexContextLine(line, into: &s2) }) {
-                    s2.offset = end
-                    st = s2
-                }
-                try? fh.close()
-            }
-            st.size = size
+            let st = Self.refreshCodexCtx(path: f.path, from: codexCtxStates[f.path] ?? CodexCtxState())
             codexCtxStates[f.path] = st
-            guard let used = st.used else { continue }
+            guard st.used != nil || !st.compactions.isEmpty else { continue }   // 压缩后到下次回报之间显示「—」
             var s = SessionContext(id: f.path, tool: "Codex", cwd: st.cwd.isEmpty ? (sessionCwd(of: f.path) ?? "") : st.cwd, model: st.model,
-                                   usedPct: st.window.map { Double(used) / Double($0) * 100 }, window: st.window,
+                                   usedPct: st.used.flatMap { u in st.window.map { Double(u) / Double($0) * 100 } }, window: st.window,
                                    updatedAt: st.lastAt > 0 ? st.lastAt : f.mtime)
             s.compactions = st.compactions.filter { $0.at >= startOfToday }
             out.append(s)
@@ -132,27 +155,38 @@ public struct PendingSession: Identifiable, Equatable {
 }
 
 extension ProcessScanner {
-    /// PermissionRequest 之后可能被别的 Hook 自动处理掉：记下 8 秒后还没清除，或收到 Claude 自己的
-    /// permission_prompt 通知（约 6 秒后发），才算真的在等你
-    static let permissionConfirmAfter: TimeInterval = 8
+    /// 会话在 Hook 最后一次记录之后，日志又写了东西 = 已经往下走了（按了 Esc、强退后重开…这些都不发 Hook 事件）
+    static let pendingActivitySlack: TimeInterval = 30
+    static let pendingKeep: TimeInterval = 12 * 3600
 
-    static func parsePending(_ json: [String: Any]?, now: TimeInterval) -> [PendingSession] {
+    /// 只显示确认过的等待：收到 Claude Code 自己的 permission_prompt 通知的待批准调用，或 idle/elicitation 的等输入。
+    /// 光有 PermissionRequest 不算 —— 可能被别的 Hook 自动处理，也可能批准后工具还在跑（批准本身没有 Hook 事件）。
+    static func parsePending(_ json: [String: Any]?, now: TimeInterval,
+                             lastWrite: (String) -> TimeInterval? = { _ in nil }) -> [PendingSession] {
         let rows = json?["sessions"] as? [String: Any] ?? [:]
         return rows.compactMap { sid, v -> PendingSession? in
-            guard let r = v as? [String: Any], let state = r["state"] as? String,
-                  let since = (r["since"] as? NSNumber)?.doubleValue else { return nil }
-            let kind: PendingSession.Kind
-            switch state {
-            case "permission": kind = .permission
-            case "permission_pending" where now - since >= permissionConfirmAfter: kind = .permission
-            case "input": kind = .input
-            default: return nil
+            guard let r = v as? [String: Any], let at = (r["at"] as? NSNumber)?.doubleValue, at.isFinite, now - at < pendingKeep else { return nil }
+            if let tp = r["transcript_path"] as? String, let m = lastWrite(tp), m > at + pendingActivitySlack { return nil }
+            let cwd = r["cwd"] as? String ?? ""
+            let calls = (r["calls"] as? [String: Any] ?? [:]).values.compactMap { $0 as? [String: Any] }
+                .filter { $0["state"] as? String == "permission" }
+                .compactMap { c -> (since: TimeInterval, tool: String)? in
+                    (c["since"] as? NSNumber).map { ($0.doubleValue, c["tool"] as? String ?? "") } }
+            if let first = calls.min(by: { $0.since < $1.since }) {
+                return PendingSession(id: sid, kind: .permission, since: first.since, tool: first.tool, cwd: cwd)
             }
-            return PendingSession(id: sid, kind: kind, since: since, tool: r["tool"] as? String ?? "", cwd: r["cwd"] as? String ?? "")
+            if let since = (r["input"] as? NSNumber)?.doubleValue {
+                return PendingSession(id: sid, kind: .input, since: since, tool: "", cwd: cwd)
+            }
+            return nil
         }.sorted { $0.since < $1.since }
     }
 
+    /// Hook 关了就不读（残留文件不再展示、不再提醒）
     func scanPending(now: TimeInterval = Date().timeIntervalSince1970) -> [PendingSession] {
-        Self.parsePending(readJSON("\(home)/.config/vibegauge/claude-waiting.json"), now: now)
+        guard StatuslineBridge.shared.hooksConnected() else { return [] }
+        return Self.parsePending(readJSON("\(home)/.config/vibegauge/claude-waiting.json"), now: now) { path in
+            (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)?.timeIntervalSince1970
+        }
     }
 }

@@ -244,6 +244,17 @@ extension ProcessScanner {
     /// 本机 HTTP GET，0.3s 超时，结果缓存 10s（失败也缓存，免得每秒卡一次）。
     /// 结果放独立加锁的盒子：超时后迟到的回调只写盒子，不与扫描线程的读竞争。非 2xx / 非 JSON = nil。
     /// ponytail: 同步等待，在扫描锁内；多个本机服务同时不可达时最坏每 10s 多等 0.3s × 个数，要更快再改异步快照
+    /// 本机探测专用：不跟随重定向（带凭据的请求不能被 3xx 转去别处），不走系统代理
+    private final class NoRedirect: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+    }
+    static let localSession: URLSession = {
+        let c = URLSessionConfiguration.ephemeral
+        c.connectionProxyDictionary = [:]
+        return URLSession(configuration: c, delegate: NoRedirect(), delegateQueue: nil)
+    }()
+
     func probeLocalJSON(_ urlString: String, headers: [String: String] = [:]) -> Any? {
         let now = Date().timeIntervalSince1970
         if let c = localProbeCache[urlString], now - c.at < 10 { return c.json }
@@ -254,7 +265,7 @@ extension ProcessScanner {
             request.timeoutInterval = 0.3
             for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
             let sema = DispatchSemaphore(value: 0)
-            let task = URLSession.shared.dataTask(with: request) { data, response, _ in
+            let task = Self.localSession.dataTask(with: request) { data, response, _ in
                 if let data, let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
                    let json = try? JSONSerialization.jsonObject(with: data) {
                     box.lock.lock(); box.json = json; box.lock.unlock()

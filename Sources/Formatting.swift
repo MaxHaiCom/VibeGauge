@@ -3,6 +3,12 @@ import Foundation
 // MARK: - 纯展示格式化（可自测）
 
 public enum Fmt {
+    /// 外部数据里的百分比 → 0–100 整数：先在 Double 里截断再转 Int（1e308 直接 Int() 会崩），NaN/∞ 当缺失
+    public static func pct(_ d: Double?) -> Int? {
+        guard let d = d, d.isFinite else { return nil }
+        return Int(max(0, min(100, d)).rounded())
+    }
+
     /// "claude-fable-5-1" → "Fable 5.1"；"claude-sonnet-4-5-20250929" → "Sonnet 4.5"；"claude-3-7-sonnet-20250219" → "Sonnet 3.7"
     public static func modelDisplayName(_ raw: String) -> String {
         if raw.isEmpty { return "AI" }
@@ -42,8 +48,8 @@ public enum Fmt {
 
     /// 距重置点倒计时："35m" / "1h49m" / "2d10h"；已过 → "已重置"；无数据 → nil
     public static func countdown(to resetsAt: TimeInterval?, now: TimeInterval = Date().timeIntervalSince1970) -> String? {
-        guard let r = resetsAt else { return nil }
-        let secs = Int(r - now)
+        guard let r = resetsAt, r.isFinite else { return nil }
+        let secs = Int(max(-1, min(r - now, 10 * 365 * 86400)))   // 外部给的时间戳可能离谱，先截断再转 Int
         if secs <= 0 { return L("已重置", "Reset") }
         let m = secs / 60
         if m < 60 { return "\(m)m" }

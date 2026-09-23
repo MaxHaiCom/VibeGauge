@@ -187,7 +187,7 @@ extension ProcessScanner {
         }
         if let start {
             let used = sorted.filter { $0.t >= start && (end == nil || $0.t < end!) }.reduce(0) { $0 + $1.w }
-            var w = QuotaWindow(usedPct: min(100, Int((used / Double(limit) * 100).rounded())), resetsAt: end, capturedAt: now,
+            var w = QuotaWindow(usedPct: Fmt.pct(used / Double(limit) * 100) ?? 100, resetsAt: end, capturedAt: now,
                                 windowSeconds: end.map { $0 - start } ?? seconds)
             w.isEstimate = true
             return w
@@ -195,7 +195,7 @@ extension ProcessScanner {
         // rolling（及缺订阅日的 subscription_day）
         let inWindow = sorted.filter { $0.t >= now - seconds }
         let used = inWindow.reduce(0) { $0 + $1.w }
-        var w = QuotaWindow(usedPct: min(100, Int((used / Double(limit) * 100).rounded())), resetsAt: inWindow.first.map { $0.t + seconds },
+        var w = QuotaWindow(usedPct: Fmt.pct(used / Double(limit) * 100) ?? 100, resetsAt: inWindow.first.map { $0.t + seconds },
                             capturedAt: now, windowSeconds: seconds)
         w.isRolling = true
         w.isEstimate = true
@@ -332,8 +332,8 @@ extension ProcessScanner {
 
         var best: (usedPct: Int, resetsAt: TimeInterval?, label: String)? = nil
         for (family, f) in fams {
-            guard let limit = f.limit, limit > 0, let remaining = f.remaining else { continue }
-            let used = Int(((limit - remaining) / limit * 100).rounded())
+            guard let limit = f.limit, limit > 0, let remaining = f.remaining,
+                  let used = Fmt.pct((limit - remaining) / limit * 100) else { continue }
             let reset = f.reset.flatMap { parseResetValue($0, now: now) }
             // 族名里去掉噪声词，剩下 requests/tokens 这类才有信息量
             let name = family.split(separator: "-").filter { !["x", "anthropic", "ratelimit", "rate", "openai"].contains($0) }

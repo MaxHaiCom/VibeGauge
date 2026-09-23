@@ -105,8 +105,8 @@ public final class ProcessScanner {
     func parseISO(_ s: String?) -> TimeInterval? { Fmt.parseISODate(s) }
 
     func clampPct(_ n: NSNumber?) -> Int? {
-        guard let n = n else { return nil }
-        return max(0, min(100, Int(round(n.doubleValue))))
+        guard let n = n, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
+        return Fmt.pct(n.doubleValue)
     }
 
     // MARK: 全量扫描（8s 定时器）

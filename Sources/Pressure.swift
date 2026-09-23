@@ -49,7 +49,7 @@ public extension ScanReport {
             var detail = L("已用 \(pct)%", "\(pct)% used")
             if let r = w.resetText() { detail += " · " + r }
             // 去重键按周期分；滚动窗口的「下一笔释放」每来一笔请求都变，按它分键会每次扫描都重新提醒
-            let stamp = w.isRolling ? "rolling" : (w.resetsAt.map { String(Int($0)) } ?? "na")
+            let stamp = w.isRolling ? "rolling" : (w.resetsAt.flatMap { $0.isFinite && abs($0) < 1e15 ? String(Int($0)) : nil } ?? "na")
             out.append(PressureSignal(key: "quota:\(keyID ?? platform):\(keyPool ?? pool)@\(stamp)",
                                       short: "\(platform) \(pool)", pct: pct, detail: detail, kind: .quota))
         }

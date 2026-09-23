@@ -110,6 +110,29 @@ extension ProcessScanner {
         let n = proc_pidpath(Int32(pid), &buf, UInt32(buf.count))
         return n > 0 ? String(cString: buf) : nil
     }
+    /// 本机这个 TCP 端口是不是当前用户自己的进程在监听（只翻自己名下进程的 socket；别的账号占了端口 → false）。
+    /// 给本机服务发凭据前用：同账号的进程本来就读得到凭据文件，账号边界才是要守的线
+    static func portOwnedBySelf(_ port: Int) -> Bool {
+        let uid = getuid()
+        let bytes = proc_listpids(UInt32(PROC_UID_ONLY), uid, nil, 0)
+        guard bytes > 0 else { return false }
+        var pids = [pid_t](repeating: 0, count: Int(bytes) / MemoryLayout<pid_t>.size + 32)
+        let got = proc_listpids(UInt32(PROC_UID_ONLY), uid, &pids, Int32(pids.count * MemoryLayout<pid_t>.size))
+        for pid in pids.prefix(Int(got) / MemoryLayout<pid_t>.size) where pid > 0 {
+            let fdBytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+            guard fdBytes > 0 else { continue }
+            var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(fdBytes) / MemoryLayout<proc_fdinfo>.stride)
+            let used = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, fdBytes)
+            for fd in fds.prefix(Int(max(0, used)) / MemoryLayout<proc_fdinfo>.stride) where fd.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+                var si = socket_fdinfo()
+                let r = proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, &si, Int32(MemoryLayout<socket_fdinfo>.size))
+                guard r == Int32(MemoryLayout<socket_fdinfo>.size), si.psi.soi_kind == Int32(SOCKINFO_TCP) else { continue }
+                let tcp = si.psi.soi_proto.pri_tcp
+                if tcp.tcpsi_state == TSI_S_LISTEN, Int(UInt16(bigEndian: UInt16(truncatingIfNeeded: tcp.tcpsi_ini.insi_lport))) == port { return true }
+            }
+        }
+        return false
+    }
     static func isBundleExecutable(_ path: String, bundle: String) -> Bool { path.lowercased().contains("/" + bundle) }
 
     /// `python -m mlx_lm.server …` 或装好的 `mlx_lm.server` 命令；shell 包装器里提到它不算

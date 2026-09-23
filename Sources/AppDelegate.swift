@@ -641,21 +641,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - 等你处理的会话提醒：等批准超过 1 分钟，每次等待只提醒一次
-    private var pendingNotified = Set<String>()
     static let pendingNotifyAfter: TimeInterval = 60
 
+    /// 已提醒过的等待（会话@起点 → 提醒时刻）存盘：重启、一次读不到文件都不会重报；24 小时后自然清掉
     private func evaluatePending(_ report: ScanReport) {
         let now = Date().timeIntervalSince1970
-        let live = Set(report.pending.map { "\($0.id)@\(Int($0.since))" })
-        pendingNotified = pendingNotified.filter { live.contains($0) }
+        let key = "vg.pendingNotified"
+        var notified = (UserDefaults.standard.dictionary(forKey: key) as? [String: Double] ?? [:]).filter { now - $0.value < 86400 }
         for p in report.pending where p.kind == .permission && now - p.since >= Self.pendingNotifyAfter {
-            let key = "\(p.id)@\(Int(p.since))"
-            guard pendingNotified.insert(key).inserted else { continue }
+            let id = "\(p.id)@\(Int(p.since))"
+            guard notified[id] == nil else { continue }
+            notified[id] = now
             let dir = (p.cwd as NSString).lastPathComponent
-            sendNotification(title: L("⏸ 会话在等你批准", "⏸ A session is waiting for approval"),
-                             body: L("\(dir.isEmpty ? "Claude Code" : dir)：\(p.tool.isEmpty ? "工具调用" : p.tool) 已等 \(Int((now - p.since) / 60)) 分钟",
-                                     "\(dir.isEmpty ? "Claude Code" : dir): \(p.tool.isEmpty ? "a tool call" : p.tool) waiting for \(Int((now - p.since) / 60)) min"))
+            // 批准本身没有 Hook 事件：能确定的只有「请求过批准、还没结果」，文案不说死「在等你」
+            sendNotification(title: L("⏸ 会话可能在等你批准", "⏸ A session may be waiting for approval"),
+                             body: L("\(dir.isEmpty ? "Claude Code" : dir)：\(p.tool.isEmpty ? "工具调用" : p.tool) 请求批准已 \(Int((now - p.since) / 60)) 分钟，还没有结果",
+                                     "\(dir.isEmpty ? "Claude Code" : dir): \(p.tool.isEmpty ? "a tool call" : p.tool) asked for approval \(Int((now - p.since) / 60)) min ago, no result yet"))
         }
+        UserDefaults.standard.set(notified, forKey: key)
     }
 
     func setQuotaBridge(_ raw: String, on: Bool) {

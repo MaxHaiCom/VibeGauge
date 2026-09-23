@@ -394,8 +394,9 @@ extension ProcessScanner {
         ports += [58627, 58628, 58629]
         var seen = Set<Int>()
         for port in ports where (1024...65535).contains(port) && seen.insert(port).inserted {
-            // token 能访问 kimi web 的全部接口：先用免鉴权的 healthz 确认这个端口上真是 kimi web（它的响应信封带 request_id），再发 token
-            guard let health = probeLocalJSON("http://127.0.0.1:\(port)/api/v1/healthz") as? [String: Any], health["request_id"] != nil,
+            // token 能访问 kimi web 的全部接口：端口得是自己账号的进程在监听（别的账号抢占端口冒充就拿不到 token），
+            // 再用免鉴权的 healthz 确认是 kimi web（响应信封带 request_id），才发 token
+            guard Self.portOwnedBySelf(port), let health = probeLocalJSON("http://127.0.0.1:\(port)/api/v1/healthz") as? [String: Any], health["request_id"] != nil,
                   let json = probeLocalJSON("http://127.0.0.1:\(port)/api/v1/oauth/usage", headers: ["Authorization": "Bearer \(token)"]) else { continue }
             let r = Self.parseKimiUsage(json, capturedAt: Date().timeIntervalSince1970)
             return (r.fiveHour, r.week, r.month, "Kimi Code", r.error ?? "", r.extra)
@@ -407,8 +408,8 @@ extension ProcessScanner {
     /// 或 data.kind == "error"。usages 按实际下发的条目渲染（新会员没有 limit7d）。
     static func parseKimiUsage(_ json: Any, capturedAt: TimeInterval)
         -> (fiveHour: QuotaWindow?, week: QuotaWindow?, month: QuotaWindow?, error: String?, extra: String) {
-        guard let data = (json as? [String: Any])?["data"] as? [String: Any] else { return (nil, nil, nil, L("响应格式无法识别", "Unrecognized response"), "") }
-        if data["kind"] as? String == "error" {
+        guard let env = json as? [String: Any], let data = env["data"] as? [String: Any] else { return (nil, nil, nil, L("响应格式无法识别", "Unrecognized response"), "") }
+        if data["kind"] as? String != "ok" || ((env["code"] as? NSNumber)?.intValue ?? 0) != 0 {
             return (nil, nil, nil, L("Kimi 账号服务报错：", "Kimi account service error: ") + String((data["message"] as? String ?? "").prefix(80)), "")
         }
         let quota = data["quota"] as? [String: Any] ?? [:]
@@ -419,8 +420,8 @@ extension ProcessScanner {
             for e in a { if let k = (e["name"] ?? e["window"]) as? String { usages[k] = e } }
         }
         func win(_ key: String, _ seconds: Double) -> QuotaWindow? {
-            guard let e = usages[key], let r = (e["usedRatio"] as? NSNumber)?.doubleValue, r.isFinite else { return nil }
-            return QuotaWindow(usedPct: max(0, min(100, Int((r * 100).rounded()))), resetsAt: Fmt.parseISODate(e["resetAt"] as? String),
+            guard let e = usages[key], let r = (e["usedRatio"] as? NSNumber)?.doubleValue, let pct = Fmt.pct(max(-1, min(2, r)) * 100) else { return nil }
+            return QuotaWindow(usedPct: pct, resetsAt: Fmt.parseISODate(e["resetAt"] as? String),
                                capturedAt: capturedAt, windowSeconds: seconds)
         }
         var extra = ""
@@ -436,9 +437,10 @@ extension ProcessScanner {
         func win(_ poolName: String, _ key: String) -> QuotaWindow? {
             files.compactMap { json -> QuotaWindow? in
                 guard let pools = json["pools"] as? [String: Any], let p = pools[poolName] as? [String: Any],
-                      let w = p[key] as? [String: Any], let rf = (w["remaining_fraction"] as? NSNumber)?.doubleValue else { return nil }
+                      let w = p[key] as? [String: Any], let rf = (w["remaining_fraction"] as? NSNumber)?.doubleValue,
+                      let pct = Fmt.pct((1.0 - rf) * 100.0) else { return nil }
                 return QuotaWindow(
-                    usedPct: max(0, min(100, Int(round((1.0 - rf) * 100.0)))),
+                    usedPct: pct,
                     resetsAt: (w["reset_at"] as? NSNumber)?.doubleValue,
                     capturedAt: (w["recorded_at"] as? NSNumber)?.doubleValue ?? (json["updated_at"] as? NSNumber)?.doubleValue,
                     windowSeconds: key == "5h" ? 5 * 3600 : 7 * 86400

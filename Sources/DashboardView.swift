@@ -1447,7 +1447,7 @@ public struct DashboardView: View {
                 Text(L("近 2 小时活跃 \(sessions.count) 个", "\(sessions.count) active in 2h")).font(.system(size: 9)).foregroundColor(.secondary)
             }
             ForEach(sessions.prefix(6)) { s in
-                let pct = s.usedPct.map { Int($0.rounded()) }
+                let pct = Fmt.pct(s.usedPct)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 4) {
                         Text((s.cwd as NSString).lastPathComponent.isEmpty ? "~" : (s.cwd as NSString).lastPathComponent)

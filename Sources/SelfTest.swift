@@ -186,19 +186,55 @@ enum SelfTest {
             let err = ProcessScanner.parseKimiUsage(["code": 0, "data": ["kind": "error", "message": "upstream 502", "status": 502]], capturedAt: 1)
             precondition(err.fiveHour == nil && err.error?.contains("upstream 502") == true)
             precondition(ProcessScanner.parseKimiUsage(["unexpected": true], capturedAt: 1).error != nil)
+            // 大数不能让转换崩；非 0 的 code 当错误
+            let huge = ProcessScanner.parseKimiUsage(["code": 0, "data": ["kind": "ok", "quota": ["usages": ["limit5h": ["usedRatio": 1e308]]]]], capturedAt: 1)
+            precondition(huge.fiveHour?.usedPct == 100)
+            precondition(ProcessScanner.parseKimiUsage(["code": 401, "data": ["kind": "ok", "quota": [:]]], capturedAt: 1).error != nil)
+            precondition(Fmt.pct(1e308) == 100 && Fmt.pct(-1e308) == 0 && Fmt.pct(.nan) == nil && Fmt.pct(.infinity) == nil && Fmt.pct(42.4) == 42)
+            precondition(Fmt.countdown(to: 1e308, now: 0) != nil && Fmt.countdown(to: .nan) == nil)
         }
-        // 待处理会话：刚记下的等权限要等 8 秒（可能被别的 Hook 自动处理），有 permission_prompt 确认就立刻算
+        // Codex 上下文水位：压缩后旧水位作废；只来新窗口不来用量 → 未知，不拿旧用量除新窗口
+        do {
+            func line(_ j: [String: Any]) -> Data { try! JSONSerialization.data(withJSONObject: j) }
+            func tc(_ info: Any) -> Data { line(["type": "event_msg", "timestamp": "2026-09-23T01:00:00Z", "payload": ["type": "token_count", "info": info]]) }
+            var st = CodexCtxState()
+            ProcessScanner.consumeCodexContextLine(tc(["model_context_window": 10000, "last_token_usage": ["total_tokens": 4000]]), into: &st)
+            precondition(st.used == 4000 && st.window == 10000)
+            ProcessScanner.consumeCodexContextLine(tc(["model_context_window": 1000, "last_token_usage": NSNull()]), into: &st)
+            precondition(st.used == nil && st.window == 1000, "换窗口没给用量：\(st)")
+            ProcessScanner.consumeCodexContextLine(tc(["model_context_window": 1000, "last_token_usage": ["total_tokens": 500]]), into: &st)
+            ProcessScanner.consumeCodexContextLine(line(["type": "compacted", "timestamp": "2026-09-23T01:05:00Z", "payload": [:]]), into: &st)
+            precondition(st.used == nil && st.compactions.count == 1)
+            // 文件被原样长度重写：已读末尾对不上 → 从头重读，不留旧水位
+            let f = FileManager.default.temporaryDirectory.appendingPathComponent("vg-ctx-\(UUID().uuidString).jsonl")
+            defer { try? FileManager.default.removeItem(at: f) }
+            func put(_ n: Int) { try! (String(data: tc(["model_context_window": 1000, "last_token_usage": ["total_tokens": n]]), encoding: .utf8)! + "\n").write(to: f, atomically: true, encoding: .utf8) }
+            put(900)
+            let a1 = ProcessScanner.refreshCodexCtx(path: f.path, from: CodexCtxState())
+            put(100)
+            let a2 = ProcessScanner.refreshCodexCtx(path: f.path, from: a1)
+            precondition(a1.used == 900 && a2.used == 100, "等长重写：\(a1.used as Any) → \(a2.used as Any)")
+        }
+        // 待处理会话：只显示确认过的（permission_prompt / 等输入）；Hook 之后日志又动过 = 会话已往下走
         do {
             let t: TimeInterval = 1_790_000_000
-            let json: [String: Any] = ["sessions": [
-                "fresh": ["state": "permission_pending", "since": t - 3, "tool": "Bash", "cwd": "/Users/x/a"],
-                "held": ["state": "permission_pending", "since": t - 30, "tool": "Edit", "cwd": "/Users/x/b"],
-                "confirmed": ["state": "permission", "since": t - 2, "tool": "Bash"],
-                "idle": ["state": "input", "since": t - 90],
-                "odd": ["state": "working", "since": t - 5]]]
-            let p = ProcessScanner.parsePending(json, now: t)
-            precondition(Set(p.map(\.id)) == ["held", "confirmed", "idle"], "待处理：\(p.map(\.id))")
-            precondition(p.first { $0.id == "idle" }?.kind == .input && p.first { $0.id == "held" }?.tool == "Edit")
+            let t30: TimeInterval = t - 30, t40: TimeInterval = t - 40, t5: TimeInterval = t - 5, t90: TimeInterval = t - 90
+            let t100: TimeInterval = t - 100, t13h: TimeInterval = t - 13 * 3600, t2: TimeInterval = t - 2
+            let confirmedCalls: [String: Any] = ["|T2": ["state": "permission", "since": t40, "tool": "Edit"] as [String: Any],
+                                                 "A|T3": ["state": "permission", "since": t5, "tool": "Bash"] as [String: Any]]
+            var rows: [String: Any] = [:]
+            rows["unconfirmed"] = ["at": t30, "calls": ["|T1": ["state": "pending", "since": t30, "tool": "Bash"] as [String: Any]]] as [String: Any]
+            rows["confirmed"] = ["at": t2, "cwd": "/Users/x/b", "calls": confirmedCalls] as [String: Any]
+            rows["idle"] = ["at": t90, "input": t90, "calls": [String: Any]()] as [String: Any]
+            rows["moved-on"] = ["at": t100, "transcript_path": "/x/moved.jsonl",
+                                "calls": ["|T4": ["state": "permission", "since": t100] as [String: Any]]] as [String: Any]
+            rows["old"] = ["at": t13h, "input": t13h] as [String: Any]
+            rows["bad"] = ["at": "yesterday", "input": t] as [String: Any]
+            let json: [String: Any] = ["sessions": rows]
+            let p = ProcessScanner.parsePending(json, now: t) { $0 == "/x/moved.jsonl" ? t - 10 : nil }
+            precondition(Set(p.map(\.id)) == ["confirmed", "idle"], "待处理：\(p.map(\.id))")
+            precondition(p.first { $0.id == "confirmed" }.map { $0.tool == "Edit" && $0.since == t - 40 && $0.kind == .permission } == true)
+            precondition(p.first { $0.id == "idle" }?.kind == .input)
             precondition(ProcessScanner.parsePending(nil, now: t).isEmpty)
         }
         precondition(ProxyManager.validPort(0) == 18790 && ProxyManager.validPort(80) == 18790 && ProxyManager.validPort(18791) == 18791 && ProxyManager.validPort(70000) == 18790)

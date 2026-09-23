@@ -226,7 +226,7 @@ final class StatuslineBridge {
               let hooks = json["hooks"] as? [String: Any] else { return false }
         return hooks.values.contains { groups in
             (groups as? [[String: Any]] ?? []).contains { g in
-                (g["hooks"] as? [[String: Any]] ?? []).contains { ($0["command"] as? String).map { $0.contains("vibegauge-statusline.py") && $0.contains("--hook") } ?? false }
+                (g["hooks"] as? [[String: Any]] ?? []).contains { ($0["command"] as? String).map { $0.hasPrefix("/usr/bin/python3 ") && $0.contains("/vibegauge-statusline.py --hook ") } ?? false }
             }
         }
     }

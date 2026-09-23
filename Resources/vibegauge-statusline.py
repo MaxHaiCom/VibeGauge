@@ -144,14 +144,16 @@ def save_claude_session(data: dict, now: float) -> None:
     model, ws = data.get("model"), data.get("workspace")
     row = {"used_pct": num(cw.get("used_percentage")), "window": num(cw.get("context_window_size")),
            "model": (model.get("id") or model.get("display_name")) if isinstance(model, dict) else (model if isinstance(model, str) else None),
-           "cwd": ws.get("current_dir") if isinstance(ws, dict) else data.get("cwd"), "at": now}
+           "cwd": ws.get("current_dir") if isinstance(ws, dict) else data.get("cwd"),
+           "transcript": data.get("transcript_path") if isinstance(data.get("transcript_path"), str) else None, "at": now}
     # 多个会话同时刷新：读-合并-写整段加锁
     with open(os.path.join(private_dir(), ".claude-sessions.lock"), "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         cache = read_json(sessions_path(), {})
         sessions = cache.get("sessions") if isinstance(cache.get("sessions"), dict) else {}
         sessions[sid] = row
-        fresh = {k: v for k, v in sessions.items() if isinstance(v, dict) and (v.get("at") or 0) > now - SESSIONS_KEEP}
+        # 坏条目（at 不是数字）直接丢，别让它挡住后面所有会话的更新
+        fresh = {k: v for k, v in sessions.items() if isinstance(v, dict) and (num(v.get("at")) or 0) > now - SESSIONS_KEEP}
         keep = dict(sorted(fresh.items(), key=lambda kv: kv[1]["at"], reverse=True)[:SESSIONS_MAX])
         write_json(sessions_path(), {"sessions": keep, "updated_at": now})
 
@@ -341,9 +343,12 @@ def uninstall(tool: str) -> str:
 # 只观察，不替你批准：PermissionRequest 的 Hook 往 stdout 写 JSON 就等于代你答复，所以这里永远不输出任何东西。
 # 只记事件类型、时间、会话 ID、工作目录、工具名；不记命令内容和消息正文。
 HOOK_FLAG = "--hook"
-HOOK_EVENTS = ["PermissionRequest", "Notification", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop", "SessionEnd"]
-CLEAR_EVENTS = {"PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "Stop", "SessionEnd"}
+HOOK_EVENTS = ["PermissionRequest", "Notification", "PostToolUse", "PostToolUseFailure", "PermissionDenied",
+               "SubagentStop", "UserPromptSubmit", "Stop", "SessionEnd"]
+CALL_DONE_EVENTS = {"PostToolUse", "PostToolUseFailure", "PermissionDenied"}   # 这一次工具调用有了结果
+SESSION_CLEAR_EVENTS = {"UserPromptSubmit", "Stop", "SessionEnd"}              # 整个会话往下走了
 WAITING_KEEP = 24 * 3600
+DONE_KEEP = 600                                  # 已结束调用的墓碑：迟到的 PermissionRequest 不能把它复活
 
 
 def waiting_path() -> str:
@@ -355,22 +360,35 @@ def hook_command(tool: str) -> str:
 
 
 def is_our_hook(h) -> bool:
-    return isinstance(h, dict) and MARK in str(h.get("command", "")) and HOOK_FLAG in str(h.get("command", ""))
+    """只认本工具装的那条命令（完整参数逐个比对）；用户自己写的、碰巧含这些字样的命令不算"""
+    if not isinstance(h, dict) or not isinstance(h.get("command"), str):
+        return False
+    try:
+        argv = shlex.split(h["command"])
+    except ValueError:
+        return False
+    return len(argv) == 4 and argv[0] == "/usr/bin/python3" and argv[1] == script_path() and argv[2] == HOOK_FLAG
+
+
+def _events_with_our_hook(settings: dict) -> set:
+    hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
+    return {ev for ev, groups in hooks.items() if isinstance(groups, list)
+            for g in groups if isinstance(g, dict) and isinstance(g.get("hooks"), list) and "matcher" not in g
+            for h in g["hooks"] if is_our_hook(h)}
 
 
 def hooks_installed(settings: dict) -> bool:
-    hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
-    return any(is_our_hook(h) for groups in hooks.values() if isinstance(groups, list)
-               for g in groups if isinstance(g, dict) for h in (g.get("hooks") or []))
+    return bool(_events_with_our_hook(settings))
 
 
 def install_hooks(tool: str) -> str:
     path = settings_path(tool)
     bpath = path + ".vibegauge-hooks-backup"
     def change(settings, raw):
-        if hooks_installed(settings):
+        missing = [ev for ev in HOOK_EVENTS if ev not in _events_with_our_hook(settings)]   # 逐事件补齐，缺哪个补哪个
+        if not missing:
             return None, "already"
-        if raw is not None:                      # 同状态栏：备份 0600，不跟随软链接
+        if raw is not None and not hooks_installed(settings):   # 同状态栏：备份 0600，不跟随软链接；只备份装之前的原样
             if os.path.lexists(bpath):
                 os.unlink(bpath)
             fd = os.open(bpath, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -378,7 +396,7 @@ def install_hooks(tool: str) -> str:
                 f.write(raw)
         private_dir()
         hooks = dict(settings.get("hooks")) if isinstance(settings.get("hooks"), dict) else {}
-        for ev in HOOK_EVENTS:
+        for ev in missing:
             groups = list(hooks.get(ev)) if isinstance(hooks.get(ev), list) else []
             groups.append({"hooks": [{"type": "command", "command": hook_command(tool), "timeout": 5}]})
             hooks[ev] = groups
@@ -396,17 +414,16 @@ def uninstall_hooks(tool: str) -> str:
             if not isinstance(groups, list):
                 hooks[ev] = groups
                 continue
-            kept = []
+            kept, removed = [], False
             for g in groups:
                 if isinstance(g, dict) and isinstance(g.get("hooks"), list):
                     rest = [h for h in g["hooks"] if not is_our_hook(h)]
-                    if rest:
-                        kept.append(dict(g, hooks=rest))
-                    elif not g["hooks"]:
-                        kept.append(g)
+                    removed = removed or len(rest) != len(g["hooks"])
+                    if rest or not g["hooks"]:
+                        kept.append(dict(g, hooks=rest) if rest else g)
                 else:
                     kept.append(g)
-            if kept:
+            if kept or not removed:              # 用户原本就有的空数组原样留着；只删因为拿掉我们的条目才空掉的事件
                 hooks[ev] = kept
         new = dict(settings)
         if hooks:
@@ -417,41 +434,75 @@ def uninstall_hooks(tool: str) -> str:
     return edit_settings(path, change)
 
 
+def _num(v):
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
 def record_hook(data, now: float) -> None:
+    """每个会话：calls = 按「子代理|工具调用 ID」分开的待批准调用（pending → 收到 Claude 自己的 permission_prompt 通知后 permission），
+    input = 在等你输入。只有确认过的才会被界面显示。"""
     if not isinstance(data, dict):
         return
     sid, ev = data.get("session_id"), data.get("hook_event_name")
     if not isinstance(sid, str) or not sid or not isinstance(ev, str):
         return
-    state = None
-    if ev == "PermissionRequest":
-        state = "permission_pending"             # 还可能被别的 Hook 自动处理掉：界面要等一会儿或等 permission_prompt 确认
-    elif ev == "Notification":
-        state = {"permission_prompt": "permission", "idle_prompt": "input",
-                 "elicitation_dialog": "input", "elicitation_url_dialog": "input"}.get(data.get("notification_type"))
-        if state is None:
-            return
-    elif ev not in CLEAR_EVENTS:
+    ntype = data.get("notification_type")
+    input_note = ev == "Notification" and ntype in ("idle_prompt", "elicitation_dialog", "elicitation_url_dialog")
+    if ev not in ("PermissionRequest", "SubagentStop") and ev not in CALL_DONE_EVENTS and ev not in SESSION_CLEAR_EVENTS \
+            and not (ev == "Notification" and (ntype == "permission_prompt" or input_note)):
         return
+    agent = data.get("agent_id") if isinstance(data.get("agent_id"), str) else ""
+    use_id = data.get("tool_use_id") if isinstance(data.get("tool_use_id"), str) else ""
+    key = agent + "|" + use_id
     path = waiting_path()
-    if state is None:                             # 清除事件每次工具调用都来：没记着这个会话就不动文件
-        cur = read_json(path, {}).get("sessions")
-        if not isinstance(cur, dict) or sid not in cur:
-            return
+    creates = ev == "PermissionRequest" or input_note
+    # 存在性检查也在锁里做：锁外先读会和正在写的通知撞车，丢掉这次清除
     with open(os.path.join(private_dir(), ".claude-waiting.lock"), "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        if not creates and not os.path.exists(path):
+            return
         cache = read_json(path, {})
         sessions = cache.get("sessions") if isinstance(cache.get("sessions"), dict) else {}
-        if state is None:
+        sess = sessions.get(sid) if isinstance(sessions.get(sid), dict) else None
+        if sess is None and not creates:
+            return                               # 清除事件每次工具调用都来：没记着这个会话就不写文件
+        sess = dict(sess or {})
+        calls = {k: v for k, v in (sess.get("calls") or {}).items() if isinstance(v, dict) and _num(v.get("since")) is not None}
+        done = {k: t for k, t in (sess.get("done") or {}).items() if _num(t) is not None and t > now - DONE_KEEP}
+        if ev in SESSION_CLEAR_EVENTS:
             sessions.pop(sid, None)
+            sess = None
         else:
-            old = sessions.get(sid) if isinstance(sessions.get(sid), dict) else {}
-            waiting_same = old.get("state") in ("permission_pending", "permission") and state == "permission"
-            tool_name = data.get("tool_name") if isinstance(data.get("tool_name"), str) else old.get("tool")
-            sessions[sid] = {"state": state, "since": old.get("since", now) if waiting_same else now,
-                             "tool": tool_name if state != "input" else None,
-                             "cwd": data.get("cwd") if isinstance(data.get("cwd"), str) else old.get("cwd"), "at": now}
-        sessions = {k: v for k, v in sessions.items() if isinstance(v, dict) and (v.get("at") or 0) > now - WAITING_KEEP}
+            if ev == "PermissionRequest":
+                if use_id and key in done:
+                    return                       # 这次调用已经有结果了，迟到的请求不算
+                old = calls.get(key, {})
+                calls[key] = {"state": old.get("state", "pending"), "since": old.get("since", now),
+                              "tool": data.get("tool_name") if isinstance(data.get("tool_name"), str) else None}
+            elif ev == "Notification" and ntype == "permission_prompt":
+                for c in calls.values():         # 通知不带调用 ID：之前发起的待批准调用都算确认
+                    c["state"] = "permission"
+            elif input_note:
+                sess["input"] = sess.get("input") if _num(sess.get("input")) is not None else now
+            elif ev == "SubagentStop":
+                calls = {k: v for k, v in calls.items() if not (agent and k.startswith(agent + "|"))}
+            else:                                # 这次调用有了结果：只清对应那一个；不带调用 ID 时清这个子代理的全部
+                if use_id:
+                    calls.pop(key, None)
+                    done[key] = now
+                else:
+                    calls = {k: v for k, v in calls.items() if not k.startswith(agent + "|")}
+                if not agent:
+                    sess.pop("input", None)
+            sess.update(calls=calls, done=done, at=now)
+            for k in ("cwd", "transcript_path"):
+                if isinstance(data.get(k), str):
+                    sess[k] = data[k]
+            if calls or done or "input" in sess:  # 墓碑也要留着（十分钟后自然过期）
+                sessions[sid] = sess
+            else:
+                sessions.pop(sid, None)
+        sessions = {k: v for k, v in sessions.items() if isinstance(v, dict) and (_num(v.get("at")) or 0) > now - WAITING_KEEP}
         write_json(path, {"sessions": sessions, "updated_at": now})
 
 
@@ -510,14 +561,23 @@ def selftest() -> None:
         assert os.stat(sessions_path()).st_mode & 0o777 == 0o600
         # 24 小时前的会话清掉
         stale = read_json(sessions_path(), {}); stale["sessions"]["old"] = {"used_pct": 1, "at": time.time() - 2 * 86400}
+        stale["sessions"]["bad"] = {"at": "yesterday"}
         write_json(sessions_path(), stale)
         run_as_statusline("claude", {"session_id": "s-a", "context_window": {"used_percentage": 80}})
-        assert "old" not in read_json(sessions_path(), {})["sessions"]
+        assert "old" not in read_json(sessions_path(), {})["sessions"] and "bad" not in read_json(sessions_path(), {})["sessions"]
         # 待处理会话 Hook：合并进已有 hooks，不动别人的；卸载只删自己的
         s0 = load_settings(cpath)
         s0["hooks"] = {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo user-hook"}]}],
                        "Stop": [{"hooks": [{"type": "command", "command": "echo user-stop"}]}]}
         write_json(cpath, s0, indent=2)
+        s0["hooks"]["Notification"] = [{"hooks": [{"type": "command", "command": "echo vibegauge-statusline.py --hook"}]}]
+        s0["hooks"]["PostToolBatch"] = []
+        write_json(cpath, s0, indent=2)
+        assert not hooks_installed(s0), "用户自己的命令碰巧含这些字样，不算我们的"
+        assert install_hooks("claude") == "installed" and install_hooks("claude") == "already"
+        # 只剩一个事件的 Hook（被用户删了一部分）：再装要补齐，不是 already
+        part = load_settings(cpath); part["hooks"]["Stop"] = [g for g in part["hooks"]["Stop"] if not any(is_our_hook(x) for x in g["hooks"])]
+        write_json(cpath, part, indent=2)
         assert install_hooks("claude") == "installed" and install_hooks("claude") == "already"
         h = load_settings(cpath)["hooks"]
         assert set(HOOK_EVENTS) <= set(h) and h["PreToolUse"][0]["hooks"][0]["command"] == "echo user-hook", h
@@ -533,27 +593,49 @@ def selftest() -> None:
         hook({"session_id": "w1", "hook_event_name": "PostToolUse", "tool_name": "Bash"})
         assert not os.path.exists(waiting_path()), "没记着的会话，清除事件不碰文件"
         hook({"session_id": "w1", "hook_event_name": "PermissionRequest", "tool_name": "Bash", "cwd": "/Users/x/p",
-              "tool_input": {"command": "rm -rf secret-dir"}})
+              "tool_use_id": "T1", "transcript_path": "/Users/x/.claude/projects/p/w1.jsonl", "tool_input": {"command": "rm -rf secret-dir"}})
         w = waiting()["w1"]
-        assert w["state"] == "permission_pending" and w["tool"] == "Bash" and w["cwd"] == "/Users/x/p"
+        assert w["calls"]["|T1"]["state"] == "pending" and w["calls"]["|T1"]["tool"] == "Bash" and w["cwd"] == "/Users/x/p"
+        assert w["transcript_path"].endswith("w1.jsonl")
         assert "secret-dir" not in open(waiting_path(), encoding="utf-8").read(), "不记命令内容"
-        since = w["since"]
+        since = w["calls"]["|T1"]["since"]
+        # 子代理 A 也在等批准；B 的工具结果只清 B 自己的，不能把 A 清掉
+        hook({"session_id": "w1", "hook_event_name": "PermissionRequest", "tool_name": "Edit", "agent_id": "A", "tool_use_id": "T2"})
+        hook({"session_id": "w1", "hook_event_name": "PostToolUse", "agent_id": "B", "tool_use_id": "T3"})
+        assert set(waiting()["w1"]["calls"]) == {"|T1", "A|T2"}, waiting()
         hook({"session_id": "w1", "hook_event_name": "Notification", "notification_type": "permission_prompt", "message": "私密正文"})
-        assert waiting()["w1"]["state"] == "permission" and waiting()["w1"]["since"] == since, "确认后等待起点不变"
+        c = waiting()["w1"]["calls"]
+        assert c["|T1"]["state"] == "permission" and c["|T1"]["since"] == since, "确认后等待起点不变"
         assert "私密正文" not in open(waiting_path(), encoding="utf-8").read()
-        hook({"session_id": "w1", "hook_event_name": "PostToolUse", "tool_name": "Bash"})
-        assert "w1" not in waiting()
+        hook({"session_id": "w1", "hook_event_name": "SubagentStop", "agent_id": "A"})
+        assert set(waiting()["w1"]["calls"]) == {"|T1"}
+        hook({"session_id": "w1", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "T1"})
+        assert not waiting()["w1"]["calls"]
+        hook({"session_id": "w1", "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_use_id": "T1"})
+        assert not waiting()["w1"]["calls"], "已有结果的调用，迟到的 PermissionRequest 不能复活"
+        hook({"session_id": "w3", "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_use_id": "T9"})
+        hook({"session_id": "w3", "hook_event_name": "PermissionDenied", "tool_use_id": "T9"})
+        assert not waiting()["w3"]["calls"], "拒绝也算这次调用结束"
         hook({"session_id": "w2", "hook_event_name": "Notification", "notification_type": "idle_prompt"})
         hook({"session_id": "w2", "hook_event_name": "Notification", "notification_type": "auth_success"})
-        assert waiting()["w2"]["state"] == "input" and waiting()["w2"]["tool"] is None
+        assert _num(waiting()["w2"]["input"]) and not waiting()["w2"]["calls"]
         hook({"session_id": "w2", "hook_event_name": "UserPromptSubmit", "prompt": "私密"})
         assert "w2" not in waiting()
+        # 锁：并发的 PermissionRequest / 清除事件不丢更新
+        procs = [subprocess.Popen([sys.executable, script_path(), HOOK_FLAG, "claude"], stdin=subprocess.PIPE, env=dict(os.environ, HOME=tmp))
+                 for _ in range(12)]
+        for i, pr in enumerate(procs):
+            pr.communicate(json.dumps({"session_id": "c", "hook_event_name": "PermissionRequest", "tool_use_id": "P%d" % i}).encode())
+        assert len(waiting()["c"]["calls"]) == 12
+        hook({"session_id": "c", "hook_event_name": "Stop"})
         hook("not a dict")                                   # 坏输入也零输出、不报错
         assert os.stat(waiting_path()).st_mode & 0o777 == 0o600
         assert uninstall_hooks("claude") == "uninstalled" and uninstall_hooks("claude") == "not-installed"
         h = load_settings(cpath)["hooks"]
         assert h == {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo user-hook"}]}],
-                     "Stop": [{"hooks": [{"type": "command", "command": "echo user-stop"}]}]}, h
+                     "Stop": [{"hooks": [{"type": "command", "command": "echo user-stop"}]}],
+                     "Notification": [{"hooks": [{"type": "command", "command": "echo vibegauge-statusline.py --hook"}]}],
+                     "PostToolBatch": []}, h
         s0 = load_settings(cpath); s0.pop("hooks"); write_json(cpath, s0, indent=2)
         # 还原：恢复成原来的 statusLine，键顺序不变
         assert uninstall("claude") == "uninstalled"
