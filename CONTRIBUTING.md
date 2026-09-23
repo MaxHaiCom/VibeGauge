@@ -15,10 +15,24 @@ open VibeGauge.app
 
 CI runs the same checks on every push and PR.
 
+## Code map
+
+| Area | Files |
+|---|---|
+| Scan loop and caches | `ProcessScanner.swift` (the class and all its stored state), `Platforms.swift` (one card per AI tool) |
+| Processes | `ProcessTable.swift` (read-only: sessions, services, redaction) · `Reaper.swift` (**destructive**: kill orphans, clear npx cache) |
+| Data sources | `QuotaSources.swift` (Claude / Codex / Grok / Gemini quotas and tiers) · `TokenUsage.swift` (session logs, today's usage) · `APIUsage.swift` (accounting proxy files, prices, rate-limit headers) · `UsageHistory.swift` (daily history cache) · `DiskInventory.swift` |
+| Forecast | `QuotaForecast.swift` (`QuotaWindow`, `Burn`, `ActivityProfile`, quota sampling) · `Pressure.swift` (menu-bar icon signal) |
+| Shared | `Models.swift`, `Formatting.swift` (`Fmt`), `Localization.swift` (`L()`) |
+| Network | `NetworkScanner.swift`, `NetworkTabView.swift` |
+| UI and app | `DashboardView.swift`, `StatsTabView.swift`, `AppDelegate.swift`, `ProxyManager.swift`, `UpdateChecker.swift`, `main.swift` |
+| Tests | `SelfTest.swift` (`--selftest`), `SelfTestFixtures.swift`, `Diagnostics.swift` (`--diagnose`) |
+| Python helpers | `Resources/vibegauge-proxy.py` (accounting proxy), `Resources/vibegauge-statusline.py` (statusline bridge) |
+
 ## Guidelines
 
 - **No new dependencies** (Swift packages, pip packages, …). Stdlib and system frameworks only.
-- **New source file?** Add it to the file list in `build.sh`.
+- **New source file?** Just drop it in `Sources/`; `build.sh` compiles `Sources/*.swift`.
 - **User-visible text** goes through `L("中文", "English")` so both languages stay in sync. Logs and comments may stay in either language.
 - **UI changes**: regenerate the README screenshots with `tools/screenshots.sh` (renders made-up demo data offscreen; never reads your real usage).
 - **Logic changes** should come with a `precondition` in `--selftest` (see `Sources/SelfTest.swift`; real-format log samples per upstream CLI version live in `Sources/SelfTestFixtures.swift`) that fails if the logic breaks.
