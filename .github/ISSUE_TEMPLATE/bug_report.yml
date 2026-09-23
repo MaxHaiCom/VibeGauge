@@ -27,5 +27,5 @@ body:
     id: logs
     attributes:
       label: Self-Test Output (Optional)
-      description: Run `./VibeGauge.app/Contents/MacOS/VibeGauge --selftest` and paste the output if applicable.
+      description: Run `./VibeGauge.app/Contents/MacOS/VibeGauge --diagnose` and paste the output if applicable.
       render: shell

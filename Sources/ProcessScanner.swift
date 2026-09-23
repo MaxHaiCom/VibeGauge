@@ -1442,7 +1442,7 @@ public final class ProcessScanner {
 
     // MARK: Codex 额度（按 limit_id 分桶：主桶 "codex"，新版 CLI 另报如 codex_bengalfox/Spark；本机 + 远程合并取最新）
 
-    private struct CodexBucket {
+    struct CodexBucket {
         var id: String            // limit_id；旧版 CLI 不带 → 视为 "codex"
         var name: String          // limit_name，如 "GPT-5.3-Codex-Spark"
         var fiveHour: QuotaWindow?
@@ -1452,11 +1452,11 @@ public final class ProcessScanner {
     }
     /// 额度打满：请求被拒时 Codex 写 rate_limits 但百分比全为 null，真信号在 task_complete 的
     /// error.codex_error_info == "usage_limit_exceeded"，重置时刻在 error.message 文案里。
-    private struct CodexLimitHit {
+    struct CodexLimitHit {
         var at: TimeInterval
         var resetsAt: TimeInterval?
     }
-    private struct CodexParse {
+    struct CodexParse {
         var buckets: [String: CodexBucket] = [:]
         var limitHit: CodexLimitHit? = nil
     }
@@ -1492,7 +1492,7 @@ public final class ProcessScanner {
 
     /// 每个 limit_id 取采集时间最新的一条，并抓最新的"额度耗尽"事件。
     /// 不能靠行序：远程输出是多文件拼接、顺序随机；半行/坏行直接跳过。
-    private func parseCodexText(_ text: String, fallbackTime: TimeInterval) -> CodexParse {
+    func parseCodexText(_ text: String, fallbackTime: TimeInterval) -> CodexParse {
         var out = CodexParse()
         for l in text.components(separatedBy: "\n") {
             let hasPct = l.contains("used_percent")

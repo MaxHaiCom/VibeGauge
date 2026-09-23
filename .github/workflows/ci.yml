@@ -29,6 +29,10 @@ jobs:
         ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -AppleLanguages '(zh-Hans)'
         ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -AppleLanguages '(en)'
 
+    - name: Diagnose Smoke Test (real scan paths on an empty machine; no assertions)
+      run: |
+        ./VibeGauge.app/Contents/MacOS/VibeGauge --diagnose -AppleLanguages '(en)'
+
     - name: Self-Test Intel Slice (Rosetta)
       run: |
         lipo -archs VibeGauge.app/Contents/MacOS/VibeGauge | grep -q x86_64

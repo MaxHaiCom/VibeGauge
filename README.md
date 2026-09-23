@@ -121,8 +121,11 @@ open VibeGauge.app
 #### Headless & CLI Flags
 
 ```bash
-# Verify parsing logic and output a single terminal snapshot (no UI launched)
+# Offline deterministic tests: temp dirs + built-in log fixtures, no real logs, no network
 ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest
+
+# Local diagnostic snapshot for bug reports (IPs and command lines masked; no UI launched)
+./VibeGauge.app/Contents/MacOS/VibeGauge --diagnose
 
 # Install / Uninstall the background API accounting proxy daemon
 ./VibeGauge.app/Contents/MacOS/VibeGauge --install-proxy
@@ -160,7 +163,7 @@ The panel has five tabs: **Subscriptions / API / Statistics / Network / System**
 - History is stored in `~/.config/vibegauge/usage-daily.json`. Removing old logs retains their already-cached history; rewriting a file replaces its contribution. Session counts are distinct log files. CLI and API proxy sources can include the same call and are not deduplicated against each other.
 - API-equivalent cost uses only `~/.config/vibegauge/prices.json`. Unpriced models are explicitly excluded; there are no built-in production prices. Token totals include cached input and output; reasoning tokens are part of output.
 
-No prompts or usage logs are uploaded by these features. Network probes necessarily make the outbound requests described above. The optional existing API proxy and remote Codex synchronization retain their own behavior. `--selftest` skips remote SSH, exercises parsing and incremental-cache fixtures, and prints masked network and real historical summaries.
+No prompts or usage logs are uploaded by these features. Network probes necessarily make the outbound requests described above. The optional existing API proxy and remote Codex synchronization retain their own behavior. `--selftest` runs only offline fixtures. `--diagnose` skips remote SSH and prints masked network and real historical summaries.
 
 ---
 

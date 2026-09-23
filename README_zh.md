@@ -117,8 +117,11 @@ open VibeGauge.app
 #### 命令行自测与无头模式
 
 ```bash
-# 校验纯函数逻辑并打印一次全量扫描快照（不启动 UI）
+# 离线确定性测试：临时目录 + 内置日志样本，不读本机真实日志、不联网
 ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest
+
+# 本机诊断快照，报 Bug 时贴这个（IP 与命令行已脱敏，不启动 UI）
+./VibeGauge.app/Contents/MacOS/VibeGauge --diagnose
 
 # 启用/卸载 API 记账代理服务（基于 LaunchAgent）
 ./VibeGauge.app/Contents/MacOS/VibeGauge --install-proxy

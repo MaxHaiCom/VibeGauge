@@ -20,16 +20,7 @@ for ARCH in ${ARCHS}; do
         -framework SwiftUI \
         -framework ServiceManagement \
         -framework UserNotifications \
-        Sources/ProcessScanner.swift \
-        Sources/ProxyManager.swift \
-        Sources/UpdateChecker.swift \
-        Sources/NetworkScanner.swift \
-        Sources/NetworkTabView.swift \
-        Sources/UsageHistory.swift \
-        Sources/StatsTabView.swift \
-        Sources/DashboardView.swift \
-        Sources/AppDelegate.swift \
-        Sources/main.swift \
+        Sources/*.swift \
         -o "${APP_NAME}-${ARCH}"
 done
 lipo -create "${APP_NAME}"-* -output "${APP_NAME}"

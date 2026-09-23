@@ -21,7 +21,7 @@ CI runs the same checks on every push and PR.
 - **New source file?** Add it to the file list in `build.sh`.
 - **User-visible text** goes through `L("中文", "English")` so both languages stay in sync. Logs and comments may stay in either language.
 - **UI changes**: regenerate the README screenshots with `tools/screenshots.sh` (renders made-up demo data offscreen; never reads your real usage).
-- **Logic changes** should come with a `precondition` in `--selftest` (see `Sources/main.swift`) that fails if the logic breaks.
+- **Logic changes** should come with a `precondition` in `--selftest` (see `Sources/SelfTest.swift`; real-format log samples per upstream CLI version live in `Sources/SelfTestFixtures.swift`) that fails if the logic breaks.
 - **No personal data** in code, fixtures, screenshots, or commit messages: no real IPs, hostnames, usernames, paths, keys, or usage numbers. Use `192.0.2.x` / `198.51.100.x` (documentation ranges), `/Users/x`, and `sk-FAKE…`.
 - Keep PRs focused; one change per PR.
 
