@@ -19,9 +19,13 @@ extension ProcessScanner {
     }
     // MARK: Token 遥测（增量解析，requestId 去重）
 
-    func parseAssistantLine(_ line: Substring) -> InteractionRecord? {
-        guard line.contains("\"type\":\"assistant\""), line.contains("\"usage\":"),
-              let data = line.data(using: .utf8),
+    func parseAssistantLine(_ line: Substring) -> InteractionRecord? { parseAssistantLine(Data(line.utf8)) }
+
+    static let assistantMarker = Data("\"type\":\"assistant\"".utf8)
+    static let usageMarker = Data("\"usage\":".utf8)
+    /// 先在字节层筛：绝大多数行是工具输出和正文，不做 JSON 解码
+    func parseAssistantLine(_ data: Data) -> InteractionRecord? {
+        guard data.range(of: Self.usageMarker) != nil, data.range(of: Self.assistantMarker) != nil,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let msg = json["message"] as? [String: Any],
               let usage = msg["usage"] as? [String: Any] else { return nil }
@@ -50,20 +54,15 @@ extension ProcessScanner {
         let head = (try? fh.read(upToCount: 256)) ?? Data()
         if size < state.size || head != state.head { state = FileParseState() }
         state.head = head
-        do { try fh.seek(toOffset: state.parsedOffset) } catch { return state }
-        let data = fh.readDataToEndOfFile()
-
-        if let lastNL = data.lastIndex(of: 0x0A) {
-            let chunk = data[data.startIndex...lastNL]
-            let text = String(decoding: chunk, as: UTF8.self)   // lossy：坏字节只毁一行，不丢整块
-            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-                if var rec = parseAssistantLine(line) {
-                    if rec.timestamp == 0 { rec.timestamp = mtime }
-                    state.turns[rec.id] = rec   // 同 requestId 后写覆盖前写（usage 相同）
-                }
+        var turns = state.turns
+        do {
+            state.parsedOffset = try LineReader.read(fh, from: state.parsedOffset, to: size) { line, _ in
+                guard var rec = parseAssistantLine(line) else { return }
+                if rec.timestamp == 0 { rec.timestamp = mtime }
+                turns[rec.id] = rec   // 同 requestId 后写覆盖前写（usage 相同）
             }
-            state.parsedOffset += UInt64(chunk.count)
-        }
+        } catch { return state }
+        state.turns = turns
         state.mtime = mtime
         state.size = size
         fileStates[path] = state

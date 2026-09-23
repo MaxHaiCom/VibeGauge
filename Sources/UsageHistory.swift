@@ -350,23 +350,10 @@ public final class UsageHistory {
     }
 
     private func readNewLines(_ fh: FileHandle, state: inout FileState, size: UInt64) throws {
-        var remaining = size - state.offset
-        var pending = Data()
-        while remaining > 0 {
-            guard let chunk = try fh.read(upToCount: Int(min(1_048_576, remaining))), !chunk.isEmpty else { break }
-            remaining -= UInt64(chunk.count)
-            pending.append(chunk)
-            guard let lastNL = pending.lastIndex(of: 0x0A) else { continue }
-            let end = pending.index(after: lastNL)
-            let complete = pending[pending.startIndex..<end]
-            var offset = state.offset
-            for line in complete.split(separator: 0x0A, omittingEmptySubsequences: false).dropLast() {
-                autoreleasepool { consume(Data(line), offset: offset, state: &state) }
-                offset += UInt64(line.count + 1)
-            }
-            state.offset = offset
-            pending = Data(pending[end...])
-        }
+        var s = state
+        let end = try LineReader.read(fh, from: state.offset, to: size) { line, offset in consume(line, offset: offset, state: &s) }
+        s.offset = end
+        state = s
     }
 
     private func consume(_ data: Data, offset: UInt64, state: inout FileState) {
