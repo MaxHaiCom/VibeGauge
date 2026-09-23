@@ -72,6 +72,33 @@ public struct TokenStats: Equatable {
 
     /// 今日按项目归因（按上下文 token 降序）
     public var todayByProject: [ProjectUsage] = []
+    /// 今日 Claude Code 请求异常（本地日志里的错误事件，只存类型和时间）
+    public var anomalies = RequestAnomalies()
+}
+
+/// 请求异常：最终失败（用户看到的错误回复）与自动重试分开计，一次故障重试 5 次不算 5 次失败
+public struct RequestAnomalies: Equatable {
+    public enum Kind: String, CaseIterable { case rateLimit, overloaded, server, auth, connection, other }
+    public var failures: [Kind: Int] = [:]
+    public var retries: [Kind: Int] = [:]
+    public var lastAt: TimeInterval? = nil
+    public var isEmpty: Bool { failures.isEmpty && retries.isEmpty }
+
+    public static func label(_ k: Kind) -> String {
+        switch k {
+        case .rateLimit: return L("限流", "rate-limited")
+        case .overloaded: return L("过载", "overloaded")
+        case .server: return L("服务端", "server")
+        case .auth: return L("认证", "auth")
+        case .connection: return L("连接", "connection")
+        case .other: return L("其他", "other")
+        }
+    }
+    /// 「限流 1 · 服务端 3」，按次数从多到少
+    public static func text(_ m: [Kind: Int]) -> String {
+        m.sorted { $0.value == $1.value ? $0.key.rawValue < $1.key.rawValue : $0.value > $1.value }
+            .map { "\(label($0.key)) \($0.value)" }.joined(separator: " · ")
+    }
 }
 
 /// 某个 CLI 今日自己的用量（各家日志能给多少就给多少，给不了的说明原因）

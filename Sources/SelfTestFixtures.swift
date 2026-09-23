@@ -58,6 +58,12 @@ enum SelfTestFixtures {
         let today = ProcessScanner.shared.codexFileUsage(path: root.appendingPathComponent(codexPath).path, startOfToday: 0)
         precondition(today?.requests == 1 && today?.ctx == 26552 && today?.out == 234, "Codex 今日用量：\(String(describing: today))")
 
+        // 请求异常：合成错误回复 = 最终失败（529 过载），system/api_error = 自动重试（连接重置），其余行不算
+        let anomalies = claude_2_1_278.split(separator: "\n").compactMap { ProcessScanner.claudeAnomaly(Data($0.utf8)) }
+        precondition(anomalies.count == 2 && anomalies[0].final && anomalies[0].kind == .overloaded && anomalies[0].id == "fx-a2"
+                     && !anomalies[1].final && anomalies[1].kind == .connection, "请求异常：\(anomalies)")
+        precondition(RequestAnomalies.text([.server: 3, .rateLimit: 1]) == L("服务端 3 · 限流 1", "server 3 · rate-limited 1"))
+
         let quota = ProcessScanner.shared.parseCodexText(codex_0_156, fallbackTime: 0).buckets["codex"]
         precondition(quota?.weekly?.usedPct == 97 && quota?.weekly?.resetsAt == 1790414260 && quota?.fiveHour == nil && quota?.plan == "prolite",
                      "Codex 0.156 额度：只有周窗")

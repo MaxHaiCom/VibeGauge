@@ -33,6 +33,14 @@ extension ProcessScanner {
                 d.rows.append((L("订阅开始", "Subscription started"), L("\(Fmt.dateText(t))（\(Int((Date().timeIntervalSince1970 - t) / 86400)) 天前）", "\(Fmt.dateText(t)) (\(Int((Date().timeIntervalSince1970 - t) / 86400))d ago)")))
             }
         }
+        let a = claudeAnomalies
+        if !a.failures.isEmpty {
+            d.rows.append((L("今日请求失败", "Failed requests today"), RequestAnomalies.text(a.failures)))
+        }
+        if !a.retries.isEmpty {
+            d.rows.append((L("今日自动重试", "Automatic retries today"), RequestAnomalies.text(a.retries)))
+        }
+        if let t = a.lastAt { d.rows.append((L("最近一次异常", "Last error"), Fmt.agoShort(Int(Date().timeIntervalSince1970 - t)))) }
         d.sessions = sessionInfos(c, .claude)
         return d
     }

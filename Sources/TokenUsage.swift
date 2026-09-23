@@ -22,6 +22,34 @@ extension ProcessScanner {
     func parseAssistantLine(_ line: Substring) -> InteractionRecord? { parseAssistantLine(Data(line.utf8)) }
 
     static let assistantMarker = Data("\"type\":\"assistant\"".utf8)
+    static let apiErrorMarkers = [Data("\"isApiErrorMessage\":true".utf8), Data("\"subtype\":\"api_error\"".utf8)]
+
+    /// Claude Code 日志里的错误事件 → (uuid, 时间, 是否最终失败, 类型)。
+    /// 最终失败 = CLI 合成的错误回复（isApiErrorMessage，模型 <synthetic>）；重试 = system/api_error（带 retryAttempt）。
+    static func claudeAnomaly(_ data: Data) -> (id: String, ts: TimeInterval, final: Bool, kind: RequestAnomalies.Kind)? {
+        guard apiErrorMarkers.contains(where: { data.range(of: $0) != nil }),
+              let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = j["uuid"] as? String, let ts = Fmt.parseISODate(j["timestamp"] as? String) else { return nil }
+        if j["isApiErrorMessage"] as? Bool == true {
+            let status = (j["apiErrorStatus"] as? NSNumber)?.intValue ?? 0
+            let err = (j["error"] as? String ?? "").lowercased()
+            let kind: RequestAnomalies.Kind =
+                status == 429 || err.contains("rate") ? .rateLimit :
+                status == 529 || err.contains("overload") ? .overloaded :
+                status == 401 || status == 403 || err.contains("auth") ? .auth :
+                status >= 500 || err.contains("server") ? .server : .other
+            return (id, ts, true, kind)
+        }
+        guard j["type"] as? String == "system", j["subtype"] as? String == "api_error" else { return nil }
+        let e = j["error"] as? [String: Any] ?? [:]
+        let status = (e["status"] as? NSNumber)?.intValue ?? 0
+        let kind: RequestAnomalies.Kind =
+            status == 429 || !(e["rateLimits"] is NSNull || e["rateLimits"] == nil) ? .rateLimit :
+            status == 529 ? .overloaded :
+            (e["connection"] as? [String: Any])?["code"] != nil || e["isNetworkDown"] as? Bool == true ? .connection :
+            status >= 500 ? .server : .other
+        return (id, ts, false, kind)
+    }
     static let usageMarker = Data("\"usage\":".utf8)
     /// 先在字节层筛：绝大多数行是工具输出和正文，不做 JSON 解码
     func parseAssistantLine(_ data: Data) -> InteractionRecord? {
@@ -55,14 +83,19 @@ extension ProcessScanner {
         if size < state.size || head != state.head { state = FileParseState() }
         state.head = head
         var turns = state.turns
+        var anomalies = state.anomalies
         do {
             state.parsedOffset = try LineReader.read(fh, from: state.parsedOffset, to: size) { line, _ in
-                guard var rec = parseAssistantLine(line) else { return }
-                if rec.timestamp == 0 { rec.timestamp = mtime }
-                turns[rec.id] = rec   // 同 requestId 后写覆盖前写（usage 相同）
+                if var rec = parseAssistantLine(line) {
+                    if rec.timestamp == 0 { rec.timestamp = mtime }
+                    turns[rec.id] = rec   // 同 requestId 后写覆盖前写（usage 相同）
+                } else if let a = Self.claudeAnomaly(line) {
+                    anomalies[a.id] = (a.ts, a.final, a.kind)
+                }
             }
         } catch { return state }
         state.turns = turns
+        state.anomalies = anomalies
         state.mtime = mtime
         state.size = size
         fileStates[path] = state
@@ -87,6 +120,7 @@ extension ProcessScanner {
         let horizon = now - 24.0 * 3600.0
         var seen = Set<String>()
         var byId: [String: InteractionRecord] = [:]   // 跨文件再去重（--fork-session 会把历史复制进新文件）
+        var anomalyById: [String: (ts: TimeInterval, final: Bool, kind: RequestAnomalies.Kind)] = [:]   // 同理按 uuid 去重
         var idPath: [String: String] = [:]            // 这轮最终算在哪个文件上 → 用来归因到项目目录
         while let el = en.nextObject() as? String {
             guard el.hasSuffix(".jsonl") else { continue }
@@ -97,11 +131,13 @@ extension ProcessScanner {
             guard mtime > horizon else { continue }
             let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
             seen.insert(path)
-            for (id, rec) in refreshFileState(path: path, mtime: mtime, size: size).turns {
+            let st = refreshFileState(path: path, mtime: mtime, size: size)
+            for (id, rec) in st.turns {
                 if let old = byId[id], old.timestamp >= rec.timestamp { continue }
                 byId[id] = rec
                 idPath[id] = path
             }
+            for (id, a) in st.anomalies { anomalyById[id] = a }
         }
         fileStates = fileStates.filter { seen.contains($0.key) }
         let all = byId.values
@@ -116,6 +152,11 @@ extension ProcessScanner {
             s.todayThinking += Int64(t.thinkingTokens)
         }
         s.recentInteractions = Array(all.sorted { $0.timestamp > $1.timestamp }.prefix(3))
+        for a in anomalyById.values where a.ts >= startOfToday {
+            if a.final { s.anomalies.failures[a.kind, default: 0] += 1 } else { s.anomalies.retries[a.kind, default: 0] += 1 }
+            s.anomalies.lastAt = max(s.anomalies.lastAt ?? 0, a.ts)
+        }
+        claudeAnomalies = s.anomalies
 
         // 按项目归因：Claude 这边用每轮所属文件的 cwd
         var byProject: [String: ProjectUsage] = [:]

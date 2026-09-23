@@ -20,7 +20,10 @@ public final class ProcessScanner {
         var parsedOffset: UInt64 = 0
         var head = Data()          // 文件前 256 字节指纹，识别原地重写 / 替换
         var turns: [String: InteractionRecord] = [:]
+        var anomalies: [String: (ts: TimeInterval, final: Bool, kind: RequestAnomalies.Kind)] = [:]   // uuid → 错误事件
     }
+    /// 最近一次 scanTokens 算出的今日请求异常（详情页用）
+    var claudeAnomalies = RequestAnomalies()
     var fileStates: [String: FileParseState] = [:]
     /// 会话文件 → 工作目录。文件里写的 cwd 是权威值；目录名那种把 / 换成 - 的编码解不回来
     /// （`vibe-gauge` 会被拆成 vibe/gauge），所以一律读文件。读到就缓存，不重复读盘。
