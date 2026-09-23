@@ -43,14 +43,14 @@ public extension ScanReport {
     var pressures: [PressureSignal] {
         var out: [PressureSignal] = []
 
-        func addQuota(_ w: QuotaWindow?, _ platform: String, _ pool: String, keyPool: String? = nil) {
+        func addQuota(_ w: QuotaWindow?, _ platform: String, _ pool: String, keyPool: String? = nil, keyID: String? = nil) {
             guard let w = w else { return }
             let pct = w.effectivePct()
             var detail = L("已用 \(pct)%", "\(pct)% used")
             if let r = w.resetText() { detail += " · " + r }
             // 去重键按周期分；滚动窗口的「下一笔释放」每来一笔请求都变，按它分键会每次扫描都重新提醒
             let stamp = w.isRolling ? "rolling" : (w.resetsAt.map { String(Int($0)) } ?? "na")
-            out.append(PressureSignal(key: "quota:\(platform):\(keyPool ?? pool)@\(stamp)",
+            out.append(PressureSignal(key: "quota:\(keyID ?? platform):\(keyPool ?? pool)@\(stamp)",
                                       short: "\(platform) \(pool)", pct: pct, detail: detail, kind: .quota))
         }
 
@@ -64,8 +64,8 @@ public extension ScanReport {
             for s in l.subQuotas { addQuota(s.window, l.name, s.name) }
         }
         for p in api.providers {
-            addQuota(p.fiveHour, p.displayName, "5h")
-            addQuota(p.sevenDay, p.displayName, L("周", "weekly"), keyPool: "周")
+            addQuota(p.fiveHour, p.displayName, "5h", keyID: p.id)
+            addQuota(p.sevenDay, p.displayName, L("周", "weekly"), keyPool: "周", keyID: p.id)
         }
 
         if totalMemoryGB > 0 {

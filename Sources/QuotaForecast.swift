@@ -132,11 +132,13 @@ public struct QuotaWindow: Equatable {
 
     /// 「重置 1h2m」/ 滚动窗口「1h2m 后释放 3 次」；没有时刻就 nil
     public func resetText(now: TimeInterval = Date().timeIntervalSince1970) -> String? {
+        if isRolling, let r = resetsAt, r <= now { return L("待刷新", "refreshing") }   // 下一轮扫描会重算，不是「已重置」
         guard let c = Fmt.countdown(to: resetsAt, now: now) else { return nil }
         return isRolling ? L("\(c) 后释放 \(max(1, releaseCount)) 次", "frees \(max(1, releaseCount)) in \(c)") : L("重置 \(c)", "resets \(c)")
     }
     /// 窄位置用：固定窗口只写倒计时，滚动窗口加「释放」免得被读成重置
     public func shortResetText(now: TimeInterval = Date().timeIntervalSince1970) -> String? {
+        if isRolling, let r = resetsAt, r <= now { return L("待刷新", "refreshing") }
         guard let c = Fmt.countdown(to: resetsAt, now: now) else { return nil }
         return isRolling ? L("\(c) 释放", "frees \(c)") : c
     }

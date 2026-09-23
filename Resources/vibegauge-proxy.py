@@ -120,21 +120,40 @@ def _is_loopback(host: str) -> bool:
     return h == "localhost" or h == "::1" or h.startswith("127.")
 
 
-def pick_proxy(scheme: str, host: str) -> Optional[str]:
-    """返回要走的 http:// 代理 URL，或 None = 直连。host 不含端口。"""
+_conf_error = ""        # proxy.json 写错了什么（health 里报出来）
+
+
+def pick_proxy(scheme: str, host: str, hostport: Optional[str] = None) -> Optional[str]:
+    """返回要走的 http:// 代理 URL，或 None = 直连。host 不含端口；hostport 带端口（例外列表可能按端口写）。"""
+    global _conf_error
     if _is_loopback(host):
         return None
+    # IPv6 字面量目标：Python 3.9 的 set_tunnel 发 CONNECT 时不加方括号（CONNECT 2001:db8::1:443），代理解析不了。
+    # ponytail: 直连；真有需要再自己拼 CONNECT
+    if ":" in host:
+        return None
     conf = _proxy_conf()
-    explicit = conf.get("upstream") if isinstance(conf.get("upstream"), str) else os.environ.get("VIBEGAUGE_UPSTREAM_PROXY")
+    upstream, no_proxy = conf.get("upstream"), conf.get("no_proxy", [])
+    if upstream is not None and not isinstance(upstream, str):
+        _conf_error, upstream = "upstream must be a string", "direct"     # 写了但写错：按直连，不偷偷退到系统代理
+    elif not isinstance(no_proxy, list) or not all(isinstance(d, str) for d in no_proxy):
+        _conf_error, no_proxy = "no_proxy must be a list of strings", []
+    else:
+        _conf_error = ""
+    explicit = upstream if upstream is not None else os.environ.get("VIBEGAUGE_UPSTREAM_PROXY")
     if explicit is not None:
         explicit = explicit.strip()
         if explicit in ("", "direct"):
             return None
-        if any(host == d or host.endswith("." + d.lstrip("*.")) for d in conf.get("no_proxy") or [] if isinstance(d, str)):
+        if any(host == d.lstrip("*.") or host.endswith("." + d.lstrip("*.")) for d in no_proxy):
             return None
-        return explicit if explicit.startswith("http://") else None
+        p = urllib.parse.urlsplit(explicit)
+        if p.scheme != "http" or not p.hostname:
+            _conf_error = "upstream must be http://host:port or \"direct\""
+            return None
+        return explicit
     try:
-        if urllib.request.proxy_bypass(host):           # 系统代理的例外列表 / NO_PROXY
+        if urllib.request.proxy_bypass(hostport or host):   # 系统代理的例外列表 / NO_PROXY（可按 host:port 写）
             return None
         url = urllib.request.getproxies().get(scheme)
     except Exception:
@@ -167,7 +186,7 @@ def open_upstream(scheme: str, hostport: str, timeout: float, proxy: Optional[st
 
 def upstream(scheme: str, hostport: str, timeout: float):
     host = urllib.parse.urlsplit("//" + hostport).hostname or hostport
-    return open_upstream(scheme, hostport, timeout, pick_proxy(scheme, host))
+    return open_upstream(scheme, hostport, timeout, pick_proxy(scheme, host, hostport))
 
 
 def ensure_dir() -> None:
@@ -585,7 +604,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "port": PORT, "uptime_s": int(time.time() - START),
                                         "calls": _stats["calls"], "parsed": _stats["parsed"], "errors": _stats["errors"],
                                         "hosts": sorted(_hosts_seen.keys()), "dir": DIR,
-                                        "upstream": redact_proxy(pick_proxy("https", "api.example.com"))})
+                                        "upstream": redact_proxy(pick_proxy("https", "api.example.com")),
+                                        "upstream_error": _conf_error})
         m = re.match(r"^/(https?)://([^/]+)(/.*)?$", self.path)
         if not m:
             return self._json(400, {"error": "path must be /https://HOST/...  e.g. ANTHROPIC_BASE_URL=http://127.0.0.1:%d/https://api.anthropic.com" % PORT})
@@ -1130,6 +1150,16 @@ def selftest() -> None:
         set_proxy_conf({})
         assert pick_proxy("https", "api.example.com") == "http://env.example:1"   # 没配 proxy.json 退到环境变量
     assert redact_proxy(purl) == "http://127.0.0.1:%d (auth)" % tport and redact_proxy(None) == "direct"
+    set_proxy_conf({"upstream": purl})
+    assert pick_proxy("https", "2001:db8::1", "[2001:db8::1]:8443") is None      # IPv6 字面量直连
+    set_proxy_conf({"upstream": purl, "no_proxy": 3})
+    assert pick_proxy("https", "api.example.com") == purl and _conf_error.startswith("no_proxy")   # 写错类型不抛异常
+    set_proxy_conf({"upstream": 7})
+    assert pick_proxy("https", "api.example.com") is None and _conf_error.startswith("upstream")
+    with patch.dict(os.environ, {"no_proxy": "api.example.com:8443", "https_proxy": "http://env.example:1"}):
+        set_proxy_conf({})
+        assert pick_proxy("https", "api.example.com", "api.example.com:8443") is None       # 例外按端口匹配
+        assert pick_proxy("https", "api.example.com", "api.example.com:443") == "http://env.example:1"
     tc = open_upstream("http", "127.0.0.1:%d" % mport, 10, purl)
     tc.request("GET", "/2030-01-01T00:00:00Z")
     tr = tc.getresponse(); tbody = tr.read(); tc.close()

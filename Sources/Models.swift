@@ -117,7 +117,9 @@ public struct PlatformDetail {
 }
 
 public struct DetectedLLMRuntime: Identifiable {
-    public var id: String { name }
+    /// 身份默认就是名字；API 卡片用卡片 ID（同名的两个账户不能撞）
+    public var cardID: String = ""
+    public var id: String { cardID.isEmpty ? name : cardID }
     public let name: String
     public let isRunning: Bool
     public let tier: String
@@ -165,10 +167,11 @@ public struct APIProviderStatus: Identifiable {
     public var id: String { cardID.isEmpty ? host : cardID }
     public let host: String
     public let provider: String
-    /// 这张卡对应的 key 指纹；同一上游只有一个 key 时为空（不拆卡）
+    /// 这张卡对应的 key 指纹（"-" = 没带 key）。卡片 ID 里总有它：同一路由后来多出一个 key，已有卡的 ID 也不变
     public var account: String = ""
-    /// 卡片标题：拆了账户就带上指纹前 4 位，免得两张同名卡分不清
-    public var displayName: String { account.isEmpty ? provider : "\(provider) · \(account == "-" ? L("无 key", "no key") : String(account.prefix(4)))" }
+    /// 同一路由出现过多个 key → 标题带指纹区分；只有一个 key 时标题就是上游名
+    public var showsAccount = false
+    public var displayName: String { showsAccount ? "\(provider) · \(account == "-" ? L("无 key", "no key") : String(account.prefix(8)))" : provider }
     public var calls: Int = 0
     public var errors: Int = 0
     public var ctx: Int64 = 0

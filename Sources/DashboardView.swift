@@ -232,13 +232,15 @@ public struct DashboardView: View {
             if p.unknownUsage > 0 { obs.append(L("\(p.unknownUsage) 次用量未知", "\(p.unknownUsage) without usage")) }
             if p.errors > 0 { obs.append(String(format: L("%d 错(%.0f%%)", "%d errors (%.0f%%)"), p.errors, p.errorRate) + (p.count429 > 0 ? L(" 含 \(p.count429) 限流", " incl. \(p.count429) rate-limited") : "")) }
             if let c = p.cost { obs.append(money(c, p.costCurrency)) }
-            return DetectedLLMRuntime(
+            var card = DetectedLLMRuntime(
                 name: p.displayName, isRunning: nowTS - p.lastTS < 120, tier: p.plan.isEmpty ? "API Key" : p.plan, detail: L("\(p.calls) 次", "\(p.calls) calls"),
                 fiveHour: p.fiveHour, sevenDay: p.sevenDay, quotaSubtitle: sub,
                 extraLine: tokens, extraLine2: obs.joined(separator: " · "),
                 quotaNote: p.quotaIsEstimate ? L("估算 · ", "Estimated · ") + p.estimateNote : "",
                 platformDetail: apiDetail(p)
             )
+            card.cardID = p.id
+            return card
         }
     }
 
@@ -393,7 +395,7 @@ public struct DashboardView: View {
         VStack(alignment: .leading, spacing: 8) {
             // Tab 栏 + 右侧一行状态
             HStack(spacing: 8) {
-                if let name = drillDown {
+                if let key = drillDown {
                     Button(action: { withAnimation(.easeInOut(duration: 0.15)) { drillDown = nil } }) {
                         HStack(spacing: 3) {
                             Image(systemName: "chevron.left").font(.system(size: 9, weight: .bold))
@@ -402,7 +404,7 @@ public struct DashboardView: View {
                         .foregroundColor(.blue)
                     }
                     .buttonStyle(.plain)
-                    Text(name)
+                    Text((currentLLMs + apiCards).first { $0.id == key }?.name ?? key)
                         .font(.system(size: 11, weight: .bold))
                     Spacer()
                 } else {
@@ -435,7 +437,7 @@ public struct DashboardView: View {
 
             SwipeScroll(
                 content: VStack(alignment: .leading, spacing: 10) {
-                    if let name = drillDown, let llm = (currentLLMs + apiCards).first(where: { $0.name == name }) {
+                    if let key = drillDown, let llm = (currentLLMs + apiCards).first(where: { $0.id == key }) {
                         detailPage(for: llm)
                     } else {
                         switch tab {
@@ -1758,6 +1760,6 @@ public struct DashboardView: View {
     private func openDetail(_ llm: DetectedLLMRuntime) {
         // 只有真有东西可看才进详情，避免点进去一片空白
         guard llm.hasQuota || !llm.platformDetail.rows.isEmpty || !llm.platformDetail.sessions.isEmpty else { return }
-        withAnimation(.easeInOut(duration: 0.15)) { drillDown = llm.name }
+        withAnimation(.easeInOut(duration: 0.15)) { drillDown = llm.id }
     }
 }

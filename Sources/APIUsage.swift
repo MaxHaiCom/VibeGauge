@@ -314,9 +314,9 @@ extension ProcessScanner {
         for c in calls where !c.key.isEmpty { keys["\(c.host)|\(c.provider)", default: []].insert(c.key) }
         return Set(keys.filter { $0.value.count > 1 }.keys)
     }
-    static func cardID(host: String, provider: String, key: String, split: Set<String>) -> String {
-        let group = "\(host)|\(provider)"
-        return split.contains(group) ? group + "#" + (key.isEmpty ? "-" : key) : group
+    /// 卡片 ID 总带完整指纹：拆不拆卡只影响标题，不影响身份（采样、通知键、详情页都跟着 ID 走）
+    static func cardID(host: String, provider: String, key: String) -> String {
+        "\(host)|\(provider)#" + (key.isEmpty ? "-" : key)
     }
 
     public func scanAPI() -> ProxyStatus {
@@ -344,11 +344,12 @@ extension ProcessScanner {
         var latency: [String: [Int]] = [:]              // 卡片 → 今日各次耗时（算 p50/p95）
         var byKey: [String: [String: APIKeyUsage]] = [:]  // 卡片 → 指纹 → 用量
         let split = Self.splitGroups(apiCalls)
-        func card(_ c: APICall) -> String { Self.cardID(host: c.host, provider: c.provider, key: c.key, split: split) }
+        func card(_ c: APICall) -> String { Self.cardID(host: c.host, provider: c.provider, key: c.key) }
         func newCard(_ id: String, host: String, provider: String, key: String) -> APIProviderStatus {
             var p = APIProviderStatus(host: host, provider: provider)
             p.cardID = id
-            if split.contains("\(host)|\(provider)") { p.account = key.isEmpty ? "-" : key }
+            p.account = key.isEmpty ? "-" : key
+            p.showsAccount = split.contains("\(host)|\(provider)")
             return p
         }
 
@@ -435,13 +436,21 @@ extension ProcessScanner {
         if let q = readJSON(pm.quotaPath) {
             for (entry, v) in q {
                 guard let d = v as? [String: Any] else { continue }
-                // 新版代理按「host#指纹」分账户写；旧版只写 host（同一上游多个 key 时分不清是谁的，不认）
+                // 新版代理按「host#指纹」分账户写，按账户精确对上卡片；旧版只写 host：
+                // 这个 host 只出现过一个 key 才认得出是谁的，否则不认
                 let parts = entry.split(separator: "#", maxSplits: 1).map(String.init)
-                let host = parts[0], fp = parts.count > 1 ? parts[1] : ""
+                let host = parts[0]
                 let provider = d["provider"] as? String ?? host
-                let matches = byHost.filter { $0.value.host == host && ($0.value.account.isEmpty || $0.value.account == fp) }.keys
-                if fp.isEmpty, split.contains(where: { $0.hasPrefix(host + "|") }) { continue }
-                let id = matches.first ?? Self.cardID(host: host, provider: provider, key: fp, split: split)
+                var fp = parts.count > 1 ? parts[1] : ""
+                if fp.isEmpty {
+                    let keys = Set(apiCalls.filter { $0.host == host && !$0.key.isEmpty }.map(\.key))
+                    guard keys.count <= 1 else { continue }
+                    fp = keys.first ?? ""
+                }
+                let account = fp.isEmpty ? "-" : fp
+                // 同一 host、同一账户可能有多条路由（火山 Coding / 按量同 key）：优先 provider 名一致的那张
+                let candidates = byHost.values.filter { $0.host == host && $0.account == account }
+                let id = (candidates.first { $0.provider == provider } ?? candidates.first)?.id ?? Self.cardID(host: host, provider: provider, key: fp)
                 var p = byHost[id] ?? newCard(id, host: host, provider: provider, key: fp)
                 let cap = (d["captured_at"] as? NSNumber)?.doubleValue
                 if let e = d["error"] as? String { p.quotaError = e }

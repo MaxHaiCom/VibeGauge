@@ -58,6 +58,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { [weak self] _ in
             self?.updateStatus()
         }
+        // 菜单打开期间 RunLoop 处于 eventTracking 模式，default 模式的定时器会停：面板开着就不刷新了
+        if let timer { RunLoop.main.add(timer, forMode: .common) }
 
         setupAutoCleanTimer()
         setupWakeObserver()

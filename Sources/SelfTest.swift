@@ -34,8 +34,12 @@ enum SelfTest {
                          call("v.test", "V Coding", "k1"), call("v.test", "V 按量", "k1")]
             let split = ProcessScanner.splitGroups(calls)
             precondition(split == ["b.test|B"], "拆卡：\(split)")
-            let ids = Set(calls.map { ProcessScanner.cardID(host: $0.host, provider: $0.provider, key: $0.key, split: split) })
-            precondition(ids == ["a.test|A", "b.test|B#k1", "b.test|B#k2", "b.test|B#-", "v.test|V Coding", "v.test|V 按量"], "卡片 ID：\(ids.sorted())")
+            // ID 总带指纹（拆不拆只影响标题）：后来多出一个 key，已有卡的 ID 不跳变
+            let ids = Set(calls.map { ProcessScanner.cardID(host: $0.host, provider: $0.provider, key: $0.key) })
+            precondition(ids == ["a.test|A#k1", "b.test|B#k1", "b.test|B#k2", "b.test|B#-", "v.test|V Coding#k1", "v.test|V 按量#k1"], "卡片 ID：\(ids.sorted())")
+            var one = APIProviderStatus(host: "b.test", provider: "B"); one.account = "abcd0001"; one.showsAccount = true
+            var two = one; two.account = "abcd0002"
+            precondition(one.displayName != two.displayName, "标题前缀要能区分：\(one.displayName)")
         }
         // 滚动窗口：过了「下一笔释放」不归零、不做到期预测、不按释放时刻分通知周期
         do {
@@ -44,6 +48,7 @@ enum SelfTest {
             precondition(w.isRolling && w.usedPct == 30 && w.resetsAt == t + 3600 && w.releaseCount == 2, "滚动窗口：\(w)")
             precondition(!w.isExpired(now: t + 7200) && w.effectivePct(now: t + 7200) == 30 && w.burn(now: t) == nil)
             precondition(w.resetText(now: t) == L("1h0m 后释放 2 次", "frees 2 in 1h0m"), w.resetText(now: t) ?? "nil")
+            precondition(w.resetText(now: t + 3601) == L("待刷新", "refreshing") && w.shortResetText(now: t + 3601) == L("待刷新", "refreshing"))
             var r = ScanReport(); var p = APIProviderStatus(host: "h", provider: "P"); p.fiveHour = w; r.api.providers = [p]
             var later = r; later.api.providers[0].fiveHour?.resetsAt = t + 3700
             precondition(r.pressures.first { $0.kind == .quota }?.key == later.pressures.first { $0.kind == .quota }?.key, "滚动窗口通知键不能随释放时刻变")
@@ -665,7 +670,9 @@ enum SelfTest {
             later.scanNowForTesting()
             precondition(same(later.snapshot(), snap), "折叠后统计变了")
             let folded = try JSONSerialization.jsonObject(with: Data(contentsOf: cacheURL)) as! [String: Any]
-            precondition(folded["version"] as? Int == 4 && (folded["files"] as! [String: [String: Any]]).values.allSatisfy { ($0["records"] as! [String: Any]).isEmpty }, "40 天后不该再有逐条记录")
+            let foldedFiles = folded["files"] as! [String: [String: Any]]
+            precondition(folded["version"] as? Int == 4 && foldedFiles.values.filter { $0["source"] as? String != "Claude" }.allSatisfy { ($0["records"] as! [String: Any]).isEmpty },
+                          "40 天后 Codex / API 不该再有逐条记录（Claude 保留逐条，跨文件去重要用）")
             // 折叠后重启、再重写一个日志：只撤销它自己的贡献
             let reborn = UsageHistory(home: root.path); reborn.clock = { fixedNow + 40 * 86400 }
             reborn.scanNowForTesting()
@@ -693,6 +700,14 @@ enum SelfTest {
             precondition(got.map(\.0) == [1, 1_500_000, 1] && got.map(\.1) == [0, 2, 1_500_003] && end == 1_500_005, "分块读取：\(got) end=\(end)")
             let resumed = try LineReader.read(fh, from: end, to: size) { _, _ in preconditionFailure("半行不能交出") }
             precondition(resumed == end)
+            // 超过单行上限：整行跳过，前后的行照常交出，偏移不乱
+            let url2 = FileManager.default.temporaryDirectory.appendingPathComponent("vg-lines-\(UUID().uuidString).jsonl")
+            defer { try? FileManager.default.removeItem(at: url2) }
+            try Data("ab\n\(String(repeating: "x", count: 3_000_000))\ncd\n".utf8).write(to: url2)
+            let fh2 = try FileHandle(forReadingFrom: url2); defer { try? fh2.close() }
+            var got2: [(String, UInt64)] = []
+            let end2 = try LineReader.read(fh2, from: 0, to: 3_000_009, maxLine: 1_500_000) { line, offset in got2.append((String(decoding: line, as: UTF8.self), offset)) }
+            precondition(got2.map(\.0) == ["ab", "cd"] && got2.map(\.1) == [0, 3_000_004] && end2 == 3_000_007, "超长行跳过：\(got2) end=\(end2)")
         } catch { preconditionFailure("分块读取自测失败：\(error)") }
 
         // 续接会话的文件里全是复制来的请求：折叠后不重复计量，但仍算一个会话（与折叠前同口径）
@@ -711,6 +726,53 @@ enum SelfTest {
             precondition(old.totals == recent.totals && old.days == recent.days, "复制品折叠后：\(String(describing: old.totals["Claude"]))")
         } catch { preconditionFailure("复制会话自测失败：\(error)") }
 
+        // B 段评审的复现场景：折叠 / 重写 / 删除重建 / 偶发漏遍历都不能丢账或重复
+        do {
+            let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("vibegauge-edge-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let fm = FileManager.default
+            let dir = root.appendingPathComponent(".claude/projects/p")
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try fm.createDirectory(at: root.appendingPathComponent(".config/vibegauge"), withIntermediateDirectories: true)
+            func cl(_ id: String, _ ts: String, _ input: Int) -> String {
+                #"{"type":"assistant","timestamp":"\#(ts)","requestId":"\#(id)","message":{"model":"m","usage":{"input_tokens":\#(input),"output_tokens":0}}}"# + "\n"
+            }
+            func put(_ rel: String, _ text: String, append: Bool = false) throws {
+                let url = root.appendingPathComponent(rel)
+                if append, let h = try? FileHandle(forWritingTo: url) { try h.seekToEnd(); try h.write(contentsOf: Data(text.utf8)); try h.close() }
+                else { try Data(text.utf8).write(to: url) }
+            }
+            let t0 = Fmt.parseISODate("2026-09-19T00:00:00Z")!
+            let h = UsageHistory(home: root.path); h.clock = { t0 + 40 * 86400 }
+            func claudeCtx() -> Int64 { h.scanNowForTesting(); return h.snapshot().totals["Claude"]?.ctx ?? -1 }
+            // 跨文件同一请求取时间戳最新的那份（9），与折叠无关
+            try put(".claude/projects/p/a.jsonl", cl("r", "2026-09-10T00:00:00Z", 5))
+            try put(".claude/projects/p/b.jsonl", cl("r", "2026-09-11T00:00:00Z", 9))
+            precondition(claudeCtx() == 9, "取最新时间戳：\(claudeCtx())")
+            // 同一文件把旧请求原样再追加一次：不重复
+            try put(".claude/projects/p/a.jsonl", cl("r", "2026-09-10T00:00:00Z", 5), append: true)
+            precondition(claudeCtx() == 9, "同文件重复追加")
+            // 重写 b：它的副本没了，a 里那份要补回来（5）+ 新请求 7
+            try put(".claude/projects/p/b.jsonl", cl("s", "2026-09-11T00:00:00Z", 7))
+            precondition(claudeCtx() == 12, "重写后另一文件的副本要计入：\(claudeCtx())")
+            // api-calls.jsonl 删除后被同名重建：旧一代的账保留
+            func api(_ ctx: Int, _ ts: String) -> String { #"{"ts":"\#(ts)","host":"h.test","provider":"P","ctx":\#(ctx),"out":0}"# + "\n" }
+            let apiRel = ".config/vibegauge/api-calls.jsonl"
+            try put(apiRel, api(5, "2026-09-10T00:00:00Z"))
+            func apiCtx() -> Int64 { h.scanNowForTesting(); return h.snapshot().totals["API · P"]?.ctx ?? -1 }
+            precondition(apiCtx() == 5)
+            try fm.removeItem(at: root.appendingPathComponent(apiRel))
+            precondition(apiCtx() == 5, "删日志后历史保留")
+            try put(apiRel, api(7, "2026-09-12T00:00:00Z"))
+            precondition(apiCtx() == 12, "同名重建：旧 5 + 新 7，实际 \(apiCtx())")
+            // 偶发没遍历到（文件挪走一轮又回来，内容不变）：不能归档后从头再算一遍
+            let tmp = root.appendingPathComponent("api.bak")
+            try fm.moveItem(at: root.appendingPathComponent(apiRel), to: tmp)
+            _ = apiCtx()
+            try fm.moveItem(at: tmp, to: root.appendingPathComponent(apiRel))
+            precondition(apiCtx() == 12, "同一文件重新出现不重复：\(apiCtx())")
+        } catch { preconditionFailure("历史边界自测失败：\(error)") }
+
         // 历史缓存迁移：v3 升级留备份；更新版本写的只读；读坏的挪开不覆盖
         do {
             let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("vibegauge-migrate-" + UUID().uuidString)
@@ -728,8 +790,8 @@ enum SelfTest {
             let upgraded = try JSONSerialization.jsonObject(with: Data(contentsOf: cache)) as! [String: Any]
             precondition(upgraded["version"] as? Int == 4)
             precondition(run().totals["Codex"]?.ctx == 7, "v4 重启后历史还在")
-            // 更新版本写的：读不懂也绝不覆盖
-            let future = #"{"version":99,"files":{}}"#
+            // 更新版本写的：格式解不开也绝不当成损坏挪走或覆盖
+            let future = #"{"version":99,"files":[]}"#
             try Data(future.utf8).write(to: cache)
             _ = run()
             let after99 = String(decoding: try Data(contentsOf: cache), as: UTF8.self)
