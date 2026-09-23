@@ -78,12 +78,15 @@ public struct StatsTabView: View {
         return section(L("每日强度 · 近 42 天", "Daily intensity · last 42 days")) {
             HStack(alignment: .top, spacing: 5) {
                 VStack(spacing: 4) {
+                    Text(" ").font(.system(size: 7.5)).frame(height: 10)
                     ForEach(0..<7, id: \.self) { row in
                         Text(weekday(dates[row])).font(.system(size: 8)).foregroundColor(.secondary).frame(width: 14, height: 14)
                     }
                 }
                 ForEach(0..<6, id: \.self) { column in
                     VStack(spacing: 4) {
+                        // 每列 7 天：顶上标这一列从哪天开始（最后一列到今天为止）
+                        Text(monthDay(dates[column * 7])).font(.system(size: 7.5)).foregroundColor(.secondary).frame(height: 10)
                         ForEach(0..<7, id: \.self) { row in
                             let i = column * 7 + row
                             RoundedRectangle(cornerRadius: 3)
@@ -111,6 +114,10 @@ public struct StatsTabView: View {
         guard let day = snapshot.dailyTokens.filter({ $0.value > 0 && visible.contains($0.key) }).sorted(by: { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }).first else { return L("最多的一天：未检测到", "Top day: unavailable") }
         let parts = day.key.split(separator: "-").compactMap { Int($0) }
         return parts.count == 3 ? L("最多的一天：\(parts[1])月\(parts[2])日", "Top day: \(parts[1])-\(parts[2])") : L("最多的一天：\(day.key)", "Top day: \(day.key)")
+    }
+    private func monthDay(_ date: Date) -> String {
+        let c = Calendar.current.dateComponents([.month, .day], from: date)
+        return "\(c.month ?? 0)/\(c.day ?? 0)"
     }
     private func weekday(_ date: Date) -> String {
         [L("日", "Su"), L("一", "Mo"), L("二", "Tu"), L("三", "We"), L("四", "Th"), L("五", "Fr"), L("六", "Sa")][Calendar.current.component(.weekday, from: date) - 1]
