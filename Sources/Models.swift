@@ -318,6 +318,8 @@ public struct ScanReport {
 
     // 各 CLI 今日自己的用量
     public var cliUsage: [CLIUsage] = []
+    /// 近期活跃会话的上下文水位与压缩记录
+    public var sessions: [SessionContext] = []
 
     // API Key 调用（记账代理）
     public var api: ProxyStatus = ProxyStatus()

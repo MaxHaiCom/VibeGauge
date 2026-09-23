@@ -71,6 +71,10 @@ enum Diagnostics {
             if let hw = p.headerWindow { print(L("    限流头: \(p.headerLabel) 已用 \(hw.usedPct)% 重置 \(Fmt.countdown(to: hw.resetsAt, now: now) ?? "?")", "    rate-limit headers: \(p.headerLabel) \(hw.usedPct)% used, resets \(Fmt.countdown(to: hw.resetsAt, now: now) ?? "?" )")) }
             if p.quotaIsEstimate { print(L("    额度=估算 · \(p.estimateNote) · 上限 \(p.planLimitText)", "    quota=estimated · \(p.estimateNote) · limit \(p.planLimitText)")) }
         }
+        print(L("--- 会话上下文（近 2 小时） ---", "--- Session context (last 2 h) ---"))
+        for s in r.sessions.prefix(8) {
+            print("  \(s.tool) \((s.cwd as NSString).lastPathComponent) \(s.usedPct.map { String(format: "%.0f%%", $0) } ?? "—") / \(s.window.map(String.init) ?? "?") · " + L("今日压缩 \(s.compactions.count) 次", "compacted \(s.compactions.count)× today"))
+        }
         print("--- Token ---")
         let t = r.tokens
         print(String(format: L("今日 %d 次调用  上下文 %lld  缓存读 %lld  命中 %.1f%%  输出 %lld  思考 %lld", "Today %d calls  context %lld  cache read %lld  hit %.1f%%  output %lld  reasoning %lld"), t.todayTurns, t.todayContext, t.todayCacheRead, t.todayCacheHitRate, t.todayOutput, t.todayThinking))

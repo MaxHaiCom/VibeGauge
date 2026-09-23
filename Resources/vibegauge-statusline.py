@@ -39,6 +39,11 @@ def out_path(tool: str) -> str:
     return os.path.join(data_dir(), {"claude": "claude-usage.json", "agy": "agy-quota.json"}[tool])
 
 
+def sessions_path() -> str:
+    """Claude 各会话的上下文水位（只存数字、模型 ID、工作目录和时间，不存正文）"""
+    return os.path.join(data_dir(), "claude-sessions.json")
+
+
 def state_path(tool: str) -> str:
     """每个工具一个状态文件：同时连接 Claude 和 agy 时不会互相覆盖对方的「原命令」记录"""
     return os.path.join(data_dir(), "statusline-%s.json" % tool)
@@ -106,6 +111,7 @@ def capture(tool: str, data, now: float) -> None:
         if isinstance(rl, dict) and rl:
             private_dir()
             write_json(out_path(tool), dict(rl, _captured_at=now))
+        save_claude_session(data, now)
         return
     # agy：{"quota": {"gemini-5h": {"remaining_fraction", "reset_in_seconds"}, "3p-weekly": {...}}}
     # 只带当前模型所在的池，所以要跟旧文件合并；过期条目也留着（VibeGauge 自己判断已重置 → 0%）
@@ -119,6 +125,32 @@ def capture(tool: str, data, now: float) -> None:
     with open(os.path.join(private_dir(), ".agy-quota.lock"), "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         merge_agy(q, default_pool, now)
+
+
+SESSIONS_KEEP = 24 * 3600
+SESSIONS_MAX = 50
+
+
+def save_claude_session(data: dict, now: float) -> None:
+    """按 session_id 记上下文水位：context_window.used_percentage 只算输入（含缓存），/compact 后到下次请求前可能为 null"""
+    sid, cw = data.get("session_id"), data.get("context_window")
+    if not isinstance(sid, str) or not sid or not isinstance(cw, dict):
+        return
+    def num(v):
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    model, ws = data.get("model"), data.get("workspace")
+    row = {"used_pct": num(cw.get("used_percentage")), "window": num(cw.get("context_window_size")),
+           "model": (model.get("id") or model.get("display_name")) if isinstance(model, dict) else (model if isinstance(model, str) else None),
+           "cwd": ws.get("current_dir") if isinstance(ws, dict) else data.get("cwd"), "at": now}
+    # 多个会话同时刷新：读-合并-写整段加锁
+    with open(os.path.join(private_dir(), ".claude-sessions.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        cache = read_json(sessions_path(), {})
+        sessions = cache.get("sessions") if isinstance(cache.get("sessions"), dict) else {}
+        sessions[sid] = row
+        fresh = {k: v for k, v in sessions.items() if isinstance(v, dict) and (v.get("at") or 0) > now - SESSIONS_KEEP}
+        keep = dict(sorted(fresh.items(), key=lambda kv: kv[1]["at"], reverse=True)[:SESSIONS_MAX])
+        write_json(sessions_path(), {"sessions": keep, "updated_at": now})
 
 
 def merge_agy(q: dict, default_pool: str, now: float) -> None:
@@ -337,6 +369,21 @@ def selftest() -> None:
         u = read_json(out_path("claude"), {})
         assert u["five_hour"]["used_percentage"] == 21 and u["_captured_at"] > 0
         assert os.stat(out_path("claude")).st_mode & 0o777 == 0o600
+        # 会话上下文水位：按 session_id 各存一份，只存数字；/compact 后 used_percentage 为 null 也照记（界面显示未知）
+        for sid, pct in (("s-a", 72.5), ("s-b", None)):
+            run_as_statusline("claude", {"session_id": sid, "model": {"id": "claude-opus-5", "display_name": "Opus"},
+                                         "workspace": {"current_dir": "/Users/x/p"},
+                                         "context_window": {"used_percentage": pct, "context_window_size": 1000000,
+                                                            "current_usage": None}})
+        ss = read_json(sessions_path(), {})["sessions"]
+        assert ss["s-a"]["used_pct"] == 72.5 and ss["s-a"]["window"] == 1000000 and ss["s-a"]["model"] == "claude-opus-5", ss
+        assert ss["s-b"]["used_pct"] is None and ss["s-a"]["cwd"] == "/Users/x/p"
+        assert os.stat(sessions_path()).st_mode & 0o777 == 0o600
+        # 24 小时前的会话清掉
+        stale = read_json(sessions_path(), {}); stale["sessions"]["old"] = {"used_pct": 1, "at": time.time() - 2 * 86400}
+        write_json(sessions_path(), stale)
+        run_as_statusline("claude", {"session_id": "s-a", "context_window": {"used_percentage": 80}})
+        assert "old" not in read_json(sessions_path(), {})["sessions"]
         # 还原：恢复成原来的 statusLine，键顺序不变
         assert uninstall("claude") == "uninstalled"
         s = load_settings(cpath)

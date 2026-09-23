@@ -29,6 +29,7 @@ All files live in `~/.config/vibegauge/`. The app and helpers create the directo
 | `prices.json` | you | Stable | Cost is no longer shown |
 | `plans.json` | you | Stable | Plan estimates are no longer shown |
 | `proxy.json` | you | Stable | The accounting proxy goes back to environment / system proxy settings |
+| `claude-sessions.json` | statusline bridge | Internal | Session context levels disappear until each session's statusline refreshes |
 | `statusline-claude.json`, `statusline-agy.json` | statusline bridge | Internal | **Your original statusline command is forgotten**; the bridge shows its own short line and `--uninstall` can no longer restore it |
 | `quota-samples.json` | app | Internal | Burn rate restarts from scratch; last-cycle finals are lost |
 | `usage-daily.json` | app | Internal | **History of session logs you already deleted is lost for good**; history of logs still on disk is rebuilt |
@@ -159,6 +160,12 @@ You can feed VibeGauge from your own statusline script by writing this file. Vib
 ```
 
 agy only reports the pool of the current model, so the bridge merges into the existing file under a lock. Expired windows are kept; VibeGauge shows them as reset. VibeGauge also reads `~/.cache/agy-hud/quota_cache.json` (same shape) and takes the newer value per window.
+
+### `claude-sessions.json` (Internal)
+
+`{"sessions": {"<session_id>": {"used_pct", "window", "model", "cwd", "at"}}, "updated_at"}`: Claude Code's `context_window.used_percentage` (input tokens only: fresh + cache writes + cache reads, as Claude Code defines it) and `context_window_size` per session, saved on every statusline refresh under a lock. `used_pct` is null right after `/compact` until the next request. Only numbers, the model ID, the working directory, and a time are kept; sessions idle for 24 hours are dropped (at most 50).
+
+Codex context levels are read from its session logs instead: `info.last_token_usage.total_tokens ÷ info.model_context_window` from the latest `token_count` event (the cumulative total does not drop after compaction, so it cannot be used). Compactions are the `compacted` lines (Codex) and `system` / `compact_boundary` lines (Claude, with pre / post token counts).
 
 ### `statusline-<tool>.json` (Internal)
 

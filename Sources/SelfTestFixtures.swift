@@ -70,6 +70,15 @@ enum SelfTestFixtures {
         precondition(retry(#"{"status":401}"#) == .auth && retry(#"{"status":529,"rateLimits":{}}"#) == .overloaded && retry(#"{"status":429}"#) == .rateLimit)
         precondition(retry(#"{"connection":{"code":"ECONNRESET"}}"#) == .connection && retry(#"{}"#) == .other)
 
+        // 会话上下文：Codex 用「这次请求」的 total_tokens ÷ 窗口；compacted 行记一次压缩；Claude 的 compact_boundary 带前后 token
+        var ctx = CodexCtxState()
+        for line in (codex_0_156 + #"{"timestamp":"2026-09-18T16:00:10.000Z","type":"compacted","payload":{"message":"x"}}"#).split(separator: "\n") {
+            ProcessScanner.consumeCodexContextLine(Data(line.utf8), into: &ctx)
+        }
+        precondition(ctx.used == 26786 && ctx.window == 258400 && ctx.model == "gpt-6-astra" && ctx.compactions.count == 1 && ctx.cwd == "/fixture", "Codex 上下文：\(ctx)")
+        let compact = claude_2_1_278.split(separator: "\n").compactMap { ProcessScanner.claudeCompaction(Data($0.utf8)) }
+        precondition(compact.count == 1 && compact[0].event.pre == 758290 && compact[0].event.post == 21625, "Claude 压缩：\(compact)")
+
         let quota = ProcessScanner.shared.parseCodexText(codex_0_156, fallbackTime: 0).buckets["codex"]
         precondition(quota?.weekly?.usedPct == 97 && quota?.weekly?.resetsAt == 1790414260 && quota?.fiveHour == nil && quota?.plan == "prolite",
                      "Codex 0.156 额度：只有周窗")

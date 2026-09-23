@@ -710,6 +710,11 @@ public struct DashboardView: View {
                 }
             }
 
+            if !report.sessions.isEmpty {
+                Divider().opacity(0.35)
+                sessionContextSection(report.sessions)
+            }
+
             Divider().opacity(0.35)
 
             // 今日 Token 与 Prompt Cache
@@ -1399,6 +1404,38 @@ public struct DashboardView: View {
                 .foregroundColor(llm.isRunning ? .secondary : .secondary.opacity(0.75))
                 .lineLimit(1)
                 .fixedSize()
+        }
+    }
+
+    /// 会话上下文水位：离自动压缩还有多远、今天压缩过几次（Claude 来自状态栏官方字段，Codex 来自会话日志）
+    private func sessionContextSection(_ sessions: [SessionContext]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(L("会话上下文", "Session context")).font(.system(size: 11, weight: .bold)).foregroundColor(.secondary)
+                Spacer()
+                Text(L("近 2 小时活跃 \(sessions.count) 个", "\(sessions.count) active in 2h")).font(.system(size: 9)).foregroundColor(.secondary)
+            }
+            ForEach(sessions.prefix(6)) { s in
+                let pct = s.usedPct.map { Int($0.rounded()) }
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 4) {
+                        Text((s.cwd as NSString).lastPathComponent.isEmpty ? "~" : (s.cwd as NSString).lastPathComponent)
+                            .font(.system(size: 9, weight: .semibold)).lineLimit(1)
+                        Text(s.tool + (s.model.isEmpty ? "" : " · " + Fmt.modelDisplayName(s.model)))
+                            .font(.system(size: 8)).foregroundColor(.secondary).lineLimit(1)
+                        Spacer(minLength: 4)
+                        MiniProgressBar(value: Double(pct ?? 0) / 100, color: (pct ?? 0) >= 90 ? .red : (pct ?? 0) >= 80 ? .orange : .blue, width: 60, height: 4)
+                        Text(pct.map { "\($0)%" } ?? "—").font(.system(size: 9, weight: .bold)).frame(width: 32, alignment: .trailing)
+                        Text(s.window.map { $0 >= 1_000_000 ? "1M" : "\($0 / 1000)k" } ?? "").font(.system(size: 7.5)).foregroundColor(.secondary).frame(width: 26, alignment: .trailing)
+                    }
+                    if let last = s.compactions.last {
+                        Text(L("今日压缩 \(s.compactions.count) 次 · 最近 \(Fmt.agoShort(Int(nowTS - last.at)))", "compacted \(s.compactions.count)× today · last \(Fmt.agoShort(Int(nowTS - last.at)))")
+                             + (last.pre != nil && last.post != nil ? " · \(Fmt.tokens(Int64(last.pre!))) → \(Fmt.tokens(Int64(last.post!)))" : ""))
+                            .font(.system(size: 7.5)).foregroundColor(.secondary)
+                    }
+                }
+                .opacity(nowTS - s.updatedAt > 1800 ? 0.6 : 1)       // 半小时没动的会话淡一点
+            }
         }
     }
 

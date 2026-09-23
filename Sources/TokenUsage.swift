@@ -86,6 +86,7 @@ extension ProcessScanner {
         state.head = head
         var turns = state.turns
         var anomalies = state.anomalies
+        var compactions = state.compactions
         do {
             state.parsedOffset = try LineReader.read(fh, from: state.parsedOffset, to: size) { line, _ in
                 if var rec = parseAssistantLine(line) {
@@ -93,11 +94,14 @@ extension ProcessScanner {
                     turns[rec.id] = rec   // 同 requestId 后写覆盖前写（usage 相同）
                 } else if let a = Self.claudeAnomaly(line) {
                     anomalies[a.id] = (a.ts, a.final, a.kind)
+                } else if let c = Self.claudeCompaction(line) {
+                    compactions[c.id] = c.event
                 }
             }
         } catch { return state }
         state.turns = turns
         state.anomalies = anomalies
+        state.compactions = compactions
         state.mtime = mtime
         state.size = size
         fileStates[path] = state

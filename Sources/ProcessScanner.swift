@@ -21,7 +21,10 @@ public final class ProcessScanner {
         var head = Data()          // 文件前 256 字节指纹，识别原地重写 / 替换
         var turns: [String: InteractionRecord] = [:]
         var anomalies: [String: (ts: TimeInterval, final: Bool, kind: RequestAnomalies.Kind)] = [:]   // uuid → 错误事件
+        var compactions: [String: Compaction] = [:]     // uuid → 压缩事件（compact_boundary）
     }
+    /// Codex 活跃会话的增量读取状态（上下文水位、压缩次数）
+    var codexCtxStates: [String: CodexCtxState] = [:]
     /// 最近一次 scanTokens 算出的今日请求异常（详情页用）
     var claudeAnomalies = RequestAnomalies()
     var fileStates: [String: FileParseState] = [:]
@@ -254,6 +257,7 @@ public final class ProcessScanner {
         report.detectedLLMs = withQuotaSamples(detectAllLLMRuntimes(counts))
         report.api = scanAPI()
         report.cliUsage = scanCLIUsage(claude: report.tokens)
+        report.sessions = scanSessions()
         return report
     }
 

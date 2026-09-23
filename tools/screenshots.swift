@@ -114,7 +114,7 @@ struct Screenshots {
         r.detectedLLMs = [claude, codex, gemini, grok, ollama]
         // 经记账代理的 Coding Plan 订阅：按请求数估算的滚动窗口，显示在订阅页
         var plan = APIProviderStatus(host: "ark.cn-beijing.volces.com", provider: L("火山方舟 Coding", "Volcano Ark Coding"))
-        plan.cardID = "demo-plan"; plan.plan = "Coding Plan Lite"; plan.calls = 186; plan.lastTS = now - 40
+        plan.cardID = "demo-plan"; plan.plan = "Coding Plan Lite"; plan.isSubscription = true; plan.calls = 186; plan.lastTS = now - 40
         plan.ctx = 9_800_000; plan.out = 61_000
         let calls = (0..<186).map { (t: now - Double($0) * 55, w: 1.0) }
         plan.fiveHour = ProcessScanner.planWindow(calls, kind: "first_use", seconds: fiveH, limit: 1200, now: now)
@@ -125,6 +125,10 @@ struct Screenshots {
                               "186 logged in 5h · 1 per request (no model weights set) · the provider console is authoritative")
         plan.models = ["kimi-k2.7-code", "glm-5.3", "minimax-m3", "deepseek-v4-flash"]
         r.api.providers = [plan]
+        var s1 = SessionContext(id: "demo-1", tool: "Claude", cwd: "~/code/my-app", model: "claude-opus-5", usedPct: 72, window: 1_000_000, updatedAt: now - 30)
+        s1.compactions = [Compaction(at: now - 2 * hour, pre: 812_000, post: 24_000)]
+        let s2 = SessionContext(id: "demo-2", tool: "Codex", cwd: "~/code/api-server", model: "gpt-6-astra", usedPct: 34, window: 272_000, updatedAt: now - 300)
+        r.sessions = [s1, s2]
 
         var t = TokenStats()
         t.todayTurns = 412; t.todayContext = 86_400_000; t.todayCacheRead = 83_900_000
