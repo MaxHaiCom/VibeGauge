@@ -376,6 +376,61 @@ extension ProcessScanner {
     /// Gemini（Antigravity）：两个池 gemini / 3p，各有 5h 与周窗口。
     /// 两个来源同一格式，逐个窗口取记录较新的：VibeGauge 自带桥接写 ~/.config/vibegauge/agy-quota.json；
     /// 装了 agy-hud 的写 ~/.cache/agy-hud/quota_cache.json（它会删掉已过期的窗口，桥接不删，过期由这里当 0%）。
+    /// Kimi Code 用量：官方本机服务 `kimi web` 的 GET /api/v1/oauth/usage（token 在 ~/.kimi-code/server.token，
+    /// 只发往 127.0.0.1）。没开 kimi web 就读不到 —— 如实说，不猜。
+    func readKimiQuota() -> (fiveHour: QuotaWindow?, week: QuotaWindow?, month: QuotaWindow?, tier: String, note: String, extra: String) {
+        let base = "\(home)/.kimi-code"
+        guard let token = (try? String(contentsOfFile: "\(base)/server.token", encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty else {
+            return (nil, nil, nil, L("已安装", "Installed"), L("运行一次 kimi web 后可读取官方额度", "Run kimi web once to read the official quota"), "")
+        }
+        // 实例登记文件格式官方没写：只从里面认端口（数字 port 或 url 里的端口），再加上默认 58627 起几个
+        var ports: [Int] = []
+        for f in (try? FileManager.default.contentsOfDirectory(atPath: "\(base)/server/instances")) ?? [] {
+            guard let j = readJSON("\(base)/server/instances/\(f)") else { continue }
+            if let p = (j["port"] as? NSNumber)?.intValue { ports.append(p) }
+            else if let u = (j["url"] as? String).flatMap(URLComponents.init(string:))?.port { ports.append(u) }
+        }
+        ports += [58627, 58628, 58629]
+        var seen = Set<Int>()
+        for port in ports where (1024...65535).contains(port) && seen.insert(port).inserted {
+            // token 能访问 kimi web 的全部接口：先用免鉴权的 healthz 确认这个端口上真是 kimi web（它的响应信封带 request_id），再发 token
+            guard let health = probeLocalJSON("http://127.0.0.1:\(port)/api/v1/healthz") as? [String: Any], health["request_id"] != nil,
+                  let json = probeLocalJSON("http://127.0.0.1:\(port)/api/v1/oauth/usage", headers: ["Authorization": "Bearer \(token)"]) else { continue }
+            let r = Self.parseKimiUsage(json, capturedAt: Date().timeIntervalSince1970)
+            return (r.fiveHour, r.week, r.month, "Kimi Code", r.error ?? "", r.extra)
+        }
+        return (nil, nil, nil, L("已登录", "Signed in"), L("kimi web 没在运行，读不到官方额度", "kimi web is not running; official quota unavailable"), "")
+    }
+
+    /// 响应信封 {code, data:{kind:"ok", quota:{usages:{limit5h|limit7d|monthTotal|monthCode:{usedRatio 0–1, resetAt RFC3339}}, extraUsage}}}
+    /// 或 data.kind == "error"。usages 按实际下发的条目渲染（新会员没有 limit7d）。
+    static func parseKimiUsage(_ json: Any, capturedAt: TimeInterval)
+        -> (fiveHour: QuotaWindow?, week: QuotaWindow?, month: QuotaWindow?, error: String?, extra: String) {
+        guard let data = (json as? [String: Any])?["data"] as? [String: Any] else { return (nil, nil, nil, L("响应格式无法识别", "Unrecognized response"), "") }
+        if data["kind"] as? String == "error" {
+            return (nil, nil, nil, L("Kimi 账号服务报错：", "Kimi account service error: ") + String((data["message"] as? String ?? "").prefix(80)), "")
+        }
+        let quota = data["quota"] as? [String: Any] ?? [:]
+        var usages: [String: [String: Any]] = [:]
+        if let d = quota["usages"] as? [String: Any] {
+            for (k, v) in d { if let e = v as? [String: Any] { usages[k] = e } }
+        } else if let a = quota["usages"] as? [[String: Any]] {           // 万一是数组形态：按 name / window 字段归位
+            for e in a { if let k = (e["name"] ?? e["window"]) as? String { usages[k] = e } }
+        }
+        func win(_ key: String, _ seconds: Double) -> QuotaWindow? {
+            guard let e = usages[key], let r = (e["usedRatio"] as? NSNumber)?.doubleValue, r.isFinite else { return nil }
+            return QuotaWindow(usedPct: max(0, min(100, Int((r * 100).rounded()))), resetsAt: Fmt.parseISODate(e["resetAt"] as? String),
+                               capturedAt: capturedAt, windowSeconds: seconds)
+        }
+        var extra = ""
+        if let x = quota["extraUsage"] as? [String: Any], let bal = (x["balanceCents"] as? NSNumber)?.doubleValue {
+            extra = L("加油包余额 ", "Extra usage balance ") + String(format: "%.2f %@", bal / 100, (x["currency"] as? String) ?? "")
+        }
+        // 月额度与 Kimi 会员共享，打满会冻结 Kimi Code：主条显示总额度，Code 自己的月用量另算不重复画
+        return (win("limit5h", 5 * 3600), win("limit7d", 7 * 86400), win("monthTotal", 30 * 86400) ?? win("monthCode", 30 * 86400), nil, extra)
+    }
+
     func readGeminiQuota() -> (native5h: QuotaWindow?, nativeW: QuotaWindow?, tp5h: QuotaWindow?, tpW: QuotaWindow?) {
         let files = ["\(home)/.config/vibegauge/agy-quota.json", "\(home)/.cache/agy-hud/quota_cache.json"].compactMap { readJSON($0) }
         func win(_ poolName: String, _ key: String) -> QuotaWindow? {

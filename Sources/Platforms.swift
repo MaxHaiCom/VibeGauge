@@ -165,6 +165,19 @@ extension ProcessScanner {
             ))
         }
 
+        // Kimi Code：官方本机服务（kimi web）的用量接口，5h / 周 / 月都是官方回报
+        if fm.fileExists(atPath: "\(home)/.kimi-code") {
+            let k = readKimiQuota()
+            var card = DetectedLLMRuntime(
+                name: "Kimi Code", isRunning: c.kimi > 0, tier: k.tier, detail: L("\(c.kimi) 会话", "\(c.kimi) sessions"),
+                fiveHour: k.fiveHour, sevenDay: k.week,
+                quotaSubtitle: k.note)
+            card.monthly = k.month
+            card.isFullWidth = k.fiveHour != nil || k.week != nil || k.month != nil
+            card.extraLine = k.extra
+            list.append(card)
+        }
+
         // Grok（周额度来自 grok 自己的 billing 日志）
         if c.grok > 0 || fm.fileExists(atPath: "\(home)/.grok/auth.json") {
             let q = readGrokQuota()
@@ -231,7 +244,7 @@ extension ProcessScanner {
     /// 本机 HTTP GET，0.3s 超时，结果缓存 10s（失败也缓存，免得每秒卡一次）。
     /// 结果放独立加锁的盒子：超时后迟到的回调只写盒子，不与扫描线程的读竞争。非 2xx / 非 JSON = nil。
     /// ponytail: 同步等待，在扫描锁内；多个本机服务同时不可达时最坏每 10s 多等 0.3s × 个数，要更快再改异步快照
-    func probeLocalJSON(_ urlString: String) -> Any? {
+    func probeLocalJSON(_ urlString: String, headers: [String: String] = [:]) -> Any? {
         let now = Date().timeIntervalSince1970
         if let c = localProbeCache[urlString], now - c.at < 10 { return c.json }
         final class Box { let lock = NSLock(); var json: Any? }
@@ -239,6 +252,7 @@ extension ProcessScanner {
         if let url = URL(string: urlString) {
             var request = URLRequest(url: url)
             request.timeoutInterval = 0.3
+            for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
             let sema = DispatchSemaphore(value: 0)
             let task = URLSession.shared.dataTask(with: request) { data, response, _ in
                 if let data, let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),

@@ -206,7 +206,7 @@ extension ProcessScanner {
     }
 
     struct SessionCounts {
-        var claude = 0, codex = 0, agy = 0, grok = 0
+        var claude = 0, codex = 0, agy = 0, grok = 0, kimi = 0
         var ollama = false, cursor = false, lmStudio = false
         /// llama.cpp 的 llama-server、MLX 的 mlx_lm.server：各自在跑的端口（命令行 --port，缺省 8080）
         var llamaServerPorts: [Int] = [], mlxServerPorts: [Int] = []
@@ -238,6 +238,7 @@ extension ProcessScanner {
         for p in procs.values {
             if ProcessScanner.isRunning(p.cmd, bundle: "/cursor.app/", bins: ["cursor"]) { c.cursor = true }
             if ProcessScanner.isRunning(p.cmd, bundle: "/ollama.app/", bins: ["ollama"]) { c.ollama = true }
+            if p.ppid != 1, ProcessScanner.isRunning(p.cmd, bundle: "", bins: ["kimi"]) { c.kimi += 1 }
             if ProcessScanner.isRunning(p.cmd, bundle: "lm studio.app/", bins: ["lm studio", "lmstudio", "llmster"]) { c.lmStudio = true }
             // App 包路径带空格（/Applications/LM Studio.app/…）时命令行首词被空格截断：按 PID 取真实可执行文件路径，不靠参数猜
             else if !c.lmStudio, p.cmd.lowercased().contains("lm studio.app/"),

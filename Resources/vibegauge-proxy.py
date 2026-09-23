@@ -809,19 +809,6 @@ def probe_minimax(hdrs):
     return {"kind": "quota", "plan": "Token Plan", "windows": windows}
 
 
-def probe_kimi_code(hdrs):
-    """Kimi Code 订阅：api.kimi.com/coding/v1/usages（社区接口，未实测）"""
-    j = _get_json("api.kimi.com", "/coding/v1/usages", _bearer(hdrs))
-    u = j.get("usage") or {}
-    if not u:
-        return {"kind": "quota", "error": redact_text(str(j))[:120]}
-    limit, used = float(u.get("limit") or 0), float(u.get("used") or 0)
-    windows: Dict[str, Any] = {}
-    if limit > 0:
-        windows["5h"] = {"used_pct": round(100.0 * used / limit), "resets_at": _iso_to_s(u.get("resetTime"))}
-    return {"kind": "quota", "plan": "Kimi Code", "windows": windows}
-
-
 def probe_deepseek(hdrs):
     j = _get_json("api.deepseek.com", "/user/balance", _bearer(hdrs))
     infos = j.get("balance_infos") or []
@@ -857,7 +844,6 @@ PROBES = [
     ("open.bigmodel.cn", probe_glm),
     ("api.z.ai", probe_glm),
     ("minimaxi.com", probe_minimax),
-    ("api.kimi.com", probe_kimi_code),
     ("deepseek.com", probe_deepseek),
     ("openrouter.ai", probe_openrouter),
     ("moonshot.cn", probe_moonshot),
@@ -997,7 +983,6 @@ def selftest() -> None:
                 self.wfile.flush()
 
         def do_GET(self):
-            # 用真实本地 HTTP 响应驱动 probe_kimi_code 的 ISO 重置时间解析。
             self.send_json({"usage": {"limit": 100, "used": 25, "resetTime": self.path[1:]}})
 
         def do_POST(self):
@@ -1416,14 +1401,6 @@ def selftest() -> None:
     u = parse_usage(None, "text/event-stream", gzip.compress(initial_event + final_event)[:-8], "gzip")
     assert not u["parsed"] and u["error"] == "incomplete_gzip", u
 
-    def local_quota(host, path, headers):
-        client = http.client.HTTPConnection("127.0.0.1", mport, timeout=10)
-        try:
-            client.request("GET", "/" + reset_time)
-            return json.loads(client.getresponse().read())
-        finally:
-            client.close()
-
     # 同一 epoch 的 Z / 正负偏移 / 无时区值，在 UTC 和非 UTC 的本机时区均相同。
     for tz in ("UTC0", "EST5EDT"):
         try:
@@ -1434,9 +1411,7 @@ def selftest() -> None:
                                              ("2023-12-31T19:00:00-05:00", 1704067200),
                                              ("2024-01-01T00:00:00", 1704067200),
                                              ("2024-01-01T08:00:00.125+08:00", 1704067200.125)):
-                    with patch(__name__ + "._get_json", side_effect=local_quota):
-                        quota = probe_kimi_code({})
-                    assert quota["windows"]["5h"]["resets_at"] == expected, (tz, reset_time, quota)
+                    assert _iso_to_s(reset_time) == expected, (tz, reset_time, _iso_to_s(reset_time))
         finally:
             time.tzset()
     assert _iso_to_s(None) is None and _iso_to_s("not-a-date") is None

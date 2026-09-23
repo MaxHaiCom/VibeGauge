@@ -140,6 +140,7 @@ open VibeGauge.app
 | **Codex** | `~/.codex/auth.json`<br>（JWT 包含的 `plan_type`） | 会话日志中的 `rate_limits`<br>打满时精准解析 `task_complete` 中的解封时间 | 仅在发出请求时写入；支持可选 SSH 远程多端同步 |
 | **Gemini** | 检测本地鉴权标识与登录态 | agy 交给状态栏的官方额度，区分 Gemini 主池与三方池<br>（卡片上点 **「一键连接额度」**） | agy 每次刷新状态栏时 |
 | **Grok** | `~/.grok/settings_cache.json` | `~/.grok/logs/unified.jsonl`<br>（解析 billing 信用百分比与周期截止时刻） | Grok 运行期间由后台定期刷回本地 |
+| **Kimi Code** | `~/.kimi-code` | 官方本机服务 `kimi web` 的 `GET /api/v1/oauth/usage`<br>（5h / 周 / 月额度与加油包余额） | 仅在 `kimi web` 运行时可读 |
 | **Ollama / LM Studio / llama.cpp / MLX** | 进程识别 + 本机只读接口（`/api/ps`、`/api/v1/models`、`/v1/models`） | 无云端额度约束（显示在线状态与已加载模型） | 10 秒缓存 |
 
 > 🔗 **「一键连接额度」怎么工作**：Claude Code 和 agy 每次刷新状态栏，都会把官方额度交给状态栏命令。连接后，状态栏命令换成 VibeGauge 自带的小脚本（`~/.config/vibegauge/vibegauge-statusline.py`，纯 Python 标准库）：截下一份额度，再把同一份输入原样交给你原来的状态栏，显示不变。改动前自动备份 `settings.json`（`settings.json.vibegauge-backup`），在 **系统 → 设置** 里关掉即还原。不读任何凭据，不发任何请求。
@@ -225,7 +226,7 @@ defaults delete com.haifeng.vibegauge
 - 🔒 **数据 100% 留在本机**：不设置任何云端中转服务器，不上传任何用量数据、Token 记录与机器标识。
 - 🔄 **检查更新**：每天向 GitHub 公开接口查询一次最新版本号（不带任何标识、不上传任何数据），只提示、从不自动下载安装。可在 **系统 → 设置** 关闭。
 - 🔑 **API Key 零落盘**：记账代理截获的 API Key 仅暂存于内存中用于查询厂商余额，写入日志时强制抹除并仅保留 SHA-256 前 8 位脱敏指纹。
-- ⚙️ **无入侵性**：只读扫描本地日志。为显示套餐与登录状态，会读取各 CLI 本地认证文件里的少数字段：Codex `auth.json` 里 id_token 的套餐与订阅起止日期声明（卡片上的套餐优先取会话日志），以及 agy / Grok 的登录方式。**token 从不复制、保存、记录或外发**，VibeGauge 也从不以你的身份登录任何服务；不代理 OAuth 登录流程。唯一会改的厂商配置是 `statusLine` 一项，且只在你点「一键连接额度」时改（先备份，可还原）。
+- ⚙️ **无入侵性**：只读扫描本地日志。为显示套餐与登录状态，会读取各 CLI 本地认证文件里的少数字段：Codex `auth.json` 里 id_token 的套餐与订阅起止日期声明（卡片上的套餐优先取会话日志），以及 agy / Grok 的登录方式。Kimi Code 会读取本机 `kimi web` 的访问 token（`~/.kimi-code/server.token`），先确认端口上确实是 `kimi web`，再只发给 `127.0.0.1` 上的这个服务。**token 从不复制、保存、记录或发出本机**，VibeGauge 也从不以你的身份登录任何服务；不代理 OAuth 登录流程。唯一会改的厂商配置是 `statusLine` 一项，且只在你点「一键连接额度」时改（先备份，可还原）。
 - 🌐 **记账代理的余额查询**（仅在安装代理后）：经代理的 API Key 只存在代理内存里，每 5 分钟用它向同一家厂商查询余额 / 额度（DeepSeek、OpenRouter、Kimi 等）。
 - 🛡️ **严格的放行防护**：孤儿进程清理具备多重放行过滤器，确保绝对不误触系统关键进程与正常运行中的开发任务。
 

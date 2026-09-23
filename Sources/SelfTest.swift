@@ -173,6 +173,20 @@ enum SelfTest {
             precondition(est.windows["5h"]?.usedPct == 4 && est.windows["5h"]?.isRolling == true, "系数：glm-5.3 记 3 + auto 记 1 = 4%，实际 \(String(describing: est.windows["5h"]?.usedPct))")
             precondition(est.pools.map(\.name) == ["kimi-k3"] && est.pools.first?.window.usedPct == 10, "独立模型池：\(est.pools.map { ($0.name, $0.window.usedPct) })")
         }
+        // Kimi Code 官方本机服务的用量信封：按实际下发的窗口渲染（新会员没有 limit7d），月主条用会员共享总额度
+        do {
+            let ok: [String: Any] = ["code": 0, "request_id": "r", "data": ["kind": "ok", "quota": [
+                "usages": ["limit5h": ["usedRatio": 0.25, "resetAt": "2026-09-23T10:00:00Z"],
+                           "monthTotal": ["usedRatio": 0.6, "resetAt": "2026-10-01T00:00:00+08:00"],
+                           "monthCode": ["usedRatio": 0.4]],
+                "extraUsage": ["balanceCents": 1234, "currency": "CNY"]]]]
+            let k = ProcessScanner.parseKimiUsage(ok, capturedAt: 1)
+            precondition(k.fiveHour?.usedPct == 25 && k.fiveHour?.resetsAt == Fmt.parseISODate("2026-09-23T10:00:00Z") && k.week == nil
+                         && k.month?.usedPct == 60 && k.error == nil && k.extra.contains("12.34 CNY"), "Kimi 用量：\(k)")
+            let err = ProcessScanner.parseKimiUsage(["code": 0, "data": ["kind": "error", "message": "upstream 502", "status": 502]], capturedAt: 1)
+            precondition(err.fiveHour == nil && err.error?.contains("upstream 502") == true)
+            precondition(ProcessScanner.parseKimiUsage(["unexpected": true], capturedAt: 1).error != nil)
+        }
         precondition(ProxyManager.validPort(0) == 18790 && ProxyManager.validPort(80) == 18790 && ProxyManager.validPort(18791) == 18791 && ProxyManager.validPort(70000) == 18790)
 
         // Codex 跨零点：total_token_usage 是会话累计，今天只算零点后新增的；请求数只数今天的事件
