@@ -8,17 +8,21 @@ enum LineReader {
         var remaining = size > offset ? size - offset : 0
         var pending = Data()
         var cursor = offset
-        while remaining > 0 {
-            guard let chunk = try fh.read(upToCount: Int(min(1 << 20, remaining))), !chunk.isEmpty else { break }
-            remaining -= UInt64(chunk.count)
-            pending.append(chunk)
-            guard let lastNL = pending.lastIndex(of: 0x0A) else { continue }
-            let end = pending.index(after: lastNL)
-            for line in pending[pending.startIndex..<end].split(separator: 0x0A, omittingEmptySubsequences: false).dropLast() {
-                autoreleasepool { body(Data(line), cursor) }
-                cursor += UInt64(line.count + 1)
+        var done = false
+        while remaining > 0, !done {
+            // FileHandle 读出的块是 autorelease 的：不逐块放掉，几百 MB 的文件会一直堆到函数返回
+            try autoreleasepool {
+                guard let chunk = try fh.read(upToCount: Int(min(1 << 20, remaining))), !chunk.isEmpty else { done = true; return }
+                remaining -= UInt64(chunk.count)
+                pending.append(chunk)
+                guard let lastNL = pending.lastIndex(of: 0x0A) else { return }
+                let end = pending.index(after: lastNL)
+                for line in pending[pending.startIndex..<end].split(separator: 0x0A, omittingEmptySubsequences: false).dropLast() {
+                    body(Data(line), cursor)
+                    cursor += UInt64(line.count + 1)
+                }
+                pending = Data(pending[end...])
             }
-            pending = Data(pending[end...])
         }
         return cursor
     }

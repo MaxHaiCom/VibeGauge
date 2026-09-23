@@ -594,6 +594,21 @@ enum SelfTest {
             precondition(reborn.snapshot().totals["Codex"] == codexBefore, "删日志后历史丢了")
         } catch { preconditionFailure("统计临时日志自测失败：\(error)") }
 
+        // 分块读取：跨 1 MB 块边界的长行要完整交出，末尾半行留给下次，偏移停在最后一个换行之后
+        do {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("vg-lines-\(UUID().uuidString).jsonl")
+            defer { try? FileManager.default.removeItem(at: url) }
+            let long = String(repeating: "a", count: 1_500_000)
+            try Data("x\n\(long)\ny\npartial".utf8).write(to: url)
+            let fh = try FileHandle(forReadingFrom: url); defer { try? fh.close() }
+            var got: [(Int, UInt64)] = []
+            let size = UInt64(try FileManager.default.attributesOfItem(atPath: url.path)[.size] as! NSNumber)
+            let end = try LineReader.read(fh, from: 0, to: size) { line, offset in got.append((line.count, offset)) }
+            precondition(got.map(\.0) == [1, 1_500_000, 1] && got.map(\.1) == [0, 2, 1_500_003] && end == 1_500_005, "分块读取：\(got) end=\(end)")
+            let resumed = try LineReader.read(fh, from: end, to: size) { _, _ in preconditionFailure("半行不能交出") }
+            precondition(resumed == end)
+        } catch { preconditionFailure("分块读取自测失败：\(error)") }
+
         // 续接会话的文件里全是复制来的请求：折叠后不重复计量，但仍算一个会话（与折叠前同口径）
         do {
             let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("vibegauge-dup-" + UUID().uuidString)

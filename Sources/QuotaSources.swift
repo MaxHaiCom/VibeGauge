@@ -264,11 +264,15 @@ extension ProcessScanner {
             if let c = codexFileCache[f.path], c.mtime == f.mtime {
                 parsed = c.parsed
             } else {
-                let tailBytes = 256 * 1024
-                let tail = readTail(f.path, maxBytes: tailBytes)
+                // 额度行每个请求都写一次，正常在末尾 256 KB 里；没有就逐级往前多读，32 MB 封顶 ——
+                // 那么久没写过额度的会话早就不活跃了，别的文件里有更新的值。绝不整个读进内存。
+                var window = 256 * 1024
+                var tail = readTail(f.path, maxBytes: window)
                 var pr = parseCodexText(tail, fallbackTime: f.mtime)
-                if pr.buckets.isEmpty, pr.limitHit == nil, tail.utf8.count >= tailBytes {   // 尾部没有就全量
-                    pr = parseCodexText(readTail(f.path, maxBytes: Int.max), fallbackTime: f.mtime)
+                while pr.buckets.isEmpty, pr.limitHit == nil, tail.utf8.count >= window, window < 32 << 20 {
+                    window = min(window * 4, 32 << 20)
+                    tail = readTail(f.path, maxBytes: window)
+                    pr = parseCodexText(tail, fallbackTime: f.mtime)
                 }
                 parsed = pr
                 codexFileCache[f.path] = (f.mtime, pr)
