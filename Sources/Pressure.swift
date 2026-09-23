@@ -63,8 +63,8 @@ public extension ScanReport {
             for s in l.subQuotas { addQuota(s.window, l.name, s.name) }
         }
         for p in api.providers {
-            addQuota(p.fiveHour, p.provider, "5h")
-            addQuota(p.sevenDay, p.provider, L("周", "weekly"), keyPool: "周")
+            addQuota(p.fiveHour, p.displayName, "5h")
+            addQuota(p.sevenDay, p.displayName, L("周", "weekly"), keyPool: "周")
         }
 
         if totalMemoryGB > 0 {

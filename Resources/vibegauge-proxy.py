@@ -53,7 +53,7 @@ DROP_REQ = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorizati
 DROP_RESP = {"transfer-encoding", "content-length", "connection", "keep-alive"}
 
 _lock = threading.Lock()
-_keys: Dict[str, Dict[str, str]] = {}      # host → {header: value}，只在内存
+_keys: Dict[str, Dict[str, str]] = {}      # "host#指纹" → {header: value}，只在内存
 _stats = {"calls": 0, "parsed": 0, "errors": 0}
 _hosts_seen: Dict[str, float] = {}
 
@@ -142,11 +142,13 @@ def capture_key(host: str, headers) -> Optional[str]:
             found[name] = v
     if not found:
         return None
-    with _lock:
-        _keys[host] = found
-        _hosts_seen[host] = time.time()
     v = next(iter(found.values()))
-    return key_fingerprint(v)
+    fp = key_fingerprint(v)
+    # 按「上游 + 账户」分开存：同一上游换着用两个 key 时，余额 / 套餐探针各查各的，不互相覆盖
+    with _lock:
+        _keys["%s#%s" % (host, fp)] = found
+        _hosts_seen[host] = time.time()
+    return fp
 
 
 # ---------------------------------------------------------------- usage 解析
@@ -732,17 +734,20 @@ def quota_loop() -> None:
                 result = json.load(open(QUOTA, encoding="utf-8"))
         except Exception:
             result = {}
+        # 旧版只按 host 记的条目分不清是哪个账户的，写新格式时清掉
+        result = {k: v for k, v in result.items() if "#" in k}
         changed = False
-        for host, hdrs in snapshot.items():
+        for entry, hdrs in snapshot.items():
+            host = entry.split("#", 1)[0]
             for sub, fn in PROBES:
                 if not host_matches(host, sub):
                     continue
-                entry = {"provider": provider_of(host), "captured_at": time.time()}
+                row = {"provider": provider_of(host), "captured_at": time.time()}
                 try:
-                    entry.update(fn(hdrs))
+                    row.update(fn(hdrs))
                 except Exception as e:
-                    entry["error"] = redact_text(str(e))[:160]
-                result[host] = entry
+                    row["error"] = redact_text(str(e))[:160]
+                result[entry] = row
                 changed = True
         if changed:
             ensure_dir()
@@ -1043,7 +1048,10 @@ def selftest() -> None:
     assert o.get("rl") == {"x-ratelimit-limit-requests": "500", "x-ratelimit-remaining-requests": "125",
                            "x-ratelimit-reset-requests": "6m0s"}, o.get("rl")     # 只收限流头，别的头不收
     assert "rl" not in a, "上游没给限流头就不该有这个字段"
-    assert _keys.get("127.0.0.1:%d" % mport, {}).get("authorization") == "Bearer test"   # 同一 host 后到的 key 覆盖
+    # 同一上游两个 key：各存一份，不再是后到的覆盖前一个（余额 / 套餐探针要各查各的账户）
+    host_keys = {k: v for k, v in _keys.items() if k.startswith("127.0.0.1:%d#" % mport)}
+    assert sorted(host_keys) == sorted("127.0.0.1:%d#%s" % (mport, key_fingerprint(v)) for v in ("test-key", "Bearer test")), host_keys
+    assert host_keys["127.0.0.1:%d#%s" % (mport, key_fingerprint("Bearer test"))].get("authorization") == "Bearer test"
 
     def records():
         with _lock, open(CALLS, encoding="utf-8") as f:

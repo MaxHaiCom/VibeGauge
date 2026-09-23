@@ -301,6 +301,18 @@ extension ProcessScanner {
         return ""
     }
 
+    /// 同一上游路由（host + provider）下出现过几个不同 key：超过一个就按账户拆卡，
+    /// 否则合计用量会配上其中一个账户的余额 / 套餐。
+    static func splitGroups(_ calls: [APICall]) -> Set<String> {
+        var keys: [String: Set<String>] = [:]
+        for c in calls where !c.key.isEmpty { keys["\(c.host)|\(c.provider)", default: []].insert(c.key) }
+        return Set(keys.filter { $0.value.count > 1 }.keys)
+    }
+    static func cardID(host: String, provider: String, key: String, split: Set<String>) -> String {
+        let group = "\(host)|\(provider)"
+        return split.contains(group) ? group + "#" + (key.isEmpty ? "-" : key) : group
+    }
+
     public func scanAPI() -> ProxyStatus {
         lock.lock(); defer { lock.unlock() }
         let pm = ProxyManager.shared
@@ -321,12 +333,22 @@ extension ProcessScanner {
         ingestAPICalls()
         let startOfToday = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
         let prices = priceTable()
+        // byHost 的键是卡片 ID（见 cardID），不再只是 host
         var byHost: [String: APIProviderStatus] = [:]
-        var latency: [String: [Int]] = [:]              // host → 今日各次耗时（算 p50/p95）
-        var byKey: [String: [String: APIKeyUsage]] = [:]  // host → 指纹 → 用量
+        var latency: [String: [Int]] = [:]              // 卡片 → 今日各次耗时（算 p50/p95）
+        var byKey: [String: [String: APIKeyUsage]] = [:]  // 卡片 → 指纹 → 用量
+        let split = Self.splitGroups(apiCalls)
+        func card(_ c: APICall) -> String { Self.cardID(host: c.host, provider: c.provider, key: c.key, split: split) }
+        func newCard(_ id: String, host: String, provider: String, key: String) -> APIProviderStatus {
+            var p = APIProviderStatus(host: host, provider: provider)
+            p.cardID = id
+            if split.contains("\(host)|\(provider)") { p.account = key.isEmpty ? "-" : key }
+            return p
+        }
 
         for c in apiCalls where c.ts >= startOfToday {
-            var p = byHost[c.host] ?? APIProviderStatus(host: c.host, provider: c.provider)
+            let id = card(c)
+            var p = byHost[id] ?? newCard(id, host: c.host, provider: c.provider, key: c.key)
             p.calls += 1
             if c.failed { p.errors += 1 }
             if c.status == 429 { p.count429 += 1 }
@@ -339,12 +361,12 @@ extension ProcessScanner {
 
             let cost = prices.cost(model: c.model, ctx: c.ctx, cacheRead: c.cacheRead, cacheWrite: c.cacheWrite, out: c.out)
             if let cost = cost { p.cost = (p.cost ?? 0) + cost }
-            byHost[c.host] = p
+            byHost[id] = p
 
-            if c.ms > 0 { latency[c.host, default: []].append(c.ms) }
+            if c.ms > 0 { latency[id, default: []].append(c.ms) }
 
             let fp = c.key.isEmpty ? L("无 key", "no key") : c.key
-            var k = byKey[c.host]?[fp] ?? APIKeyUsage(fingerprint: fp)
+            var k = byKey[id]?[fp] ?? APIKeyUsage(fingerprint: fp)
             k.calls += 1
             if c.failed { k.errors += 1 }
             k.ctx += c.ctx
@@ -352,13 +374,14 @@ extension ProcessScanner {
             k.lastTS = max(k.lastTS, c.ts)
             if let cost = cost { k.cost = (k.cost ?? 0) + cost }
             if !k.models.contains(c.model) { k.models.append(c.model) }
-            byKey[c.host, default: [:]][fp] = k
+            byKey[id, default: [:]][fp] = k
         }
 
-        // 限流头：只认该上游最近一条带头的调用（旧的没参考价值）
+        // 限流头：只认该卡最近一条带头的调用（旧的没参考价值；限流按 key 算，别串到别的账户）
         var lastRL: [String: (t: TimeInterval, rl: [String: String])] = [:]
         for c in apiCalls where !c.rl.isEmpty {
-            if c.ts > (lastRL[c.host]?.t ?? 0) { lastRL[c.host] = (c.ts, c.rl) }
+            let id = card(c)
+            if c.ts > (lastRL[id]?.t ?? 0) { lastRL[id] = (c.ts, c.rl) }
         }
         for (host, v) in lastRL {
             guard now - v.t < 3600,                              // 一小时前的余量早就变了
@@ -381,16 +404,16 @@ extension ProcessScanner {
         // 订阅制 Coding Plan：厂商不给用量接口 → 按本机记账的请求数估。滚动窗口，标明是估算。
         let plans = planLimits()
         if !plans.isEmpty {
-            var stamps: [String: [TimeInterval]] = [:]       // provider → 各次调用时刻（31 天内）
-            for c in apiCalls where c.sent { stamps[c.provider, default: []].append(c.ts) }
+            var stamps: [String: [TimeInterval]] = [:]       // 卡片 → 各次调用时刻（31 天内）
+            for c in apiCalls where c.sent { stamps[card(c), default: []].append(c.ts) }
             for (key, plan) in plans {
-                var host = byHost.first(where: { $0.value.provider == key || $0.key == key })?.key
                 // 今天还没调用，但周 / 月窗口里还有用量：过了零点卡片不能消失
-                if host == nil, let last = apiCalls.last(where: { $0.provider == key || $0.host == key }) {
-                    host = last.host
-                    byHost[last.host] = APIProviderStatus(host: last.host, provider: last.provider)
+                for c in apiCalls where (c.provider == key || c.host == key) && byHost[card(c)] == nil {
+                    byHost[card(c)] = newCard(card(c), host: c.host, provider: c.provider, key: c.key)
                 }
-                guard let host, let ts = stamps[byHost[host]!.provider] else { continue }
+                // 拆了账户就每个账户各按自己的请求数估：每个账户各有一份套餐上限
+                for host in byHost.keys where byHost[host]!.provider == key || byHost[host]!.host == key {
+                guard let ts = stamps[host] else { continue }
                 byHost[host]?.plan = plan.label
                 byHost[host]?.quotaIsEstimate = true
                 let in5h = ts.filter { $0 >= now - 5 * 3600 }.count
@@ -399,12 +422,20 @@ extension ProcessScanner {
                 byHost[host]?.fiveHour = Self.rollingWindow(ts, seconds: 5 * 3600, limit: plan.five, now: now)
                 byHost[host]?.sevenDay = Self.rollingWindow(ts, seconds: 7 * 86400, limit: plan.weekly, now: now)
                 byHost[host]?.monthly = Self.rollingWindow(ts, seconds: 30 * 86400, limit: plan.monthly, now: now)
+                }
             }
         }
         if let q = readJSON(pm.quotaPath) {
-            for (host, v) in q {
+            for (entry, v) in q {
                 guard let d = v as? [String: Any] else { continue }
-                var p = byHost[host] ?? APIProviderStatus(host: host, provider: d["provider"] as? String ?? host)
+                // 新版代理按「host#指纹」分账户写；旧版只写 host（同一上游多个 key 时分不清是谁的，不认）
+                let parts = entry.split(separator: "#", maxSplits: 1).map(String.init)
+                let host = parts[0], fp = parts.count > 1 ? parts[1] : ""
+                let provider = d["provider"] as? String ?? host
+                let matches = byHost.filter { $0.value.host == host && ($0.value.account.isEmpty || $0.value.account == fp) }.keys
+                if fp.isEmpty, split.contains(where: { $0.hasPrefix(host + "|") }) { continue }
+                let id = matches.first ?? Self.cardID(host: host, provider: provider, key: fp, split: split)
+                var p = byHost[id] ?? newCard(id, host: host, provider: provider, key: fp)
                 let cap = (d["captured_at"] as? NSNumber)?.doubleValue
                 if let e = d["error"] as? String { p.quotaError = e }
                 let kind = d["kind"] as? String ?? ""
@@ -421,7 +452,7 @@ extension ProcessScanner {
                 } else if kind == "balance" {
                     p.balanceText = balanceText(d)
                 }
-                byHost[host] = p
+                byHost[id] = p
             }
         }
         st.coverage = scanProxyCoverage()
@@ -429,8 +460,8 @@ extension ProcessScanner {
         st.priceAsOf = prices.asOf
         st.providers = byHost.values.sorted { $0.lastTS > $1.lastTS }.map { p in
             var p = p       // API 上游的额度也记采样，火山这种估算窗口同样能给"当前节奏"
-            if p.fiveHour != nil { sampleAndFill(&p.fiveHour!, key: "api|\(p.provider)|5h", now: now) }
-            if p.sevenDay != nil { sampleAndFill(&p.sevenDay!, key: "api|\(p.provider)|w", now: now) }
+            if p.fiveHour != nil { sampleAndFill(&p.fiveHour!, key: "api|\(p.id)|5h", now: now) }
+            if p.sevenDay != nil { sampleAndFill(&p.sevenDay!, key: "api|\(p.id)|w", now: now) }
             return p
         }
         saveSamplesIfDue(now)

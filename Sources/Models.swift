@@ -160,9 +160,15 @@ public struct APIKeyUsage: Identifiable {
 
 /// 经记账代理的某个上游：今日调用汇总 + 额度/余额
 public struct APIProviderStatus: Identifiable {
-    public var id: String { host }
+    /// 卡片身份 = 上游 host + 服务路由（provider 名里已带，如火山 Coding / 按量）+ 账户（同一上游出现多个 key 才拆）
+    public var cardID: String = ""
+    public var id: String { cardID.isEmpty ? host : cardID }
     public let host: String
     public let provider: String
+    /// 这张卡对应的 key 指纹；同一上游只有一个 key 时为空（不拆卡）
+    public var account: String = ""
+    /// 卡片标题：拆了账户就带上指纹前 4 位，免得两张同名卡分不清
+    public var displayName: String { account.isEmpty ? provider : "\(provider) · \(account == "-" ? L("无 key", "no key") : String(account.prefix(4)))" }
     public var calls: Int = 0
     public var errors: Int = 0
     public var ctx: Int64 = 0

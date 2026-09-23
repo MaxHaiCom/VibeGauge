@@ -222,7 +222,7 @@ public struct DashboardView: View {
             if p.errors > 0 { obs.append(String(format: L("%d 错(%.0f%%)", "%d errors (%.0f%%)"), p.errors, p.errorRate) + (p.count429 > 0 ? L(" 含 \(p.count429) 限流", " incl. \(p.count429) rate-limited") : "")) }
             if let c = p.cost { obs.append(money(c, p.costCurrency)) }
             return DetectedLLMRuntime(
-                name: p.provider, isRunning: nowTS - p.lastTS < 120, tier: p.plan.isEmpty ? "API Key" : p.plan, detail: L("\(p.calls) 次", "\(p.calls) calls"),
+                name: p.displayName, isRunning: nowTS - p.lastTS < 120, tier: p.plan.isEmpty ? "API Key" : p.plan, detail: L("\(p.calls) 次", "\(p.calls) calls"),
                 fiveHour: p.fiveHour, sevenDay: p.sevenDay, quotaSubtitle: sub,
                 extraLine: tokens, extraLine2: obs.joined(separator: " · "),
                 quotaNote: p.quotaIsEstimate ? L("估算 · ", "Estimated · ") + p.estimateNote : "",

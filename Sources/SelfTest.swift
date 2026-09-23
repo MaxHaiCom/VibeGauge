@@ -25,6 +25,18 @@ enum SelfTest {
         precondition(ProcessScanner.memoryPressurePageSize("The system has 25769803776 (1572864 pages with a page size of 16384).") == 16384)
         precondition(ProcessScanner.memoryPressurePageSize("garbage") == nil)
         precondition(Diagnostics.maskedIP("192.0.2.7") == "192.0.x.x" && Diagnostics.maskedIP("2001:db8::1") == "2001:db8:x:x")
+        // API 卡片身份：同一上游路由只有一个 key 不拆；两个 key 按账户拆；同 host 不同路由（火山 Coding / 按量）永远分开
+        do {
+            func call(_ host: String, _ provider: String, _ key: String) -> ProcessScanner.APICall {
+                ProcessScanner.APICall(ts: 1, host: host, provider: provider, model: "m", ctx: 0, cacheRead: 0, cacheWrite: 0, out: 0, think: 0, status: 200, ms: 1, key: key, rl: [:])
+            }
+            let calls = [call("a.test", "A", "k1"), call("a.test", "A", "k1"), call("b.test", "B", "k1"), call("b.test", "B", "k2"), call("b.test", "B", ""),
+                         call("v.test", "V Coding", "k1"), call("v.test", "V 按量", "k1")]
+            let split = ProcessScanner.splitGroups(calls)
+            precondition(split == ["b.test|B"], "拆卡：\(split)")
+            let ids = Set(calls.map { ProcessScanner.cardID(host: $0.host, provider: $0.provider, key: $0.key, split: split) })
+            precondition(ids == ["a.test|A", "b.test|B#k1", "b.test|B#k2", "b.test|B#-", "v.test|V Coding", "v.test|V 按量"], "卡片 ID：\(ids.sorted())")
+        }
         precondition(ProxyManager.validPort(0) == 18790 && ProxyManager.validPort(80) == 18790 && ProxyManager.validPort(18791) == 18791 && ProxyManager.validPort(70000) == 18790)
 
         // Codex 跨零点：total_token_usage 是会话累计，今天只算零点后新增的；请求数只数今天的事件

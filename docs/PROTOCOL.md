@@ -78,28 +78,32 @@ One JSON object per line, appended. Split on `\n` only (a record may contain U+2
 | `rl` | object | Only rate-limit/quota response headers, lower-cased, values ≤ 80 chars. Absent if none |
 | `error` | string | Present on failure, e.g. `upstream_error: TimeoutError`, `usage_not_found`, `final_usage_not_found`, `incomplete_response` |
 
+The panel shows one card per upstream route (`host` + `provider`, so Volcano Engine coding and pay-as-you-go stay apart). When the calls on one route carry more than one `key`, the route is split into one card per key, titled with the first four characters of the fingerprint; plan estimates, balances, rate-limit headers, and burn rates then stay with their own account.
+
 A call counts as an **error** when `status >= 400`, `status` is `0`, or `complete` is false. A missing usage block alone is not an error (embeddings, for example, have none).
 
 Rows written before 1.1.2 lack `complete` and `sent`. For those rows both default to **false** if the row is a `502` with an `error` (the old "never reached" shape) and to **true** otherwise.
 
 ### `api-quota.json` (Stable)
 
-Written atomically every 30 s during the proxy's first minute, then every 300 s (`VIBEGAUGE_QUOTA_INTERVAL`), only for providers with a known usage endpoint, using the key the proxy saw in memory. Keyed by host:
+Written atomically every 30 s during the proxy's first minute, then every 300 s (`VIBEGAUGE_QUOTA_INTERVAL`), only for providers with a known usage endpoint, using the keys the proxy saw in memory. Keyed by `<host>#<key fingerprint>`, so two accounts on the same upstream are queried and stored separately (the fingerprint is the same as `key` in `api-calls.jsonl`):
 
 ```json
 {
-  "open.bigmodel.cn": {
+  "open.bigmodel.cn#860a1b2c": {
     "provider": "GLM", "captured_at": 1790000000.0,
     "kind": "quota", "plan": "Coding Pro",
     "windows": { "5h": {"used_pct": 12, "resets_at": 1790003600.0},
                  "weekly": {"used_pct": 40, "resets_at": 1790400000.0} }
   },
-  "api.deepseek.com": {
+  "api.deepseek.com#0c43d9e1": {
     "provider": "DeepSeek", "captured_at": 1790000000.0,
     "kind": "balance", "balance": 12.5, "currency": "CNY"
   }
 }
 ```
+
+Proxies before 1.2 keyed entries by host only. The proxy drops those entries when it writes; readers ignore a host-only entry for an upstream that has more than one account, because it cannot be attributed.
 
 `kind` is `quota` (percentage windows) or `balance` (money). Balance entries carry provider-specific extras (`usage`, `limit`, `limit_remaining`, `available`, `cash`, `voucher`, `credits_error`); `balance` itself can be null. Any entry may carry `error` (redacted, ≤ 160 chars) instead of data.
 
