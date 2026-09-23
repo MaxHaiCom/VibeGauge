@@ -64,6 +64,20 @@ enum SelfTest {
             precondition(unparsed?.parsed == false && unparsed?.failed == false, "成功但无用量的调用要能分出来")
             precondition(ProcessScanner.shared.parseAPICallLine(#"{"epoch":1790000000,"host":"h","status":200}"#)?.parsed == true, "旧记录缺 parsed 当已解析")
         }
+        // 数据可信状态：过重置点 = 等待新回报（不是 0%）；超过窗口 1/5 没更新 = 可能过期；滚动窗口 = 估算
+        do {
+            let t: TimeInterval = 1_790_000_000
+            func w(reset: TimeInterval, captured: TimeInterval, seconds: Double = 5 * 3600) -> QuotaWindow {
+                QuotaWindow(usedPct: 40, resetsAt: reset, capturedAt: captured, windowSeconds: seconds)
+            }
+            precondition(w(reset: t + 3600, captured: t - 60).trust(now: t) == .reported)
+            precondition(w(reset: t + 3600, captured: t - 3601).trust(now: t) == .stale)
+            precondition(w(reset: t + 86400, captured: t - 86400, seconds: 7 * 86400).trust(now: t) == .reported, "周窗口一天前的数据不算过期")
+            precondition(w(reset: t - 1, captured: t - 60).trust(now: t) == .awaiting)
+            var r = w(reset: t + 3600, captured: t); r.isRolling = true
+            precondition(r.trust(now: t) == .estimated)
+            precondition(w(reset: t - 1, captured: t - 60).trustText(now: t) == L("等待新回报", "Awaiting update"))
+        }
         precondition(ProxyManager.validPort(0) == 18790 && ProxyManager.validPort(80) == 18790 && ProxyManager.validPort(18791) == 18791 && ProxyManager.validPort(70000) == 18790)
 
         // Codex 跨零点：total_token_usage 是会话累计，今天只算零点后新增的；请求数只数今天的事件

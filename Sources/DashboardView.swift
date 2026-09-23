@@ -1212,6 +1212,7 @@ public struct DashboardView: View {
     @ViewBuilder
     private func quotaBar(label: String, win: QuotaWindow) -> some View {
         let pct = win.effectivePct(now: nowTS)
+        let awaiting = win.trust(now: nowTS) == .awaiting
         HStack(spacing: 3) {
             Text(label)
                 .font(.system(size: 7.5, weight: .medium))
@@ -1219,7 +1220,8 @@ public struct DashboardView: View {
                 .lineLimit(1)
                 .fixedSize()
             MiniProgressBar(value: Double(pct) / 100.0, color: quotaColor(pct), width: 16, height: 3.5)
-            Text("\(pct)%")
+            // 过了重置点、新周期还没回报：不知道用了多少，别写成 0%
+            Text(awaiting ? "—" : "\(pct)%")
                 .font(.system(size: 7.5, weight: .bold))
                 .foregroundColor(pct >= 60 ? quotaColor(pct) : .primary)
                 .lineLimit(1)
@@ -1320,7 +1322,7 @@ public struct DashboardView: View {
                             .lineLimit(1)
                         Spacer(minLength: 2)
                         MiniProgressBar(value: Double(pct) / 100.0, color: quotaColor(pct), width: 22, height: 3)
-                        Text("\(pct)%")
+                        Text(q.window.trust(now: nowTS) == .awaiting ? "—" : "\(pct)%")
                             .font(.system(size: 7.5, weight: .bold))
                             .foregroundColor(pct >= 60 ? quotaColor(pct) : .primary)
                             .fixedSize()
@@ -1498,6 +1500,7 @@ public struct DashboardView: View {
     private func quotaRing(label: String, win: QuotaWindow, size: CGFloat = 78) -> some View {
         let pct = win.effectivePct(now: nowTS)
         let color = quotaColor(pct)
+        let trust = win.trust(now: nowTS)
         VStack(spacing: 4) {
             ZStack {
                 Circle()
@@ -1507,10 +1510,10 @@ public struct DashboardView: View {
                     .stroke(color, style: StrokeStyle(lineWidth: 7, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                 VStack(spacing: 0) {
-                    Text("\(pct)")
+                    Text(trust == .awaiting ? "—" : "\(pct)")
                         .font(.system(size: 21, weight: .bold, design: .rounded))
                         .foregroundColor(pct > 80 ? color : .primary)
-                    Text(L("% 已用", "% used"))
+                    Text(trust == .awaiting ? L("新周期", "new cycle") : L("% 已用", "% used"))
                         .font(.system(size: 7))
                         .foregroundColor(.secondary)
                 }
@@ -1519,6 +1522,9 @@ public struct DashboardView: View {
 
             Text(label)
                 .font(.system(size: 9.5, weight: .semibold))
+            Text(win.trustText(now: nowTS))
+                .font(.system(size: 7.5))
+                .foregroundColor(trust == .reported ? .secondary.opacity(0.75) : .orange)
             if let c = win.resetText(now: nowTS) {
                 Text(c)
                     .font(.system(size: 8))
@@ -1619,7 +1625,7 @@ public struct DashboardView: View {
                         Spacer(minLength: 4)
                         let pct = item.1.effectivePct(now: nowTS)
                         MiniProgressBar(value: Double(pct) / 100.0, color: quotaColor(pct), width: 40, height: 4)
-                        Text("\(pct)%").font(.system(size: 9, weight: .bold)).fixedSize()
+                        Text(item.1.trust(now: nowTS) == .awaiting ? "—" : "\(pct)%").font(.system(size: 9, weight: .bold)).fixedSize()
                         if let c = item.1.shortResetText(now: nowTS) {
                             Text(c).font(.system(size: 7.5)).foregroundColor(.secondary).fixedSize()
                         }

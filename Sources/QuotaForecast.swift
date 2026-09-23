@@ -112,6 +112,24 @@ public struct QuotaWindow: Equatable {
         return now >= r
     }
 
+    /// 这个数能信到什么程度。过了重置点 = 新周期还没回报（不是 0%）；旧数据不拿去预测、不据此提醒。
+    public enum Trust: Equatable { case reported, estimated, stale, awaiting }
+    public func trust(now: TimeInterval = Date().timeIntervalSince1970) -> Trust {
+        if isExpired(now: now) { return .awaiting }
+        if isRolling { return .estimated }
+        // 数据源只在 CLI 被用时刷新：超过窗口 1/5（5h → 1h，周 → 约 1.4 天）没更新，期间别处的用量可能没算进来
+        if windowSeconds > 0, let age = ageSeconds(now: now), Double(age) > windowSeconds / 5 { return .stale }
+        return .reported
+    }
+    public func trustText(now: TimeInterval = Date().timeIntervalSince1970) -> String {
+        switch trust(now: now) {
+        case .reported: return L("官方回报", "Reported")
+        case .estimated: return L("本机估算", "Estimated")
+        case .stale: return L("可能过期", "May be stale")
+        case .awaiting: return L("等待新回报", "Awaiting update")
+        }
+    }
+
     /// 「重置 1h2m」/ 滚动窗口「1h2m 后释放 3 次」；没有时刻就 nil
     public func resetText(now: TimeInterval = Date().timeIntervalSince1970) -> String? {
         guard let c = Fmt.countdown(to: resetsAt, now: now) else { return nil }
