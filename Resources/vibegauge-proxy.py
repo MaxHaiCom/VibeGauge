@@ -458,7 +458,9 @@ class UsageParser:
         self.buf = bytearray(rest)
         for line in lines:
             line = line.strip()
-            if line:
+            if len(line) > self.EVENT_LIMIT:            # 完整行和未完成行同一个上限，结果不随网络分块位置变
+                self.fail("ndjson_line_too_large")
+            elif line:
                 self._json(line)
         if len(self.buf) > self.EVENT_LIMIT:
             self.fail("ndjson_line_too_large")
@@ -929,6 +931,12 @@ def selftest() -> None:
             up.feed(nd[:cut]); up.feed(nd[cut:])
             r = up.finish(True)
             assert r["ctx"] == 17 and r["out"] == 9 and r["model"] == "qwen3" and r["parsed"] and "error" not in r, (ct, cut, r)
+    long = json.dumps({"model": "x", "pad": "y" * (UsageParser.EVENT_LIMIT + 10)}).encode() + b"\n"
+    for step in (65536, UsageParser.EVENT_LIMIT + 1):              # 同一超长完整行，不管在哪切块都报超限
+        up = UsageParser(None, "application/x-ndjson", "")
+        for i in range(0, len(long), step):
+            up.feed(long[i:i + step])
+        assert up.finish(True).get("error") == "ndjson_line_too_large", step
     up = UsageParser(None, "application/x-ndjson", "")
     up.feed(nd[: nd.index(b'{"model": "qwen3", "done": true')])
     r = up.finish(False)

@@ -156,16 +156,20 @@ extension ProcessScanner {
         var start: TimeInterval?, end: TimeInterval?
         switch kind {
         case "first_use":
+            // 记账只留 31 天也不影响：任何 ≥ 窗口长度的空档之后那笔都会开新窗口，从那里起两条链一致。
+            // ponytail: 连续 31 天每个窗口都有请求、从没停过时锚点推不出来（要持久保存锚点）；真人会睡觉，不做
             var s: TimeInterval?
             for c in sorted where s == nil || c.t >= s! + seconds { s = c.t }
             if let s, now < s + seconds { start = s; end = s + seconds }
             else { start = now; end = nil }                      // 上个窗口已过、还没新请求：窗口没开始
         case "monday":
+            // 按日历算本地周一零点，不加固定秒数（跨夏令时那周不是 7×86400 秒）
             var comps = cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: Date(timeIntervalSince1970: now))
             comps.weekday = 2
-            if let s = cal.date(from: comps)?.timeIntervalSince1970 {
-                start = s > now ? s - 7 * 86400 : s
-                end = start! + 7 * 86400
+            if var s = cal.date(from: comps) {
+                if s.timeIntervalSince1970 > now, let prev = cal.date(byAdding: .weekOfYear, value: -1, to: s) { s = prev }
+                start = s.timeIntervalSince1970
+                end = cal.date(byAdding: .weekOfYear, value: 1, to: s)?.timeIntervalSince1970
             }
         case "subscription_day" where subscribedDay != nil:
             let day = subscribedDay!
@@ -537,6 +541,7 @@ extension ProcessScanner {
                 for host in byHost.keys where byHost[host]!.provider == key || byHost[host]!.host == key {
                 guard let calls = stamps[host] else { continue }
                 byHost[host]?.plan = plan.label
+                byHost[host]?.isSubscription = true
                 byHost[host]?.quotaIsEstimate = true
                 let est = Self.estimatePlan(plan, calls: calls, now: now)
                 byHost[host]?.fiveHour = est.windows["5h"]
@@ -571,16 +576,17 @@ extension ProcessScanner {
                 let cap = (d["captured_at"] as? NSNumber)?.doubleValue
                 if let e = d["error"] as? String { p.quotaError = e }
                 let kind = d["kind"] as? String ?? ""
-                if kind == "quota" {
-                    p.plan = d["plan"] as? String ?? ""
+                // 探针报错（临时网络问题等）：只记错误，不清掉 plans.json 给的套餐身份和估算
+                if kind == "quota", d["error"] == nil {
+                    if let plan = d["plan"] as? String, !plan.isEmpty { p.plan = plan; p.isSubscription = true }
                     let wins = d["windows"] as? [String: Any] ?? [:]
                     func win(_ k: String) -> QuotaWindow? {
                         guard let w = wins[k] as? [String: Any], let used = clampPct(w["used_pct"] as? NSNumber) else { return nil }
                         return QuotaWindow(usedPct: used, resetsAt: (w["resets_at"] as? NSNumber)?.doubleValue, capturedAt: cap,
                                            windowSeconds: k == "5h" ? 5 * 3600 : 7 * 86400)
                     }
-                    p.fiveHour = win("5h")
-                    p.sevenDay = win("weekly")
+                    if let w = win("5h") { p.fiveHour = w }
+                    if let w = win("weekly") { p.sevenDay = w }
                 } else if kind == "balance" {
                     p.balanceText = balanceText(d)
                 }

@@ -43,11 +43,13 @@ extension ProcessScanner {
         guard j["type"] as? String == "system", j["subtype"] as? String == "api_error" else { return nil }
         let e = j["error"] as? [String: Any] ?? [:]
         let status = (e["status"] as? NSNumber)?.intValue ?? 0
+        // 先看明确的状态码；rateLimits 字段只是附带的额度信息，出现了不代表这次是被限流
         let kind: RequestAnomalies.Kind =
-            status == 429 || !(e["rateLimits"] is NSNull || e["rateLimits"] == nil) ? .rateLimit :
+            status == 429 ? .rateLimit :
             status == 529 ? .overloaded :
-            (e["connection"] as? [String: Any])?["code"] != nil || e["isNetworkDown"] as? Bool == true ? .connection :
-            status >= 500 ? .server : .other
+            status == 401 || status == 403 ? .auth :
+            status >= 500 ? .server :
+            (e["connection"] as? [String: Any])?["code"] != nil || e["isNetworkDown"] as? Bool == true ? .connection : .other
         return (id, ts, false, kind)
     }
     static let usageMarker = Data("\"usage\":".utf8)

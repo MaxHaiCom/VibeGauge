@@ -210,6 +210,8 @@ public struct APIProviderStatus: Identifiable {
     public var lastTS: TimeInterval = 0
     public var models: [String] = []
     public var plan: String = ""
+    /// 订阅套餐（plans.json 配了，或厂商用量接口返回了套餐）：放订阅页；否则是按量 API key，放 API 页
+    public var isSubscription = false
     public var fiveHour: QuotaWindow? = nil
     public var sevenDay: QuotaWindow? = nil
     public var monthly: QuotaWindow? = nil

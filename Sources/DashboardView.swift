@@ -199,6 +199,8 @@ public struct DashboardView: View {
     }
 
     private var nowTS: TimeInterval { liveNow.timeIntervalSince1970 }
+    /// 百分比文案：过了重置点、新周期还没回报就是「—」，不写成 0%
+    private func pctText(_ w: QuotaWindow) -> String { w.trust(now: nowTS) == .awaiting ? "—" : "\(w.effectivePct(now: nowTS))%" }
     private var currentTokens: TokenStats { dynamicTokens ?? report.tokens }
     private var currentLLMs: [DetectedLLMRuntime] { dynamicLLMs ?? report.detectedLLMs }
     private var currentAPI: ProxyStatus { dynamicAPI ?? report.api }
@@ -207,8 +209,8 @@ public struct DashboardView: View {
 
     /// 经记账代理的上游分两类：有套餐的（plans.json 或厂商用量接口给出套餐名，如火山方舟 Coding Plan、
     /// GLM Coding Plan）是订阅，放订阅页和 Claude / Codex 并列；只有余额或什么都没有的是按量 API key，留在 API 页
-    private var apiCards: [DetectedLLMRuntime] { currentAPI.providers.filter { $0.plan.isEmpty }.map(upstreamCard) }
-    private var planCards: [DetectedLLMRuntime] { currentAPI.providers.filter { !$0.plan.isEmpty }.map(upstreamCard) }
+    private var apiCards: [DetectedLLMRuntime] { currentAPI.providers.filter { !$0.isSubscription }.map(upstreamCard) }
+    private var planCards: [DetectedLLMRuntime] { currentAPI.providers.filter(\.isSubscription).map(upstreamCard) }
     private var allCards: [DetectedLLMRuntime] { currentLLMs + planCards + apiCards }
 
     /// API 上游 → 复用平台卡片：档位 = 套餐名或 "API Key"，额度条 / 余额 / 今日 token 叠加
@@ -216,15 +218,14 @@ public struct DashboardView: View {
         do {
             var tokens = ""
             if p.calls > 0 {
-                let shown = p.plan.isEmpty ? 2 : 4          // 套餐卡整行，列得下更多今日用过的模型
+                let shown = p.isSubscription ? 4 : 2          // 套餐卡整行，列得下更多今日用过的模型
                 let models = p.models.prefix(shown).joined(separator: " / ") + (p.models.count > shown ? " …" : "")
                 tokens = "\(models)" + L(" · 上下文 \(formatTokens(p.ctx)) · 输出 \(formatTokens(p.out))", " · context \(formatTokens(p.ctx)) · output \(formatTokens(p.out))") + (p.ctx > 0 ? String(format: L(" · 命中 %.0f%%", " · %.0f%% hit"), p.cacheHitRate) : "")
             }
             // 上游在真实调用里给了限流头 → 拿来当余量显示（被动，不额外发请求）
             var headerLine = ""
             if let hw = p.headerWindow {
-                let pct = hw.effectivePct(now: nowTS)
-                headerLine = L("限流 \(p.headerLabel) 已用 \(pct)%", "Rate limit \(p.headerLabel): \(pct)% used")
+                headerLine = L("限流 \(p.headerLabel) 已用 \(pctText(hw))", "Rate limit \(p.headerLabel): \(pctText(hw)) used")
                 if let c = Fmt.countdown(to: hw.resetsAt, now: nowTS) { headerLine += L(" · 重置 \(c)", " · resets \(c)") }
             }
             let sub: String
@@ -249,7 +250,7 @@ public struct DashboardView: View {
             card.cardID = p.id
             card.monthly = p.monthly
             card.subQuotas = p.subQuotas
-            card.isFullWidth = !p.plan.isEmpty     // 一个订阅含多家模型（像 Gemini 双池那样）独占一行，半宽太挤
+            card.isFullWidth = p.isSubscription     // 一个订阅含多家模型（像 Gemini 双池那样）独占一行，半宽太挤
             return card
         }
     }
@@ -282,7 +283,7 @@ public struct DashboardView: View {
             d.rows.append((L("注意", "Note"), L("走代理之外的调用算不进来，会偏低", "Calls outside the proxy are not counted; the estimate may be low")))
         }
         if let m = p.monthly {
-            d.rows.append((L("月窗口", "Monthly window"), "\(m.effectivePct(now: nowTS))%" + (m.resetText(now: nowTS).map { " · " + $0 } ?? "")))
+            d.rows.append((L("月窗口", "Monthly window"), pctText(m) + (m.resetText(now: nowTS).map { " · " + $0 } ?? "")))
         }
         if let c = p.cost {
             d.rows.append((L("今日花费（估）", "Today's cost (estimated)"), money(c, p.costCurrency) + (currentAPI.priceAsOf.isEmpty ? "" : L(" · 价目表 \(currentAPI.priceAsOf)", " · price table \(currentAPI.priceAsOf)"))))
@@ -290,7 +291,7 @@ public struct DashboardView: View {
             d.rows.append((L("今日花费", "Today's cost"), currentAPI.hasPriceTable ? L("该模型不在价目表里", "Model not in price table") : L("未配置价目表", "Price table not configured")))
         }
         if let hw = p.headerWindow {
-            var v = L("已用 \(hw.effectivePct(now: nowTS))%（按 \(p.headerLabel)）", "\(hw.effectivePct(now: nowTS))% used (from \(p.headerLabel))")
+            var v = L("已用 \(pctText(hw))（按 \(p.headerLabel)）", "\(pctText(hw)) used (from \(p.headerLabel))")
             if let c = Fmt.countdown(to: hw.resetsAt, now: nowTS) { v += L(" · 重置 \(c)", " · resets \(c)") }
             if let age = hw.ageSeconds(now: nowTS) { v += L(" · 取自 \(Fmt.agoShort(age))的调用", " · from a call \(Fmt.agoShort(age))") }
             d.rows.append((L("限流余量（响应头）", "Rate-limit headroom (response headers)"), v))
@@ -519,7 +520,7 @@ public struct DashboardView: View {
     /// Tab 栏右侧只留紧凑摘要，五个入口仍能在菜单栏宽度内完整显示。
     private var tabStatusText: String {
         let active = (currentLLMs + planCards).filter { $0.isRunning }.count
-        let calls = currentAPI.providers.filter { $0.plan.isEmpty }.reduce(0) { $0 + $1.calls }
+        let calls = currentAPI.providers.filter { !$0.isSubscription }.reduce(0) { $0 + $1.calls }
         switch tab {
         case 1: return L("今日 \(calls) 次", "\(calls) calls")
         case 2: return history.isScanning ? L("汇总中", "Scanning") : L("\(history.activeDays) 活跃天", "\(history.activeDays) days")

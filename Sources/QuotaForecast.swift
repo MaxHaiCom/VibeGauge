@@ -120,7 +120,8 @@ public struct QuotaWindow: Equatable {
         if isExpired(now: now) { return .awaiting }
         if isRolling || isEstimate { return .estimated }
         // 数据源只在 CLI 被用时刷新：超过窗口 1/5（5h → 1h，周 → 约 1.4 天）没更新，期间别处的用量可能没算进来
-        if windowSeconds > 0, let age = ageSeconds(now: now), Double(age) > windowSeconds / 5 { return .stale }
+        // 窗口长度不知道（Grok 缺周期起点、API 限流头）：24 小时没更新也算可能过期
+        if let age = ageSeconds(now: now), Double(age) > (windowSeconds > 0 ? windowSeconds / 5 : 86400) { return .stale }
         return .reported
     }
     public func trustText(now: TimeInterval = Date().timeIntervalSince1970) -> String {
@@ -163,6 +164,9 @@ public struct QuotaWindow: Equatable {
     public func burn(now: TimeInterval = Date().timeIntervalSince1970, profile: ActivityProfile? = nil,
                      timeZone: TimeZone = .current) -> Burn? {
         guard windowSeconds > 0, !isRolling, let reset = resetsAt else { return nil }   // 滚动窗口没有终点可推
+        // 旧数据 / 已过重置点：拿它推未来会误导（界面和提醒都不给预测）
+        let t = trust(now: now)
+        guard t != .stale && t != .awaiting else { return nil }
         let remaining = reset - now
         guard remaining > 0 else { return nil }                       // 已过重置点，旧值作废
         let elapsed = windowSeconds - remaining
@@ -212,7 +216,8 @@ public struct ForecastCandidate: Equatable {
     public let body: String
     public let exhaustAt: TimeInterval
 
-    public static func find(in windows: [(platform: String, pool: String, window: QuotaWindow?, profile: ActivityProfile?)],
+    /// id = 稳定身份（卡片 ID + 固定池名，不随界面语言、显示名变）；platform / pool 只用于文案
+    public static func find(in windows: [(id: String, platform: String, pool: String, window: QuotaWindow?, profile: ActivityProfile?)],
                             now: TimeInterval) -> [ForecastCandidate] {
         windows.compactMap { item in
             guard let w = item.window, w.trust(now: now) == .reported, w.effectivePct(now: now) < 100,
@@ -220,7 +225,7 @@ public struct ForecastCandidate: Equatable {
                   let at = b.exhaustAt, at < reset,
                   let eta = Fmt.countdown(to: at, now: now), let left = Fmt.countdown(to: reset, now: now) else { return nil }
             return ForecastCandidate(
-                key: "forecast:\(item.platform):\(item.pool)@\(Int(reset))",
+                key: "forecast:\(item.id)@\(Int(reset))",
                 title: L("📈 预计打满 · \(item.platform) \(item.pool)", "📈 Projected to run out · \(item.platform) \(item.pool)"),
                 body: L("已用 \(w.effectivePct(now: now))%，照目前节奏（\(b.basis)）约 \(eta) 后打满，离重置还有 \(left)。这是预计，不是已经用完。",
                         "\(w.effectivePct(now: now))% used; at the current pace (\(b.basis)) it runs out in about \(eta), with \(left) left until the reset. This is a projection."),

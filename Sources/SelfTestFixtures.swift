@@ -63,6 +63,12 @@ enum SelfTestFixtures {
         precondition(anomalies.count == 2 && anomalies[0].final && anomalies[0].kind == .overloaded && anomalies[0].id == "fx-a2"
                      && !anomalies[1].final && anomalies[1].kind == .connection, "请求异常：\(anomalies)")
         precondition(RequestAnomalies.text([.server: 3, .rateLimit: 1]) == L("服务端 3 · 限流 1", "server 3 · rate-limited 1"))
+        // 重试事件按状态码分类：401 是认证；带 rateLimits 字段但状态 529 是过载，不是限流
+        func retry(_ error: String) -> RequestAnomalies.Kind? {
+            ProcessScanner.claudeAnomaly(Data((#"{"type":"system","subtype":"api_error","uuid":"u","timestamp":"2026-09-18T16:00:00Z","error":"# + error + "}").utf8))?.kind
+        }
+        precondition(retry(#"{"status":401}"#) == .auth && retry(#"{"status":529,"rateLimits":{}}"#) == .overloaded && retry(#"{"status":429}"#) == .rateLimit)
+        precondition(retry(#"{"connection":{"code":"ECONNRESET"}}"#) == .connection && retry(#"{}"#) == .other)
 
         let quota = ProcessScanner.shared.parseCodexText(codex_0_156, fallbackTime: 0).buckets["codex"]
         precondition(quota?.weekly?.usedPct == 97 && quota?.weekly?.resetsAt == 1790414260 && quota?.fiveHour == nil && quota?.plan == "prolite",

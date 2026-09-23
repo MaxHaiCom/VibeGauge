@@ -58,11 +58,13 @@ enum SelfTest {
         // 本机模型服务识别：App 包路径带空格、独立版 llmster、MLX / llama.cpp 端口；grep / cat 之类不算
         do {
             let lm = "lm studio.app/", lmBins = ["lm studio", "lmstudio", "llmster"]
-            precondition(ProcessScanner.isRunning("/Applications/LM Studio.app/Contents/MacOS/LM Studio --type=renderer", bundle: lm, bins: lmBins))
+            // 带空格的包路径按 PID 取到的真实路径判断；命令行里只是提到它（grep、cat）不算
+            precondition(ProcessScanner.isBundleExecutable("/Applications/LM Studio.app/Contents/MacOS/LM Studio", bundle: lm))
+            precondition(!ProcessScanner.isBundleExecutable("/bin/cat", bundle: lm))
+            precondition(ProcessScanner.executableOf(pid: Int(getpid())) != nil, "按 PID 取可执行文件路径")
             precondition(ProcessScanner.isRunning("/Users/x/.lmstudio/bin/llmster --port 1234", bundle: lm, bins: lmBins))
             precondition(!ProcessScanner.isRunning("/usr/bin/grep -r /Applications/LM Studio.app/Contents", bundle: lm, bins: lmBins))
-            precondition(!ProcessScanner.isRunning("/bin/cat /Applications/LM Studio.app/x", bundle: lm, bins: lmBins))
-            precondition(!ProcessScanner.isRunning("/bin/zsh -c open /Applications/LM Studio.app", bundle: lm, bins: lmBins))
+            precondition(!ProcessScanner.isRunning("/bin/cat ./LM Studio.app/Contents/Info.plist", bundle: lm, bins: lmBins))
             precondition(ProcessScanner.isMLXServer("/opt/homebrew/bin/python3.12 -m mlx_lm.server --model m --port 9000"))
             precondition(ProcessScanner.isMLXServer("/Users/x/.venv/bin/mlx_lm.server --model m"))
             precondition(!ProcessScanner.isMLXServer("/bin/zsh -c python3 -m mlx_lm.server") && !ProcessScanner.isMLXServer("/usr/bin/grep mlx_lm.server"))
@@ -84,6 +86,9 @@ enum SelfTest {
             var r = w(reset: t + 3600, captured: t); r.isRolling = true
             precondition(r.trust(now: t) == .estimated)
             precondition(w(reset: t - 1, captured: t - 60).trustText(now: t) == L("等待新回报", "Awaiting update"))
+            precondition(QuotaWindow(usedPct: 40, resetsAt: t + 86400, capturedAt: t - 90000).trust(now: t) == .stale, "窗口长度未知：一天没更新算过期")
+            var old = w(reset: t + 7200, captured: t - 7200); old.recentPctPerHour = 30; old.recentSpanMinutes = 30
+            precondition(old.trust(now: t) == .stale && old.burn(now: t) == nil, "过期数据不做预测")
         }
         // 预计打满提醒：只报官方回报的窗口；预测持续 15 分钟才发；同一周期只发一次；预测消失再出现要重新计时
         do {
@@ -93,8 +98,11 @@ enum SelfTest {
             var calm = hot; calm.recentPctPerHour = 1
             var stale = hot; stale.capturedAt = t - 3 * 3600
             var rolling = hot; rolling.isRolling = true
-            let found = ForecastCandidate.find(in: [("Claude", "5h", hot, nil), ("Codex", "5h", calm, nil), ("Grok", "5h", stale, nil), ("API", "5h", rolling, nil), ("X", "5h", nil, nil)], now: t)
-            precondition(found.map(\.key) == ["forecast:Claude:5h@\(Int(t + 7200))"], "候选：\(found.map(\.key))")
+            let found = ForecastCandidate.find(in: [("Claude|5h", "Claude", "5h", hot, nil), ("Codex|5h", "Codex", "5h", calm, nil), ("Grok|5h", "Grok", "5h", stale, nil),
+                                                    ("api|5h", "API", "5h", rolling, nil), ("X|5h", "X", "5h", nil, nil)], now: t)
+            precondition(found.map(\.key) == ["forecast:Claude|5h@\(Int(t + 7200))"], "候选：\(found.map(\.key))")
+            // 键不含显示文案：换界面语言 / 标题变化不会重报
+            precondition(ForecastCandidate.find(in: [("Claude|5h", "Claude", "五小时", hot, nil)], now: t).first?.key == found.first?.key)
             precondition(abs((found.first?.exhaustAt ?? 0) - (t + 2400)) < 1)
             var seen: [String: TimeInterval] = [:]
             precondition(AppDelegate.dueForecasts(found, firstSeen: &seen, notified: [], now: t).isEmpty, "刚出现不报")
@@ -128,6 +136,22 @@ enum SelfTest {
             precondition(w1.usedPct == 10 && w1.resetsAt == at("2026-09-23T12:00:00Z") && !w1.isRolling && w1.isEstimate, "首次请求起算：\(w1)")
             let w1b = ProcessScanner.planWindow(fu, kind: "first_use", seconds: 5 * 3600, limit: 10, now: at("2026-09-23T13:00:00Z"))!
             precondition(w1b.usedPct == 0 && w1b.resetsAt == nil)
+            // 记账只留 31 天：中间有过 ≥5h 的空档，完整历史和裁剪后的历史算出同一个窗口
+            let t0: TimeInterval = at("2026-08-01T00:00:00Z")
+            let endT: TimeInterval = t0 + 800 * 3600
+            let hours: [Int] = (0...800).filter { h in h < 700 || h > 706 }
+            let hourly: [(t: TimeInterval, w: Double)] = hours.map { h in (t: t0 + Double(h) * 3600, w: 1.0) }
+            let fullW = ProcessScanner.planWindow(hourly, kind: "first_use", seconds: 5 * 3600, limit: 100, now: endT)!
+            let cut: TimeInterval = endT - 31 * 86400 + 7 * 3600
+            let trimmed: [(t: TimeInterval, w: Double)] = hourly.filter { c in c.t >= cut }
+            let trimW = ProcessScanner.planWindow(trimmed, kind: "first_use", seconds: 5 * 3600, limit: 100, now: endT)!
+            precondition(fullW.resetsAt == trimW.resetsAt && fullW.usedPct == trimW.usedPct, "裁剪不改窗口：\(String(describing: fullW.resetsAt)) vs \(String(describing: trimW.resetsAt))")
+            // 周一零点按日历算：纽约 3 月 8 日切夏令时，那周不是 7×86400 秒
+            let ny = TimeZone(identifier: "America/New_York")!
+            let dst1 = ProcessScanner.planWindow([], kind: "monday", seconds: 7 * 86400, limit: 100, now: at("2026-03-04T17:00:00Z"), timeZone: ny)!
+            precondition(dst1.resetsAt == at("2026-03-09T04:00:00Z"), "跨夏令时周一：\(String(describing: dst1.resetsAt))")
+            let dst2 = ProcessScanner.planWindow([(at("2026-03-02T05:30:00Z"), 1)], kind: "monday", seconds: 7 * 86400, limit: 100, now: at("2026-03-08T16:00:00Z"), timeZone: ny)!
+            precondition(dst2.usedPct == 1 && dst2.resetsAt == at("2026-03-09T04:00:00Z"), "周日仍在本周，起点是 3/2 00:00 EST")
             // 每周一 00:00（北京时间）：周日 23:00 的不算，周一 01:00 的算；周日看也是本周一开始
             let wk = [(at("2026-09-20T15:00:00Z"), 1.0), (at("2026-09-20T17:00:00Z"), 1.0)]
             let w2 = ProcessScanner.planWindow(wk, kind: "monday", seconds: 7 * 86400, limit: 100, now: at("2026-09-23T02:00:00Z"), timeZone: sh)!
@@ -399,7 +423,7 @@ enum SelfTest {
 
             // day0 10 点起的周窗口；第 3 天凌晨 2 点（刚睡）已用 45%，睡到 10 点用量没变
             let reset = day0 + 10 * 3600 + 7 * 86400
-            let w = QuotaWindow(usedPct: 45, resetsAt: reset, capturedAt: day0, windowSeconds: 7 * 86400)
+            let w = QuotaWindow(usedPct: 45, resetsAt: reset, capturedAt: day0 + 3 * 86400 + 2 * 3600, windowSeconds: 7 * 86400)   // 睡前刚采集，别被当成过期
             let atSleep = day0 + 3 * 86400 + 2 * 3600, wake = atSleep + 8 * 3600
             let s1 = w.burn(now: atSleep, profile: p, timeZone: utc)!, s2 = w.burn(now: wake, profile: p, timeZone: utc)!
             precondition(s1.perActiveDay != nil && w.burn(now: atSleep)!.perActiveDay == nil)
@@ -407,7 +431,7 @@ enum SelfTest {
             let o1 = w.burn(now: atSleep)!.projectedAtReset, o2 = w.burn(now: wake)!.projectedAtReset
             precondition(o1 - o2 > 10, "旧算法把整晚当在用，同样用量两个时刻差 \(o1 - o2)")
             // 用得猛会打满：打满时刻必须落在常用时段，不会算在睡觉时
-            let heavy = QuotaWindow(usedPct: 60, resetsAt: reset, capturedAt: day0, windowSeconds: 7 * 86400)
+            let heavy = QuotaWindow(usedPct: 60, resetsAt: reset, capturedAt: atSleep, windowSeconds: 7 * 86400)
             let hb = heavy.burn(now: atSleep, profile: p, timeZone: utc)!
             precondition(hb.projectedAtReset > 100 && hb.exhaustAt! < reset, "实际 \(hb.projectedAtReset)")
             precondition(counts[hourOf(hb.exhaustAt!)] > 0, "打满时刻 \(hourOf(hb.exhaustAt!)) 点不在常用时段")

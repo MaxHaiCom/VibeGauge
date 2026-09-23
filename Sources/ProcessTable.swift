@@ -99,16 +99,18 @@ extension ProcessScanner {
         if isShellWrapper(t) { return false }
         let exe = executablePath(t).lowercased()
         if !bundle.isEmpty, exe.contains(bundle) { return true }
-        // App 包路径里可以有空格（/Applications/LM Studio.app/…）：按第一个空格截断会永远认不出来。
-        // 只在包名出现在命令行开头的路径里才算 —— 包名之前出现「 /」或「 -」说明已经进了参数（grep、cat 之类）
-        let lower = t.lowercased()
-        if !bundle.isEmpty, lower.hasPrefix("/"), let r = lower.range(of: bundle) {
-            let head = lower[..<r.lowerBound]
-            if !head.contains(" /") && !head.contains(" -") { return true }
-        }
+
         let bin = String(exe.split(separator: "/").last ?? "")
         return bins.contains(bin)
     }
+
+    /// 进程真实的可执行文件路径（不受命令行里空格影响）
+    static func executableOf(pid: Int) -> String? {
+        var buf = [CChar](repeating: 0, count: 4 * 1024)
+        let n = proc_pidpath(Int32(pid), &buf, UInt32(buf.count))
+        return n > 0 ? String(cString: buf) : nil
+    }
+    static func isBundleExecutable(_ path: String, bundle: String) -> Bool { path.lowercased().contains("/" + bundle) }
 
     /// `python -m mlx_lm.server …` 或装好的 `mlx_lm.server` 命令；shell 包装器里提到它不算
     static func isMLXServer(_ cmd: String) -> Bool {
@@ -237,6 +239,9 @@ extension ProcessScanner {
             if ProcessScanner.isRunning(p.cmd, bundle: "/cursor.app/", bins: ["cursor"]) { c.cursor = true }
             if ProcessScanner.isRunning(p.cmd, bundle: "/ollama.app/", bins: ["ollama"]) { c.ollama = true }
             if ProcessScanner.isRunning(p.cmd, bundle: "lm studio.app/", bins: ["lm studio", "lmstudio", "llmster"]) { c.lmStudio = true }
+            // App 包路径带空格（/Applications/LM Studio.app/…）时命令行首词被空格截断：按 PID 取真实可执行文件路径，不靠参数猜
+            else if !c.lmStudio, p.cmd.lowercased().contains("lm studio.app/"),
+                    Self.executableOf(pid: p.pid).map({ Self.isBundleExecutable($0, bundle: "lm studio.app/") }) == true { c.lmStudio = true }
             if ProcessScanner.isRunning(p.cmd, bundle: "", bins: ["llama-server"]) { c.llamaServerPorts.append(Self.portArg(p.cmd) ?? 8080) }
             if Self.isMLXServer(p.cmd) { c.mlxServerPorts.append(Self.portArg(p.cmd) ?? 8080) }
             guard p.ppid != 1 else { continue }
