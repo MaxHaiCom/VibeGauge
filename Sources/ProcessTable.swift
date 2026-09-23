@@ -99,8 +99,34 @@ extension ProcessScanner {
         if isShellWrapper(t) { return false }
         let exe = executablePath(t).lowercased()
         if !bundle.isEmpty, exe.contains(bundle) { return true }
+        // App 包路径里可以有空格（/Applications/LM Studio.app/…）：按第一个空格截断会永远认不出来。
+        // 只在包名出现在命令行开头的路径里才算 —— 包名之前出现「 /」或「 -」说明已经进了参数（grep、cat 之类）
+        let lower = t.lowercased()
+        if !bundle.isEmpty, lower.hasPrefix("/"), let r = lower.range(of: bundle) {
+            let head = lower[..<r.lowerBound]
+            if !head.contains(" /") && !head.contains(" -") { return true }
+        }
         let bin = String(exe.split(separator: "/").last ?? "")
         return bins.contains(bin)
+    }
+
+    /// `python -m mlx_lm.server …` 或装好的 `mlx_lm.server` 命令；shell 包装器里提到它不算
+    static func isMLXServer(_ cmd: String) -> Bool {
+        let t = cmd.trimmingCharacters(in: .whitespaces)
+        if isShellWrapper(t) { return false }
+        let bin = binName(t).lowercased()
+        if bin == "mlx_lm.server" { return true }
+        return bin.hasPrefix("python") && (t.contains(" -m mlx_lm.server") || t.contains(" -m mlx_lm server"))
+    }
+
+    /// 命令行里的 `--port N` / `--port=N`
+    static func portArg(_ cmd: String) -> Int? {
+        let parts = cmd.split(separator: " ").map(String.init)
+        for (i, p) in parts.enumerated() {
+            if p == "--port", i + 1 < parts.count, let n = Int(parts[i + 1]) { return n }
+            if p.hasPrefix("--port="), let n = Int(p.dropFirst(7)) { return n }
+        }
+        return nil
     }
 
     public static func isClaudeCLISession(cmd: String) -> Bool {
@@ -180,6 +206,8 @@ extension ProcessScanner {
     struct SessionCounts {
         var claude = 0, codex = 0, agy = 0, grok = 0
         var ollama = false, cursor = false, lmStudio = false
+        /// llama.cpp 的 llama-server、MLX 的 mlx_lm.server：各自在跑的端口（命令行 --port，缺省 8080）
+        var llamaServerPorts: [Int] = [], mlxServerPorts: [Int] = []
         var pids: [CLIKind: [Int]] = [:]
         var mem: [Int: Double] = [:]
     }
@@ -208,7 +236,9 @@ extension ProcessScanner {
         for p in procs.values {
             if ProcessScanner.isRunning(p.cmd, bundle: "/cursor.app/", bins: ["cursor"]) { c.cursor = true }
             if ProcessScanner.isRunning(p.cmd, bundle: "/ollama.app/", bins: ["ollama"]) { c.ollama = true }
-            if ProcessScanner.isRunning(p.cmd, bundle: "lm studio.app/", bins: ["lm studio", "lmstudio"]) { c.lmStudio = true }
+            if ProcessScanner.isRunning(p.cmd, bundle: "lm studio.app/", bins: ["lm studio", "lmstudio", "llmster"]) { c.lmStudio = true }
+            if ProcessScanner.isRunning(p.cmd, bundle: "", bins: ["llama-server"]) { c.llamaServerPorts.append(Self.portArg(p.cmd) ?? 8080) }
+            if Self.isMLXServer(p.cmd) { c.mlxServerPorts.append(Self.portArg(p.cmd) ?? 8080) }
             guard p.ppid != 1 else { continue }
             if ProcessScanner.isClaudeCLISession(cmd: p.cmd) { matched[p.pid] = .claude }
             else if ProcessScanner.isCodexCLISession(cmd: p.cmd) { matched[p.pid] = .codex }

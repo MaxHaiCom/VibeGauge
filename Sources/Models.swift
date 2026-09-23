@@ -198,6 +198,8 @@ public struct APIProviderStatus: Identifiable {
     public var p95ms: Int = 0
     public var maxms: Int = 0
     public var count429: Int = 0
+    /// 成功但用量未知的调用次数：token 合计里没有它们，面板要说出来，不能装作用了 0
+    public var unknownUsage: Int = 0
     /// nil = 没配价目表，不估（不编价格）
     public var cost: Double? = nil
     public var costCurrency: String = ""

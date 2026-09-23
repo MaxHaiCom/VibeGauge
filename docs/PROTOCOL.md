@@ -50,6 +50,7 @@ e.g. ANTHROPIC_BASE_URL=http://127.0.0.1:18790/https://api.anthropic.com
 - Port: `18790` by default. To change it: `defaults write com.haifeng.vibegauge proxyPort <1024-65535>`, reinstall the proxy from the menu (the app writes the port into the LaunchAgent as `VIBEGAUGE_PROXY_PORT`), then update every `*_BASE_URL` prefix to the new port and restart those CLIs. Until you reinstall, the app keeps talking to the port the installed proxy actually uses.
 - Only requests whose `Host` is `127.0.0.1:<port>` or `localhost:<port>` and that carry no browser headers (`Origin`, `Sec-Fetch-Site`, `Sec-Fetch-Dest`) are accepted. Anything else gets `403`.
 - Responses are streamed through unchanged. Only `POST` requests are recorded.
+- Usage is read from Anthropic, OpenAI (Chat Completions and Responses), Gemini, and Ollama responses, streamed (SSE, or NDJSON for Ollama's native `/api/chat` and `/api/generate`) or not. OpenAI-compatible **streams only carry usage when the client asks for it** (`"stream_options": {"include_usage": true}`); without it the call is recorded with `parsed: false` and the panel counts it as "without usage" instead of zero tokens.
 - `GET /_vibegauge/health` returns `{"ok", "port", "uptime_s", "calls", "parsed", "errors", "hosts", "dir", "upstream"}`; `upstream` is the proxy the next request would use (`direct`, or `http://host:port` with credentials removed).
 
 ### Reaching the upstream (`proxy.json`, Stable)

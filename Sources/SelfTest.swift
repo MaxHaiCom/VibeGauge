@@ -48,6 +48,22 @@ enum SelfTest {
             var later = r; later.api.providers[0].fiveHour?.resetsAt = t + 3700
             precondition(r.pressures.first { $0.kind == .quota }?.key == later.pressures.first { $0.kind == .quota }?.key, "滚动窗口通知键不能随释放时刻变")
         }
+        // 本机模型服务识别：App 包路径带空格、独立版 llmster、MLX / llama.cpp 端口；grep / cat 之类不算
+        do {
+            let lm = "lm studio.app/", lmBins = ["lm studio", "lmstudio", "llmster"]
+            precondition(ProcessScanner.isRunning("/Applications/LM Studio.app/Contents/MacOS/LM Studio --type=renderer", bundle: lm, bins: lmBins))
+            precondition(ProcessScanner.isRunning("/Users/x/.lmstudio/bin/llmster --port 1234", bundle: lm, bins: lmBins))
+            precondition(!ProcessScanner.isRunning("/usr/bin/grep -r /Applications/LM Studio.app/Contents", bundle: lm, bins: lmBins))
+            precondition(!ProcessScanner.isRunning("/bin/cat /Applications/LM Studio.app/x", bundle: lm, bins: lmBins))
+            precondition(!ProcessScanner.isRunning("/bin/zsh -c open /Applications/LM Studio.app", bundle: lm, bins: lmBins))
+            precondition(ProcessScanner.isMLXServer("/opt/homebrew/bin/python3.12 -m mlx_lm.server --model m --port 9000"))
+            precondition(ProcessScanner.isMLXServer("/Users/x/.venv/bin/mlx_lm.server --model m"))
+            precondition(!ProcessScanner.isMLXServer("/bin/zsh -c python3 -m mlx_lm.server") && !ProcessScanner.isMLXServer("/usr/bin/grep mlx_lm.server"))
+            precondition(ProcessScanner.portArg("llama-server -m x.gguf --port 8081") == 8081 && ProcessScanner.portArg("x --port=9000") == 9000 && ProcessScanner.portArg("x") == nil)
+            let unparsed = ProcessScanner.shared.parseAPICallLine(#"{"epoch":1790000000,"host":"h","provider":"P","status":200,"complete":true,"parsed":false,"error":"usage_not_found"}"#)
+            precondition(unparsed?.parsed == false && unparsed?.failed == false, "成功但无用量的调用要能分出来")
+            precondition(ProcessScanner.shared.parseAPICallLine(#"{"epoch":1790000000,"host":"h","status":200}"#)?.parsed == true, "旧记录缺 parsed 当已解析")
+        }
         precondition(ProxyManager.validPort(0) == 18790 && ProxyManager.validPort(80) == 18790 && ProxyManager.validPort(18791) == 18791 && ProxyManager.validPort(70000) == 18790)
 
         // Codex 跨零点：total_token_usage 是会话累计，今天只算零点后新增的；请求数只数今天的事件

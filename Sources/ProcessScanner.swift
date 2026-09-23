@@ -28,7 +28,8 @@ public final class ProcessScanner {
 
     // 缓存：贵操作节流
     var npxCache: (mb: Double, at: TimeInterval)? = nil
-    var ollamaCache: (count: Int, sub: String, at: TimeInterval)? = nil
+    /// 本机模型服务的 HTTP 探测结果（URL → 时刻 + JSON；json 为 nil = 不可达）
+    var localProbeCache: [String: (at: TimeInterval, json: Any?)] = [:]
 
     /// 由 launchd 托管的常驻服务：ppid 天然是 1，但它们是「该活着的」，绝不能当孤儿杀。
     /// 从 plist 的 Program / ProgramArguments 里取出非解释器的实参当特征（取解释器路径会保护掉所有 python/node，太宽）。

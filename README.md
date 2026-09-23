@@ -70,7 +70,7 @@ When using autonomous coding agents like **Claude Code**, **OpenAI Codex**, **Go
   - **Codex**: Detects primary `codex` bucket usage, identifies `usage_limit_exceeded` exact unlock timestamps, and supports optional passwordless SSH synchronization from remote dev machines.
   - **Gemini / Antigravity**: Tracks official and 3rd-party quota pools with respective reset dates.
   - **Grok**: Reads weekly credit usage and billing cycle reset boundaries.
-  - **Local Model Probing**: Detects running Ollama / LM Studio instances and active models.
+  - **Local Model Probing**: Ollama, LM Studio (including headless llmster), llama.cpp (`llama-server`), and MLX (`mlx_lm.server`): online with which models loaded, online but idle, or process running but not answering. Read-only local requests; never triggers a model load.
   - **Forecast that knows you sleep**: Weekly quotas are projected from *your* last 7 days of usage — which hours you actually code (from local CLI logs) and how much you used last cycle — so a busy evening isn't extrapolated through the night. 5-hour windows use the recent pace.
 - 📈 **Today's Token Analytics & Prompt Cache ROI**:
   - Aggregated daily stats: hundreds of millions in context tokens, output tokens, and thinking/reasoning tokens.
@@ -144,7 +144,7 @@ All subscription tiers, quotas, and token metrics are read strictly from local s
 | **Codex** | `~/.codex/auth.json`<br>(JWT `chatgpt_plan_type`) | Session jsonl `rate_limits`<br>(Extracts exact unlock time from `task_complete` errors) | Updates only when requests are actively sent |
 | **Gemini** | Local auth token verification | Official quota agy hands to its status line, Gemini & 3rd-party pools<br>(**one click**: “Connect quota” on the card) | Every agy status-line refresh |
 | **Grok** | `~/.grok/settings_cache.json` | `~/.grok/logs/unified.jsonl`<br>(Latest billing credits config & period end) | Periodically flushed by Grok CLI |
-| **Ollama** | Local socket & process probe | Non-quota based (monitors active on-device models) | Instant live status |
+| **Ollama / LM Studio / llama.cpp / MLX** | Process match + read-only local endpoints (`/api/ps`, `/api/v1/models`, `/v1/models`) | No cloud quota (online state and loaded models) | Cached 10 s |
 
 > 🔗 **How “Connect quota” works**: Claude Code and agy pass the official quota to their status-line command on every refresh. Connecting swaps in VibeGauge's small bridge script (`~/.config/vibegauge/vibegauge-statusline.py`, stdlib Python), which saves a copy and then hands the exact same input to your previous status line — what you see doesn't change. Your `settings.json` is backed up first (`settings.json.vibegauge-backup`); turn it off under **Mac → Settings** to restore it. No credentials are read and no requests are made.
 

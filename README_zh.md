@@ -66,7 +66,7 @@
   - **Codex**：解析主桶配额与打满状态，智能识别 `usage_limit_exceeded` 确切解封时刻；支持远程机器 SSH 免密拉取同步。
   - **Gemini / Antigravity**：实时跟踪官方池与三方池额度、重置周期。
   - **Grok**：实时读取周用量百分比与周期重置时间。
-  - **本地运行探测**：探测 Ollama / LM Studio 等本地模型服务活跃状态。
+  - **本地运行探测**：Ollama、LM Studio（含独立版 llmster）、llama.cpp（`llama-server`）、MLX（`mlx_lm.server`）：区分「在线 · 已加载哪些模型」「在线但空载」「进程在跑但接口没应答」。只发本机只读请求，不会触发加载模型。
   - **懂你作息的额度预测**：周额度按**你自己近 7 天**的使用情况推算——几点在用（来自本地 CLI 日志）、上个周期用了多少——晚上猛用一阵不会被外推成通宵都在烧。5 小时窗口仍看近期节奏。
 - 📈 **今日 Token 用量与缓存命中率大盘**：
   - 汇总今日总调用轮次、亿级上下文规模、输出 Token、思考（Thinking）Token。
@@ -140,7 +140,7 @@ open VibeGauge.app
 | **Codex** | `~/.codex/auth.json`<br>（JWT 包含的 `plan_type`） | 会话日志中的 `rate_limits`<br>打满时精准解析 `task_complete` 中的解封时间 | 仅在发出请求时写入；支持可选 SSH 远程多端同步 |
 | **Gemini** | 检测本地鉴权标识与登录态 | agy 交给状态栏的官方额度，区分 Gemini 主池与三方池<br>（卡片上点 **「一键连接额度」**） | agy 每次刷新状态栏时 |
 | **Grok** | `~/.grok/settings_cache.json` | `~/.grok/logs/unified.jsonl`<br>（解析 billing 信用百分比与周期截止时刻） | Grok 运行期间由后台定期刷回本地 |
-| **Ollama / 本地** | 探测本地服务端口与进程 | 无云端额度约束（直接显示端侧运行状态） | 实时探测活跃模型 |
+| **Ollama / LM Studio / llama.cpp / MLX** | 进程识别 + 本机只读接口（`/api/ps`、`/api/v1/models`、`/v1/models`） | 无云端额度约束（显示在线状态与已加载模型） | 10 秒缓存 |
 
 > 🔗 **「一键连接额度」怎么工作**：Claude Code 和 agy 每次刷新状态栏，都会把官方额度交给状态栏命令。连接后，状态栏命令换成 VibeGauge 自带的小脚本（`~/.config/vibegauge/vibegauge-statusline.py`，纯 Python 标准库）：截下一份额度，再把同一份输入原样交给你原来的状态栏，显示不变。改动前自动备份 `settings.json`（`settings.json.vibegauge-backup`），在 **系统 → 设置** 里关掉即还原。不读任何凭据，不发任何请求。
 

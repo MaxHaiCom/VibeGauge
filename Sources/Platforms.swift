@@ -170,12 +170,15 @@ extension ProcessScanner {
             ))
         }
 
-        // Ollama（探测结果缓存 10s，避免 ticker 每秒阻塞）
+        // 本机模型服务：只读 GET（不会触发加载模型），10s 缓存。服务在线但没加载模型 = 在线，不是「未运行」
         if c.ollama {
-            let o = probeOllama()
-            list.append(DetectedLLMRuntime(
-                name: "Ollama", isRunning: o.count > 0, tier: L("本地", "Local"), detail: L("\(o.count) 模型", "\(o.count) models"), quotaSubtitle: o.sub
-            ))
+            if let j = probeLocalJSON("http://127.0.0.1:11434/api/ps") as? [String: Any] {
+                let names = (j["models"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
+                list.append(localCard("Ollama", loaded: names))
+            } else {
+                list.append(DetectedLLMRuntime(name: "Ollama", isRunning: false, tier: L("本地", "Local"), detail: L("状态未知", "Status unknown"),
+                    quotaSubtitle: L("进程在跑，但 127.0.0.1:11434 没应答（改过 OLLAMA_HOST？）", "Process running but 127.0.0.1:11434 is not answering (custom OLLAMA_HOST?)")))
+            }
         }
 
         if c.cursor {
@@ -183,39 +186,64 @@ extension ProcessScanner {
         }
 
         if c.lmStudio {
-            list.append(DetectedLLMRuntime(name: "LM Studio", isRunning: true, tier: L("本地", "Local"), detail: L("运行中", "Running"), quotaSubtitle: L("端侧运行 · 0 额度消耗", "Runs locally · 0 quota used")))
+            // v1 REST：models[].loaded_instances；旧版回退 v0：data[].state == "loaded"。/v1/models 列的是可用模型（JIT），不能当已加载
+            if let j = probeLocalJSON("http://127.0.0.1:1234/api/v1/models") as? [String: Any], let models = j["models"] as? [[String: Any]] {
+                let names = models.filter { !($0["loaded_instances"] as? [Any] ?? []).isEmpty }.compactMap { ($0["key"] ?? $0["id"]) as? String }
+                list.append(localCard("LM Studio", loaded: names))
+            } else if let j = probeLocalJSON("http://127.0.0.1:1234/api/v0/models") as? [String: Any], let data = j["data"] as? [[String: Any]] {
+                list.append(localCard("LM Studio", loaded: data.filter { $0["state"] as? String == "loaded" }.compactMap { $0["id"] as? String }))
+            } else {
+                list.append(DetectedLLMRuntime(name: "LM Studio", isRunning: true, tier: L("本地", "Local"), detail: L("运行中", "Running"),
+                    quotaSubtitle: L("App 在跑 · 本地服务未开启（Developer → Start Server）", "App running · local server off (Developer → Start Server)")))
+            }
+        }
+
+        for port in Set(c.llamaServerPorts).sorted() {
+            // llama-server 一次只服务一个模型，/v1/models 列的就是它
+            let ids = ((probeLocalJSON("http://127.0.0.1:\(port)/v1/models") as? [String: Any])?["data"] as? [[String: Any]])?.compactMap { $0["id"] as? String }
+            list.append(ids.map { localCard("llama.cpp :\(port)", loaded: $0) } ?? DetectedLLMRuntime(name: "llama.cpp :\(port)", isRunning: false, tier: L("本地", "Local"),
+                detail: L("状态未知", "Status unknown"), quotaSubtitle: L("进程在跑，端口没应答（还在加载模型？）", "Process running, port not answering (still loading?)")))
+        }
+        for port in Set(c.mlxServerPorts).sorted() {
+            // mlx_lm.server 的 /v1/models 列的是本机缓存的模型，不代表已加载 → 只报在线
+            let online = probeLocalJSON("http://127.0.0.1:\(port)/v1/models") != nil
+            list.append(DetectedLLMRuntime(name: "MLX :\(port)", isRunning: online, tier: L("本地", "Local"), detail: online ? L("在线", "Online") : L("状态未知", "Status unknown"),
+                quotaSubtitle: online ? L("端侧运行 · 0 额度消耗", "Runs locally · 0 quota used") : L("进程在跑，端口没应答", "Process running, port not answering")))
         }
 
         return list
     }
 
-    func probeOllama() -> (count: Int, sub: String) {
+    func localCard(_ name: String, loaded: [String]) -> DetectedLLMRuntime {
+        DetectedLLMRuntime(name: name, isRunning: true, tier: L("本地", "Local"),
+                           detail: loaded.isEmpty ? L("在线", "Online") : L("\(loaded.count) 模型", "\(loaded.count) models"),
+                           quotaSubtitle: loaded.isEmpty ? L("在线 · 无已加载模型", "Online · no model loaded") : L("已加载: ", "Loaded: ") + loaded.joined(separator: ", "))
+    }
+
+    /// 本机 HTTP GET，0.3s 超时，结果缓存 10s（失败也缓存，免得每秒卡一次）。
+    /// 结果放独立加锁的盒子：超时后迟到的回调只写盒子，不与扫描线程的读竞争。非 2xx / 非 JSON = nil。
+    /// ponytail: 同步等待，在扫描锁内；多个本机服务同时不可达时最坏每 10s 多等 0.3s × 个数，要更快再改异步快照
+    func probeLocalJSON(_ urlString: String) -> Any? {
         let now = Date().timeIntervalSince1970
-        if let c = ollamaCache, now - c.at < 10 { return (c.count, c.sub) }
-        // 结果放独立加锁的盒子：超时后迟到的回调只写盒子，不与扫描线程的读竞争
-        final class Box { let lock = NSLock(); var count = 0; var sub = L("端侧运行 · 无已加载模型", "Runs locally · no loaded models") }
+        if let c = localProbeCache[urlString], now - c.at < 10 { return c.json }
+        final class Box { let lock = NSLock(); var json: Any? }
         let box = Box()
-        if let url = URL(string: "http://127.0.0.1:11434/api/ps") {
+        if let url = URL(string: urlString) {
             var request = URLRequest(url: url)
             request.timeoutInterval = 0.3
             let sema = DispatchSemaphore(value: 0)
-            URLSession.shared.dataTask(with: request) { data, _, _ in
-                if let data = data,
-                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let models = json["models"] as? [[String: Any]], !models.isEmpty {
-                    box.lock.lock()
-                    box.count = models.count
-                    box.sub = L("已加载: ", "Loaded: ") + models.compactMap { $0["name"] as? String }.joined(separator: ", ")
-                    box.lock.unlock()
+            let task = URLSession.shared.dataTask(with: request) { data, response, _ in
+                if let data, let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                   let json = try? JSONSerialization.jsonObject(with: data) {
+                    box.lock.lock(); box.json = json; box.lock.unlock()
                 }
                 sema.signal()
-            }.resume()
-            _ = sema.wait(timeout: .now() + 0.3)
+            }
+            task.resume()
+            if sema.wait(timeout: .now() + 0.3) == .timedOut { task.cancel() }
         }
-        box.lock.lock()
-        let result = (count: box.count, sub: box.sub)
-        box.lock.unlock()
-        ollamaCache = (result.count, result.sub, now)
+        box.lock.lock(); let result = box.json; box.lock.unlock()
+        localProbeCache[urlString] = (now, result)
         return result
     }
 }

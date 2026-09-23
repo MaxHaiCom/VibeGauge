@@ -47,7 +47,6 @@ PROVIDERS = [
     ("xiaomimimo.com", "MiMo"), ("moonshot.cn", "Kimi"), ("moonshot.ai", "Kimi"),
     ("minimaxi.com", "MiniMax"), ("minimax.io", "MiniMax"), ("deepseek.com", "DeepSeek"),
     ("dashscope.aliyuncs.com", "通义"), ("hunyuan", "混元"), ("siliconflow", "硅基流动"),
-    ("localhost", "本地"), ("127.0.0.1", "本地"),
 ]
 
 # 客户端 → 上游 不该透传的头；Accept-Encoding 去掉是为了拿到明文好解析
@@ -78,6 +77,11 @@ def provider_of(host: str, path: str = "") -> str:
     if "volces.com" in host.lower():
         return "火山方舟 Coding" if path.startswith("/api/coding") else "火山豆包(按量)"
     h = host.lower()
+    # 本机模型（Ollama / LM Studio / llama.cpp 等）：按解析出的主机名精确判回环，
+    # 子串匹配会把 localhost.example.org 当本地、把 [::1]:11434 切成 "["
+    name_only = urllib.parse.urlsplit("//" + h).hostname or h
+    if _is_loopback(name_only):
+        return "本地"
     for sub, name in PROVIDERS:
         if sub in h:
             return name
@@ -332,7 +336,9 @@ class UsageParser:
     def __init__(self, req_model: Optional[str], content_type: str, encoding: str):
         self.u: Dict[str, Any] = {"model": req_model, "ctx": 0, "cache_read": 0,
                                   "cache_write": 0, "out": 0, "think": 0, "parsed": False}
-        self.mode = "sse" if "text/event-stream" in content_type.lower() else None
+        ct = content_type.lower()
+        # Ollama 原生 /api/chat、/api/generate 流式是 NDJSON：一行一个 JSON，done:true 那行带用量
+        self.mode = "sse" if "text/event-stream" in ct else "ndjson" if "ndjson" in ct else None
         self.buf = bytearray()
         self.event = bytearray()
         self.discard_line = False
@@ -404,6 +410,9 @@ class UsageParser:
             else:
                 self.buf.extend(data)
             return
+        if self.mode == "ndjson":
+            self._ndjson(data)
+            return
         if self.mode != "sse":
             return
         # 同时接受 LF、CRLF 和 CR，网络块可切在任何 UTF-8 字符/换行中间。
@@ -421,6 +430,21 @@ class UsageParser:
         if start < len(data):
             self.after_cr = False
             self._part(data[start:])
+
+    def _ndjson(self, data: bytes, final: bool = False) -> None:
+        self.buf.extend(data)
+        *lines, rest = bytes(self.buf).split(b"\n")
+        if final:
+            lines, rest = lines + [rest], b""
+        self.buf = bytearray(rest)
+        for line in lines:
+            line = line.strip()
+            if line:
+                self._json(line)
+        if len(self.buf) > self.EVENT_LIMIT:
+            self.fail("ndjson_line_too_large")
+            self.buf.clear()
+            self.mode = "discard"
 
     def _part(self, part: bytes) -> None:
         if self.discard_line:
@@ -456,12 +480,25 @@ class UsageParser:
         if self.decoder is not None and not self.decoder.eof:
             self.fail("incomplete_gzip")
         if self.mode == "json" and complete and not self.decode_failed:
-            self._json(bytes(self.buf))
+            body = bytes(self.buf)
+            try:
+                json.loads(body)
+                self._json(body)
+            except (ValueError, UnicodeError, RecursionError):
+                # 漏报 Content-Type 的 NDJSON（多行各一个 JSON）：逐行解析
+                if body.strip().count(b"\n") >= 1:
+                    self.buf.clear()
+                    self.mode = "ndjson"
+                    self._ndjson(body, final=True)
+                else:
+                    self._json(body)
+        elif self.mode == "ndjson" and not self.decode_failed:
+            self._ndjson(b"", final=complete)
         elif self.mode == "sse" and (self.buf or self.event or self.discard_line or self.discard_event):
             self.fail("incomplete_sse_event")
         if not self.u["parsed"]:
             self.fail("usage_not_found")
-        elif self.mode == "sse" and not self.u.get("_final_usage"):
+        elif self.mode in ("sse", "ndjson") and not self.u.get("_final_usage"):
             self.fail("final_usage_not_found")
         u = {k: v for k, v in self.u.items() if not k.startswith("_")}
         # 已收到的计数保留作诊断，但不把部分 usage 标成解析成功。
@@ -861,6 +898,29 @@ def selftest() -> None:
             json.dump(conf, f)
         _proxy_cache["at"] = 0.0
     set_proxy_conf({"upstream": "direct"})     # 自测结果不能取决于跑测试那台机器开没开系统代理
+    # Ollama 原生流式 NDJSON：任意位置切块、漏报 Content-Type、中途断流
+    nd = b"".join(json.dumps(o).encode() + b"\n" for o in (
+        {"model": "qwen3", "message": {"content": "h"}, "done": False},
+        {"model": "qwen3", "message": {"content": "i"}, "done": False},
+        {"model": "qwen3", "done": True, "prompt_eval_count": 17, "eval_count": 9}))
+    for ct in ("application/x-ndjson", ""):
+        for cut in (1, 7, len(nd) // 2, len(nd) - 3):
+            up = UsageParser(None, ct, "")
+            up.feed(nd[:cut]); up.feed(nd[cut:])
+            r = up.finish(True)
+            assert r["ctx"] == 17 and r["out"] == 9 and r["model"] == "qwen3" and r["parsed"] and "error" not in r, (ct, cut, r)
+    up = UsageParser(None, "application/x-ndjson", "")
+    up.feed(nd[: nd.index(b'{"model": "qwen3", "done": true')])
+    r = up.finish(False)
+    assert not r["parsed"] and r["error"] == "incomplete_response", r
+    up = UsageParser(None, "application/x-ndjson", "")
+    up.feed(nd[: nd.index(b'{"model": "qwen3", "done": true')])
+    r = up.finish(True)
+    assert not r["parsed"] and r["error"] == "usage_not_found", r
+
+    assert [provider_of(h) for h in ("localhost:11434", "127.0.0.1:1234", "[::1]:11434")] == ["本地"] * 3
+    assert provider_of("localhost.example.org") == "localhost.example.org"
+
     _neg: Dict[str, Any] = {}
     _set(_neg, "out", -5); _set(_neg, "ctx", float("nan"))
     assert _neg == {}, _neg                      # 负数 / NaN 不记账
@@ -1353,7 +1413,7 @@ def selftest() -> None:
     with open(CALLS, encoding="utf-8") as f:
         ledger = f.read()
     assert "x" * 100 not in ledger and "test-key" not in ledger and '"usage"' not in ledger, "正文/凭据不得落盘"
-    print("selftest OK: 上游代理隧道 + Responses + Gemini 思考量 + >8MiB SSE/gzip + 流中断/客户端断开 + 时区 + 原有回归, 记录", CALLS)
+    print("selftest OK: Ollama NDJSON + 上游代理隧道 + Responses + Gemini 思考量 + >8MiB SSE/gzip + 流中断/客户端断开 + 时区 + 原有回归, 记录", CALLS)
     # 先停服务线程再退出：否则守护线程在解释器收尾时还握着 stderr 锁，
     # 会报 "Fatal Python error: _enter_buffered_busy"、退出码 134，CI 就红了（断言其实全过）
     proxy.shutdown(); mock.shutdown()

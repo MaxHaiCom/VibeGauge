@@ -25,6 +25,8 @@ extension ProcessScanner {
         /// 请求已完整发给上游（代理新字段 sent）。连接阶段就失败的（DNS / 拒连）没到厂商，不占套餐额度；
         /// 发出去之后才断的算到了 —— 估额度宁可偏高
         var sent = true
+        /// 代理找到并完整读到了用量（parsed）。false 的调用 token 是 0 或残缺，不能当「用了 0」
+        var parsed = true
     }
 
     /// 价目表：`~/.config/vibegauge/prices.json`，单位 = 每百万 token。
@@ -142,7 +144,8 @@ extension ProcessScanner {
                        rl: (j["rl"] as? [String: Any])?.compactMapValues { $0 as? String } ?? [:],
                        // 旧版代理没有 complete / sent：它记本地失败时带 error 字段、状态码 502
                        complete: (j["complete"] as? Bool) ?? !((j["status"] as? NSNumber)?.intValue == 502 && j["error"] != nil),
-                       sent: (j["sent"] as? Bool) ?? !((j["status"] as? NSNumber)?.intValue == 502 && j["error"] != nil))
+                       sent: (j["sent"] as? Bool) ?? !((j["status"] as? NSNumber)?.intValue == 502 && j["error"] != nil),
+                       parsed: (j["parsed"] as? Bool) ?? true)
     }
 
     /// api-calls.jsonl 也是 append-only：同样的 offset 增量 + 指纹识别重写；
@@ -355,6 +358,7 @@ extension ProcessScanner {
             p.calls += 1
             if c.failed { p.errors += 1 }
             if c.status == 429 { p.count429 += 1 }
+            if !c.parsed && !c.failed { p.unknownUsage += 1 }   // 调用成功但没拿到用量（如客户端没开 include_usage）
             p.ctx += c.ctx
             p.cacheRead += c.cacheRead
             p.out += c.out

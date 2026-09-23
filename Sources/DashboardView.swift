@@ -229,6 +229,7 @@ public struct DashboardView: View {
             // 第四行：延迟 + 错误 + 花费，都从记账文件里已有的字段算，没有就不写
             var obs: [String] = []
             if p.p95ms > 0 { obs.append("p50 \(Fmt.ms(p.p50ms)) · p95 \(Fmt.ms(p.p95ms))") }
+            if p.unknownUsage > 0 { obs.append(L("\(p.unknownUsage) 次用量未知", "\(p.unknownUsage) without usage")) }
             if p.errors > 0 { obs.append(String(format: L("%d 错(%.0f%%)", "%d errors (%.0f%%)"), p.errors, p.errorRate) + (p.count429 > 0 ? L(" 含 \(p.count429) 限流", " incl. \(p.count429) rate-limited") : "")) }
             if let c = p.cost { obs.append(money(c, p.costCurrency)) }
             return DetectedLLMRuntime(
