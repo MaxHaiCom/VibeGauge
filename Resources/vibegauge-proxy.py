@@ -776,7 +776,8 @@ def _iso_to_s(v: Any) -> Optional[float]:
 def probe_glm(hdrs):
     """智谱 GLM Coding Plan：/api/monitor/usage/quota/limit（社区标准接口，2026-09-18 实测存在；
     无套餐时返回 code 500 "当前用户不存在coding plan"）。limits[] 按 nextResetTime 早的当 5h、晚的当周。"""
-    host = "open.bigmodel.cn"
+    # 海外 Z.ai 与国内智谱是两套账号：key 从哪个域名来就查哪个域名
+    host = "api.z.ai" if host_matches(hdrs.get(":host", ""), "z.ai") else "open.bigmodel.cn"
     j = _get_json(host, "/api/monitor/usage/quota/limit", _bearer(hdrs))
     if j.get("code") != 200 or not isinstance(j.get("data"), dict):
         return {"kind": "quota", "error": redact_text(str(j.get("msg") or j))[:120]}
@@ -874,7 +875,7 @@ def quota_loop() -> None:
                     continue
                 row = {"provider": provider_of(host), "captured_at": time.time()}
                 try:
-                    row.update(fn(hdrs))
+                    row.update(fn(dict(hdrs, **{":host": host})))
                 except Exception as e:
                     row["error"] = redact_text(str(e))[:160]
                 result[entry] = row
@@ -934,6 +935,16 @@ def selftest() -> None:
 
     assert [provider_of(h) for h in ("localhost:11434", "127.0.0.1:1234", "[::1]:11434")] == ["本地"] * 3
     assert provider_of("localhost.example.org") == "localhost.example.org"
+
+    # --probe：只认已知用量接口的域名；key 带到对应探针；z.ai 查海外、bigmodel 查国内
+    assert probe_once({"host": "example.com", "key": "k"})["error"].startswith("no usage endpoint")
+    assert probe_once({"host": 3})["error"] == "bad request" and probe_once(None)["error"] == "bad request"
+    seen_hosts = []
+    with patch(__name__ + "._get_json", side_effect=lambda host, path, headers, timeout=15: seen_hosts.append((host, headers["Authorization"])) or {"code": 200, "data": {"limits": []}}):
+        r = probe_once({"host": "api.z.ai", "key": " zk "})
+        probe_once({"host": "open.bigmodel.cn", "key": "bk"})
+    assert seen_hosts == [("api.z.ai", "Bearer zk"), ("open.bigmodel.cn", "Bearer bk")], seen_hosts
+    assert r["kind"] == "quota" and r["provider"] == "GLM" and "key" not in json.dumps(r).lower().replace("kind", ""), r
 
     _neg: Dict[str, Any] = {}
     _set(_neg, "out", -5); _set(_neg, "ctx", float("nan"))
@@ -1434,8 +1445,32 @@ def selftest() -> None:
     sys.stdout.flush(); sys.stderr.flush()
 
 
+def probe_once(req: Any) -> Dict[str, Any]:
+    """`--probe`：App 用钥匙串里登记的 key 查一次用量（不经代理、不落盘）。
+    请求从 stdin 读 {"host", "key"}：key 不进命令行参数，进程列表里看不到。只查该域名自己的用量接口。"""
+    if not isinstance(req, dict) or not isinstance(req.get("host"), str) or not isinstance(req.get("key"), str):
+        return {"error": "bad request"}
+    host, key = req["host"].strip().lower(), req["key"].strip()
+    for sub, fn in PROBES:
+        if host_matches(host, sub):
+            row: Dict[str, Any] = {"provider": provider_of(host), "captured_at": time.time()}
+            try:
+                row.update(fn({"authorization": "Bearer " + key, ":host": host}))
+            except Exception as e:
+                row["error"] = redact_text(str(e))[:160]
+            return row
+    return {"error": "no usage endpoint for this host"}
+
+
 def main() -> None:
     sys.excepthook = log_exception
+    if "--probe" in sys.argv:
+        try:
+            req = json.loads(sys.stdin.read() or "null")
+        except ValueError:
+            req = None
+        print(json.dumps(probe_once(req), ensure_ascii=False))
+        return
     threading.excepthook = lambda args: log_exception(args.exc_type, args.exc_value, args.exc_traceback)
     if "--selftest" in sys.argv:
         selftest()
