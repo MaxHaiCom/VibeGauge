@@ -24,8 +24,7 @@ if CommandLine.arguments.contains("--selftest") {
     exit(0)
 }
 if CommandLine.arguments.contains("--diagnose") {
-    Diagnostics.run()
-    exit(0)
+    exit(Diagnostics.run())
 }
 
 

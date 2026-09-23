@@ -158,7 +158,9 @@ public final class UsageHistory {
         return result
     }
 
-    private struct FileState: Codable {
+    /// 每个日志文件的贡献：近 `recentWindow` 内是逐条记录（去重、作息画像要用），更早的折成「天 × 来源」汇总。
+    /// 按文件存而不是全局存：日志被重写时能精确撤销这个文件的全部贡献，会话数也还能按文件算。
+    struct FileState: Codable {
         var source: String
         var model = "?"
         var size: UInt64 = 0
@@ -168,13 +170,51 @@ public final class UsageHistory {
         var previousTotal: [String: Int64]?
         var records: [String: Record] = [:]
         var skipped = 0
+        var folded: [String: [String: Totals]] = [:]     // 天 → 来源 → 汇总
+        var foldedCumulative = 0
+
+        init(source: String) { self.source = source }
+        // v3 缓存没有 folded 字段：缺了就当空，别让整个历史解码失败
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            source = try c.decode(String.self, forKey: .source)
+            model = try c.decodeIfPresent(String.self, forKey: .model) ?? "?"
+            size = try c.decodeIfPresent(UInt64.self, forKey: .size) ?? 0
+            mtime = try c.decodeIfPresent(TimeInterval.self, forKey: .mtime) ?? 0
+            offset = try c.decodeIfPresent(UInt64.self, forKey: .offset) ?? 0
+            head = try c.decodeIfPresent(String.self, forKey: .head) ?? ""
+            previousTotal = try c.decodeIfPresent([String: Int64].self, forKey: .previousTotal)
+            records = try c.decodeIfPresent([String: Record].self, forKey: .records) ?? [:]
+            skipped = try c.decodeIfPresent(Int.self, forKey: .skipped) ?? 0
+            folded = try c.decodeIfPresent([String: [String: Totals]].self, forKey: .folded) ?? [:]
+            foldedCumulative = try c.decodeIfPresent(Int.self, forKey: .foldedCumulative) ?? 0
+        }
     }
-    private struct DiskCache: Codable {
-        var version = 3
+    /// v4：历史存档（已删日志的 FileState、各文件的 folded）和可重建的扫描进度在同一文件里，
+    /// 但解析器升级（parserVersion 变）只重读还在的日志，已删日志的历史不动 —— 存档不因扫描缓存失效而丢。
+    struct DiskCache: Codable {
+        static let currentVersion = 4
+        var version = currentVersion
+        var parserVersion = UsageHistory.parserVersion
         var files: [String: FileState] = [:]
-        var days: [Day] = []
+        /// 已折叠的 Claude 请求 ID → 归属文件。续接/分叉会话会把同一请求复制进新文件，靠它跨文件去重。
+        var claudeIds: [String: String] = [:]
         var updatedAt: TimeInterval = 0
+
+        init() {}
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            version = try c.decode(Int.self, forKey: .version)
+            parserVersion = try c.decodeIfPresent(Int.self, forKey: .parserVersion) ?? 1   // v3 与解析器 1 同口径
+            files = try c.decodeIfPresent([String: FileState].self, forKey: .files) ?? [:]
+            claudeIds = try c.decodeIfPresent([String: String].self, forKey: .claudeIds) ?? [:]
+            updatedAt = try c.decodeIfPresent(TimeInterval.self, forKey: .updatedAt) ?? 0
+        }
     }
+    /// 改了日志解析口径就 +1：还在的日志会被重读，已删日志保留旧口径的历史（没有原文可重读）。
+    static let parserVersion = 1
+    /// 逐条记录保留期：作息画像要近 7 天的时间戳，多留 1 天余量。
+    static let recentWindow: TimeInterval = 8 * 86400
 
     private let lock = NSLock()
     private let worker = DispatchQueue(label: "com.haifeng.vibegauge.usage-history", qos: .utility)
@@ -186,6 +226,10 @@ public final class UsageHistory {
     private var loaded = false
     private var errors: Set<String> = []
     private var cache = DiskCache()
+    /// 缓存是更新版本的 App 写的（用户降级了）：只在内存里汇总，绝不写回去覆盖它
+    private var readOnly = false
+    /// 自测注入时间，别让「8 天前」随真实日期漂移
+    var clock: () -> TimeInterval = { Date().timeIntervalSince1970 }
     private var cached = Snapshot()
     /// 缓存约 30MB：有变化才写、且至少隔 30 分钟。崩溃丢掉的只是 offset 进度，
     /// 下次从旧 offset 重读，记录按 requestId/行偏移做键，重复读不会重复计数。
@@ -239,14 +283,14 @@ public final class UsageHistory {
             autoreleasepool { process(item.path, source: item.source) }
             publishProgress(index + 1, total: paths.count)
         }
+        fold(livePaths: Set(paths.map(\.path)), now: clock())
         var result = summarize()
         result.processedFiles = paths.count
         result.totalFiles = paths.count
         for source in ["Claude", "Codex"] where !paths.contains(where: { $0.source == source }) {
             result.sourceNotes[source] = result.totals[source] == nil ? L("未检测到本机会话日志", "No local session logs found") : L("日志已移除，显示已缓存历史", "Logs removed; showing cached history")
         }
-        cache.days = result.days
-        cache.updatedAt = Date().timeIntervalSince1970
+        cache.updatedAt = clock()
         if dirty, cache.updatedAt - savedAt >= Self.saveEvery {
             saveCache()
             dirty = false
@@ -294,7 +338,7 @@ public final class UsageHistory {
             let oldHead = Self.fingerprint(Data(head.prefix(Int(min(256, state.size)))))
             let rewritten = state.offset > size || size < state.size || (!state.head.isEmpty && oldHead != state.head)
                 || (size == state.size && mod.timeIntervalSince1970 != state.mtime)
-            if state.source != source || rewritten { state = FileState(source: source) }
+            if state.source != source || rewritten { forget(path); state = FileState(source: source) }
             if state.size == size, state.mtime == mod.timeIntervalSince1970, state.head == Self.fingerprint(head) { return }
             try fh.seek(toOffset: state.offset)
             try readNewLines(fh, state: &state, size: size)
@@ -368,6 +412,40 @@ public final class UsageHistory {
         }
     }
 
+    /// 把旧记录折成按天汇总：日志已删的整个文件折掉，还在的只折 recentWindow 之前的。
+    /// ponytail: 折叠时按当时时区分天，之后改时区不会重新分桶；要精确再存 UTC 小时桶。
+    func fold(livePaths: Set<String>, now: TimeInterval) {
+        let cutoff = now - Self.recentWindow
+        for path in cache.files.keys.sorted() {
+            guard var state = cache.files[path] else { continue }
+            let live = livePaths.contains(path)
+            let old = state.records.values.filter { !live || $0.timestamp < cutoff }
+            guard !old.isEmpty else { continue }
+            for record in old.sorted(by: { $0.timestamp < $1.timestamp }) {
+                state.records[record.id] = nil
+                let day = Self.dayKey(timestamp: record.timestamp)
+                if record.source == "Claude" {
+                    // 另一个文件已经折过同一请求 → 这份是复制品：不计量，但这个会话当天出现过（会话数口径不变）
+                    if let owner = cache.claudeIds[record.id], owner != path {
+                        if state.folded[day]?[record.source] == nil { state.folded[day, default: [:]][record.source] = Totals() }
+                        continue
+                    }
+                    cache.claudeIds[record.id] = path
+                }
+                state.folded[day, default: [:]][record.source, default: Totals()].add(record)
+                if record.cumulative { state.foldedCumulative += 1 }
+            }
+            cache.files[path] = state
+            dirty = true
+        }
+    }
+
+    /// 文件被重写 / 要重读：撤销它登记过的 Claude 请求 ID。
+    /// ponytail: 别的文件里因这些 ID 被当复制品跳过的记录不会补回（Claude 日志只追加，实际不会发生）。
+    private func forget(_ path: String) {
+        cache.claudeIds = cache.claudeIds.filter { $0.value != path }
+    }
+
     private static func tokenFields(_ raw: Any?) -> [String: Int64]? {
         guard let fields = raw as? [String: Any], fields["input_tokens"] is NSNumber, fields["output_tokens"] is NSNumber else { return nil }
         var result: [String: Int64] = [:]
@@ -390,17 +468,58 @@ public final class UsageHistory {
     }
     private static func fingerprint(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 
+    /// 历史里有已删日志的账，丢了就找不回来。所以：读不了的挪到旁边不覆盖，
+    /// 旧版本先留备份再升级，新版本写的只读不写。
     private func loadCache() {
         guard !loaded else { return }
         loaded = true
-        guard FileManager.default.fileExists(atPath: cachePath) else { return }
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: cachePath) else { return }
+        let decoded: DiskCache
         do {
-            let decoded = try JSONDecoder().decode(DiskCache.self, from: Data(contentsOf: URL(fileURLWithPath: cachePath)))
-            guard decoded.version == 3 else { errors.insert(L("历史缓存版本变化，已重新汇总", "History cache version changed; rebuilding summary")); return }
+            decoded = try JSONDecoder().decode(DiskCache.self, from: Data(contentsOf: URL(fileURLWithPath: cachePath)))
+        } catch {
+            setAside("corrupt-\(Int(clock()))")
+            errors.insert(L("历史缓存无法读取，已另存并重新汇总", "History cache unreadable; kept a copy and rebuilding summary"))
+            return
+        }
+        switch decoded.version {
+        case DiskCache.currentVersion:
             cache = decoded
-        } catch { errors.insert(L("历史缓存无法读取，已重新汇总", "History cache could not be read; rebuilding summary")) }
+        case 3:
+            // v3 的逐条记录原样可用；留一份原文件，下次保存时写成 v4（会把旧记录折叠）
+            let backup = (cachePath as NSString).deletingPathExtension + ".v3.json"
+            if !fm.fileExists(atPath: backup) {
+                do { try fm.copyItem(atPath: cachePath, toPath: backup) } catch {
+                    readOnly = true
+                    errors.insert(L("历史缓存备份失败，本次不改写", "History cache backup failed; not rewriting it this session"))
+                }
+            }
+            cache = decoded
+            cache.version = DiskCache.currentVersion
+            dirty = true
+        case let v where v > DiskCache.currentVersion:
+            readOnly = true
+            errors.insert(L("历史缓存来自更新版本的 VibeGauge，本次只读不改写", "History cache was written by a newer VibeGauge; reading only"))
+        default:
+            setAside("v\(decoded.version)")
+            errors.insert(L("历史缓存版本过旧，已另存并重新汇总", "History cache format too old; kept a copy and rebuilding summary"))
+        }
+        // 解析口径变了：还在的日志重读，已删日志保留（没有原文可重读）
+        if cache.parserVersion != Self.parserVersion {
+            for path in cache.files.keys where fm.fileExists(atPath: path) {
+                forget(path); cache.files[path] = nil
+            }
+            cache.parserVersion = Self.parserVersion
+            dirty = true
+        }
+    }
+    private func setAside(_ tag: String) {
+        let dest = (cachePath as NSString).deletingPathExtension + ".\(tag).json"
+        do { try FileManager.default.moveItem(atPath: cachePath, toPath: dest) } catch { readOnly = true }
     }
     private func saveCache() {
+        guard !readOnly else { return }
         do {
             let url = URL(fileURLWithPath: cachePath)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -432,12 +551,23 @@ public final class UsageHistory {
         // 旧日志被清理后仍保留历史；同一路径重写时 process 已替换该文件的全部贡献。
         for (path, state) in cache.files {
             result.skippedRecords += state.skipped
-            if state.source == "Claude" { claudeFiles[path] = Array(state.records.values) }
-            else { records.append(contentsOf: state.records.values) }
+            result.cumulativeTurns += state.foldedCumulative
+            if state.source == "Claude" {
+                // 已被别的文件折叠过的请求，是复制品
+                claudeFiles[path] = state.records.values.filter { cache.claudeIds[$0.id].map { $0 == path } ?? true }
+            } else { records.append(contentsOf: state.records.values) }
             for record in state.records.values {
                 let day = Self.dayKey(timestamp: record.timestamp)
                 sessions[record.source, default: []].insert(path)
                 dailySessions[day, default: [:]][record.source, default: []].insert(path)
+            }
+            for (day, bySource) in state.folded {
+                for (source, totals) in bySource {
+                    buckets[day, default: [:]][source, default: Totals()].merge(totals)
+                    result.totals[source, default: Totals()].merge(totals)
+                    sessions[source, default: []].insert(path)
+                    dailySessions[day, default: [:]][source, default: []].insert(path)
+                }
             }
         }
         records.append(contentsOf: Self.deduplicateClaude(claudeFiles).values)
@@ -447,7 +577,7 @@ public final class UsageHistory {
             result.totals[record.source, default: Totals()].add(record)
             if record.cumulative { result.cumulativeTurns += 1 }
         }
-        let now = Date().timeIntervalSince1970
+        let now = clock()
         for (source, recs) in Dictionary(grouping: records, by: \.source) {
             result.hourCounts[source] = ActivityProfile.hourCounts(recs.map(\.timestamp), now: now)
         }

@@ -3,7 +3,8 @@ import Cocoa
 // `--diagnose`：本机诊断快照（排障用，输出可贴进 Issue）。读真实日志和网络，IP / 命令行已脱敏，
 // 结果随机器而变，不做断言；断言放 SelfTest。
 enum Diagnostics {
-    static func run() {
+    /// 返回退出码：0 = 采完，1 = 后台首次采集超时（快照不完整）
+    static func run() -> Int32 {
         let now = Date().timeIntervalSince1970
         NetworkScanner.shared.start()
         UsageHistory.shared.start()
@@ -53,7 +54,8 @@ enum Diagnostics {
             print("\(l.isRunning ? "●" : "○") \(l.name) [\(l.tier)] \(l.detail)" + w("5H", l.fiveHour) + w("W", l.sevenDay, profile) + w("\(secondaryPool)5H", l.secondaryFiveHour) + w("\(secondaryPool)W", l.secondarySevenDay, profile) + (l.hasQuota ? "" : "  | \(l.quotaSubtitle)"))
         }
         let rs = ProcessScanner.shared.codexRemoteStatus()
-        print(L("Codex 远程 \(rs.host): \(rs.ok ? "已连上" : "未连上") · \(rs.ageSeconds)s 前拉取", "Codex remote \(rs.host): \(rs.ok ? "connected" : "not connected") · fetched \(rs.ageSeconds)s ago"))
+        if rs.host.isEmpty { print(L("Codex 远程：未配置", "Codex remote: off")) }   // 主机名可能是 user@公网IP，不打印
+        else { print(L("Codex 远程：已配置 · \(rs.ok ? "已连上" : "未连上") · \(rs.ageSeconds)s 前拉取", "Codex remote: configured · \(rs.ok ? "connected" : "not connected") · fetched \(rs.ageSeconds)s ago")) }
         let a = r.api
         let cov = a.coverage
         print(L("--- 记账覆盖 \(cov.proxiedCount)/\(cov.entries.count) 处走代理 ---", "--- Accounting coverage: \(cov.proxiedCount)/\(cov.entries.count) via proxy ---"))
@@ -93,9 +95,14 @@ enum Diagnostics {
         _ = ProcessScanner.shared.scanActiveLLMs()
         print(String(format: L("二次轻量刷新耗时 %.0f ms (ticker 每秒跑的就是这个)", "Second light refresh: %.0f ms (this is what the 1s ticker runs)"), Date().timeIntervalSince(t2) * 1000))
         let historyDeadline = Date().addingTimeInterval(600)
+        var timedOut = false
         var progressAt = Date.distantPast
         while UsageHistory.shared.snapshot().capturedAt == 0 || NetworkScanner.shared.snapshot().capturedAt == 0 {
-            precondition(Date() < historyDeadline, "后台首次采集超时，不能把未完成汇总标为通过")
+            if Date() >= historyDeadline {
+                print(L("后台首次采集超时，以下历史与网络部分不完整", "Background collection timed out; history and network below are incomplete"))
+                timedOut = true
+                break
+            }
             if Date().timeIntervalSince(progressAt) > 15 {
                 let progress = UsageHistory.shared.snapshot()
                 print(L("历史汇总进度：\(progress.processedFiles)/\(progress.totalFiles) 文件", "History progress: \(progress.processedFiles)/\(progress.totalFiles) files"))
@@ -103,12 +110,6 @@ enum Diagnostics {
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
-        func maskedIP(_ ip: String) -> String {
-            if ip.contains(":") { return ip.split(separator: ":").prefix(2).joined(separator: ":") + ":x:x" }
-            let parts = ip.split(separator: ".")
-            return parts.count == 4 ? parts.prefix(2).joined(separator: ".") + ".x.x" : L("查不到", "Unavailable")
-        }
-        precondition(maskedIP("192.0.2.7") == "192.0.x.x")
         let network = NetworkScanner.shared.snapshot()
         print(L("--- 网络 ---", "--- Network ---"))
         for item in network.aiExits where !item.isGemini {
@@ -139,5 +140,13 @@ enum Diagnostics {
         print(L("API 上游 \(history.totals.keys.filter { $0.hasPrefix("API · ") }.count) 个 · 累计差口径 \(history.cumulativeTurns) 次 · 跳过不完整记录 \(history.skippedRecords) 条", "API upstreams \(history.totals.keys.filter { $0.hasPrefix("API · ") }.count) · cumulative-delta records \(history.cumulativeTurns) · skipped incomplete records \(history.skippedRecords)"))
         print(L("API 等价成本: ", "API-equivalent cost: ") + (history.hasPriceTable ? (history.cost.map { String(format: "%.4f %@", $0, history.priceCurrency) } ?? L("未定价", "unpriced")) + (history.unpricedModels > 0 ? L(" · 部分模型未定价", " · some models unpriced") : "") : L("未配置价目表", "price table not configured")))
         if !history.error.isEmpty { print(L("汇总说明：\(history.error)", "Summary: \(history.error)")) }
+        return timedOut ? 1 : 0
+    }
+
+    /// 输出会被贴进公开 Issue：IPv4 留前两段，IPv6 留前两组
+    static func maskedIP(_ ip: String) -> String {
+        if ip.contains(":") { return ip.split(separator: ":").prefix(2).joined(separator: ":") + ":x:x" }
+        let parts = ip.split(separator: ".")
+        return parts.count == 4 ? parts.prefix(2).joined(separator: ".") + ".x.x" : L("查不到", "Unavailable")
     }
 }

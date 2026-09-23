@@ -6,8 +6,8 @@ Thanks for helping! VibeGauge is intentionally small: pure Swift + a stdlib-only
 
 ```bash
 ARCHS=arm64 ./build.sh          # fast local build (default builds a Universal arm64 + x86_64 app)
-./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -AppleLanguages '(en)'
-./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -AppleLanguages '(zh-Hans)'
+./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -uiLanguage en
+./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -uiLanguage zh
 /usr/bin/python3 Resources/vibegauge-proxy.py --selftest
 /usr/bin/python3 Resources/vibegauge-statusline.py --selftest
 open VibeGauge.app

@@ -152,7 +152,8 @@ def capture_key(host: str, headers) -> Optional[str]:
 # ---------------------------------------------------------------- usage 解析
 
 def _set(u: Dict[str, Any], k: str, v: Any) -> None:
-    if isinstance(v, (int, float)) and not isinstance(v, bool):
+    # 上游偶尔回负数或 NaN：不记，免得把累计账冲成负的
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and v >= 0:
         u[k] = int(v)
         u["parsed"] = True
 
@@ -763,6 +764,9 @@ def selftest() -> None:
     global DIR, CALLS, QUOTA
     DIR = tempfile.mkdtemp(prefix="vibegauge-selftest-")
     CALLS, QUOTA = os.path.join(DIR, "api-calls.jsonl"), os.path.join(DIR, "api-quota.json")
+    _neg: Dict[str, Any] = {}
+    _set(_neg, "out", -5); _set(_neg, "ctx", float("nan"))
+    assert _neg == {}, _neg                      # 负数 / NaN 不记账
 
     responses_json = {"object": "response", "model": "responses-test", "status": "completed",
                       "usage": {"input_tokens": 100, "input_tokens_details": {"cached_tokens": 60},

@@ -26,22 +26,22 @@ jobs:
 
     - name: Run Headless Self-Test
       run: |
-        ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -AppleLanguages '(zh-Hans)'
-        ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -AppleLanguages '(en)'
+        ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -uiLanguage zh
+        ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -uiLanguage en
 
     - name: Diagnose Smoke Test (real scan paths on an empty machine; no assertions)
       run: |
-        ./VibeGauge.app/Contents/MacOS/VibeGauge --diagnose -AppleLanguages '(en)'
+        ./VibeGauge.app/Contents/MacOS/VibeGauge --diagnose -uiLanguage en
 
     - name: Self-Test Intel Slice (Rosetta)
       run: |
         lipo -archs VibeGauge.app/Contents/MacOS/VibeGauge | grep -q x86_64
         /usr/sbin/softwareupdate --install-rosetta --agree-to-license >/dev/null 2>&1 || true
-        arch -x86_64 ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -AppleLanguages '(en)'
+        arch -x86_64 ./VibeGauge.app/Contents/MacOS/VibeGauge --selftest -uiLanguage en
 
     - name: First-Launch Smoke Test (clean machine, no AI tools installed)
       run: |
-        ./VibeGauge.app/Contents/MacOS/VibeGauge -AppleLanguages '(en)' &
+        ./VibeGauge.app/Contents/MacOS/VibeGauge -uiLanguage en &
         pid=$!
         sleep 15
         kill -0 "$pid"   # still running = no crash on first launch

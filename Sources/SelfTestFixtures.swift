@@ -46,6 +46,13 @@ enum SelfTestFixtures {
         let snap = history.snapshot()
         let c = snap.totals["Claude"], x = snap.totals["Codex"]
         precondition(c?.turns == 1 && c?.ctx == 2 + 50311 + 24641 && c?.out == 311, "Claude 2.1.278：错误回复/系统行/cost-state 不算用量 \(String(describing: c))")
+        // 字段语义：缓存读写不能互换，thinking 取 output_tokens_details，模型归属不丢
+        precondition(c?.cacheRead == 24641 && c?.cacheWrite == 50311 && c?.think == 76 && c?.models.keys.sorted() == ["claude-opus-5"], "Claude 字段语义")
+        precondition(x?.cacheRead == 7040 && x?.models.keys.sorted() == ["gpt-6-astra"], "Codex 缓存读与模型归属（turn_context）")
+        // 同一样本走面板的即时解析路径，口径与历史一致
+        let lines = claude_2_1_278.split(separator: "\n").compactMap { ProcessScanner.shared.parseAssistantLine($0) }
+        precondition(lines.count == 1 && lines[0].id == "fx-req1" && lines[0].model == "claude-opus-5" && lines[0].contextTokens == 2 + 50311 + 24641
+                     && lines[0].cacheReadTokens == 24641 && lines[0].outputTokens == 311 && lines[0].thinkingTokens == 76, "即时解析：\(lines)")
         precondition(x?.turns == 1 && x?.ctx == 26552 && x?.out == 234, "Codex 0.156：token_usage_record 不能和 token_count 重复算 \(String(describing: x))")
 
         let today = ProcessScanner.shared.codexFileUsage(path: root.appendingPathComponent(codexPath).path, startOfToday: 0)

@@ -24,6 +24,7 @@ enum SelfTest {
         precondition(ProcessScanner.memoryPressurePageSize("The system has 8589934592 (2097152 pages with a page size of 4096).") == 4096, "Intel 4KB 页")
         precondition(ProcessScanner.memoryPressurePageSize("The system has 25769803776 (1572864 pages with a page size of 16384).") == 16384)
         precondition(ProcessScanner.memoryPressurePageSize("garbage") == nil)
+        precondition(Diagnostics.maskedIP("192.0.2.7") == "192.0.x.x" && Diagnostics.maskedIP("2001:db8::1") == "2001:db8:x:x")
         precondition(ProxyManager.validPort(0) == 18790 && ProxyManager.validPort(80) == 18790 && ProxyManager.validPort(18791) == 18791 && ProxyManager.validPort(70000) == 18790)
 
         // Codex 跨零点：total_token_usage 是会话累计，今天只算零点后新增的；请求数只数今天的事件
@@ -514,7 +515,10 @@ enum SelfTest {
                       + codex(after, total: ["input_tokens": 80, "cached_input_tokens": 16, "output_tokens": 8]))
             try write(".config/vibegauge/api-calls.jsonl", try line(["ts": after, "host": "example.test", "provider": "Fixture A", "model": "fixture-priced", "ctx": 30, "cache_read": 5, "out": 3])
                       + line(["ts": after, "host": "example.test", "provider": "Fixture B", "model": "fixture-unpriced", "ctx": 50, "cache_write": 10, "out": 4]))
-            let collector = UsageHistory(home: root.path)
+            // 样本在 9-18，时钟钉在 9-19：不随真实日期越过 8 天折叠线
+            let fixedNow = Fmt.parseISODate("2026-09-19T00:00:00Z")!
+            func history() -> UsageHistory { let h = UsageHistory(home: root.path); h.clock = { fixedNow }; return h }
+            let collector = history()
             collector.scanNowForTesting()
             var snap = collector.snapshot()
             precondition(snap.totals["Claude"]?.ctx == 45 && snap.totals["Claude"]?.out == 10 && snap.totals["Claude"]?.turns == 2 && snap.totals["Claude"]?.sessions == 2)
@@ -532,7 +536,7 @@ enum SelfTest {
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cacheURL.deletingLastPathComponent().path)
             // 保存有节流，重启实例并追加空行才能触发真实写入，同时保持统计结果不变。
             try write(ca, "\n", append: true)
-            UsageHistory(home: root.path).scanNowForTesting()
+            history().scanNowForTesting()
             try checkCachePermissions()
             let disk = try JSONSerialization.jsonObject(with: Data(contentsOf: cacheURL)) as! [String: Any]
             let states = disk["files"] as! [String: [String: Any]]
@@ -561,10 +565,80 @@ enum SelfTest {
             try write(ca, try claude("fixture-5", after, 3, 1))
             collector.scanNowForTesting(); snap = collector.snapshot()
             precondition(snap.totals["Claude"]?.turns == 2 && snap.totals["Claude"]?.ctx == 13, "重写必须撤销旧文件贡献")
-            let restarted = UsageHistory(home: root.path)
+            let restarted = history()
             restarted.scanNowForTesting()
             precondition(restarted.snapshot().totals == snap.totals && restarted.snapshot().error.isEmpty)
+
+            // 折叠：40 天后逐条记录全折成日汇总，统计口径（含会话数、按天、跨文件去重）不变
+            func same(_ a: UsageHistory.Snapshot, _ b: UsageHistory.Snapshot) -> Bool {
+                if a.totals != b.totals { print("totals 差异", a.totals.filter { b.totals[$0.key] != $0.value }, b.totals.filter { a.totals[$0.key] != $0.value }) }
+                if a.days != b.days { print("days 差异", a.days.filter { !b.days.contains($0) }, b.days.filter { !a.days.contains($0) }) }
+                return a.totals == b.totals && a.days == b.days && a.cumulativeTurns == b.cumulativeTurns
+            }
+            let later = UsageHistory(home: root.path); later.clock = { fixedNow + 40 * 86400 }
+            later.scanNowForTesting()
+            precondition(same(later.snapshot(), snap), "折叠后统计变了")
+            let folded = try JSONSerialization.jsonObject(with: Data(contentsOf: cacheURL)) as! [String: Any]
+            precondition(folded["version"] as? Int == 4 && (folded["files"] as! [String: [String: Any]]).values.allSatisfy { ($0["records"] as! [String: Any]).isEmpty }, "40 天后不该再有逐条记录")
+            // 折叠后重启、再重写一个日志：只撤销它自己的贡献
+            let reborn = UsageHistory(home: root.path); reborn.clock = { fixedNow + 40 * 86400 }
+            reborn.scanNowForTesting()
+            precondition(same(reborn.snapshot(), snap))
+            try write(cb, try claude("fixture-6", after, 20, 2))
+            reborn.scanNowForTesting()
+            precondition(reborn.snapshot().totals["Claude"]?.ctx == 23 && reborn.snapshot().totals["Claude"]?.turns == 2, "折叠后重写：\(String(describing: reborn.snapshot().totals["Claude"]))")
+            // 日志删掉：历史保留（按说明清日志不丢账）
+            let codexBefore = reborn.snapshot().totals["Codex"]
+            try FileManager.default.removeItem(at: root.appendingPathComponent(codexB))
+            reborn.scanNowForTesting()
+            precondition(reborn.snapshot().totals["Codex"] == codexBefore, "删日志后历史丢了")
         } catch { preconditionFailure("统计临时日志自测失败：\(error)") }
+
+        // 续接会话的文件里全是复制来的请求：折叠后不重复计量，但仍算一个会话（与折叠前同口径）
+        do {
+            let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("vibegauge-dup-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let dir = root.appendingPathComponent(".claude/projects/fixture")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let line = #"{"type":"assistant","timestamp":"2026-09-18T16:00:01Z","requestId":"dup-1","message":{"model":"m","usage":{"input_tokens":5,"output_tokens":2}}}"# + "\n"
+            try Data(line.utf8).write(to: dir.appendingPathComponent("a.jsonl"))
+            try Data(line.utf8).write(to: dir.appendingPathComponent("b.jsonl"))
+            let t0 = Fmt.parseISODate("2026-09-19T00:00:00Z")!
+            func at(_ t: TimeInterval) -> UsageHistory.Snapshot { let h = UsageHistory(home: root.path); h.clock = { t }; h.scanNowForTesting(); return h.snapshot() }
+            let recent = at(t0), old = at(t0 + 40 * 86400)
+            precondition(recent.totals["Claude"]?.turns == 1 && recent.totals["Claude"]?.sessions == 2)
+            precondition(old.totals == recent.totals && old.days == recent.days, "复制品折叠后：\(String(describing: old.totals["Claude"]))")
+        } catch { preconditionFailure("复制会话自测失败：\(error)") }
+
+        // 历史缓存迁移：v3 升级留备份；更新版本写的只读；读坏的挪开不覆盖
+        do {
+            let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("vibegauge-migrate-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let dir = root.appendingPathComponent(".config/vibegauge")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let cache = dir.appendingPathComponent("usage-daily.json")
+            let now = Fmt.parseISODate("2026-09-19T00:00:00Z")!
+            func run() -> UsageHistory.Snapshot { let h = UsageHistory(home: root.path); h.clock = { now }; h.scanNowForTesting(); return h.snapshot() }
+            // v3：日志早已删除，只剩缓存里的一条 Codex 记录
+            let v3 = #"{"version":3,"updatedAt":1,"days":[],"files":{"/gone/a.jsonl":{"source":"Codex","model":"m","size":1,"mtime":1,"offset":1,"head":"","skipped":0,"records":{"0":{"id":"0","source":"Codex","timestamp":1790000000,"model":"m","cumulative":false,"usage":{"ctx":7,"cacheRead":0,"cacheWrite":0,"out":3,"think":0}}}}}}"#
+            try Data(v3.utf8).write(to: cache)
+            precondition(run().totals["Codex"]?.ctx == 7, "v3 历史没读进来")
+            precondition(FileManager.default.fileExists(atPath: dir.appendingPathComponent("usage-daily.v3.json").path), "v3 升级前要留备份")
+            let upgraded = try JSONSerialization.jsonObject(with: Data(contentsOf: cache)) as! [String: Any]
+            precondition(upgraded["version"] as? Int == 4)
+            precondition(run().totals["Codex"]?.ctx == 7, "v4 重启后历史还在")
+            // 更新版本写的：读不懂也绝不覆盖
+            let future = #"{"version":99,"files":{}}"#
+            try Data(future.utf8).write(to: cache)
+            _ = run()
+            let after99 = String(decoding: try Data(contentsOf: cache), as: UTF8.self)
+            precondition(after99 == future, "新版本缓存被覆盖了")
+            // 读坏的：挪到旁边保留
+            try Data("{not json".utf8).write(to: cache)
+            _ = run()
+            let kept = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix("usage-daily.corrupt-") }
+            precondition(kept.count == 1, "坏缓存要另存：\(kept)")
+        } catch { preconditionFailure("历史缓存迁移自测失败：\(error)") }
 
         SelfTestFixtures.run()
     }

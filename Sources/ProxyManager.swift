@@ -5,9 +5,18 @@ import Foundation
 final class ProxyManager {
     static let shared = ProxyManager()
 
-    /// 默认 18790；被别的程序占了可改：`defaults write com.haifeng.vibegauge proxyPort 18791`，再在菜单里重装代理。
-    /// 端口只在这里定，经 LaunchAgent 的 VIBEGAUGE_PROXY_PORT 传给 Python 代理，界面和覆盖体检都读这里。
-    var port: Int { Self.validPort(UserDefaults.standard.integer(forKey: "proxyPort")) }
+    /// 配置的端口：默认 18790，被别的程序占了可改 `defaults write com.haifeng.vibegauge proxyPort 18791`，
+    /// 再在菜单里重装代理 —— 只在安装时写进 LaunchAgent 的 VIBEGAUGE_PROXY_PORT。
+    var configuredPort: Int { Self.validPort(UserDefaults.standard.integer(forKey: "proxyPort")) }
+    /// 实际在用的端口：已安装就以 LaunchAgent 里写的为准（改了配置但没重装时，代理还在旧端口上跑），
+    /// 探活、界面前缀、覆盖体检都读这个。
+    var port: Int {
+        guard let data = FileManager.default.contents(atPath: plistPath),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let raw = (plist["EnvironmentVariables"] as? [String: Any])?["VIBEGAUGE_PROXY_PORT"] as? String,
+              let installed = Int(raw) else { return configuredPort }
+        return Self.validPort(installed)
+    }
     static func validPort(_ v: Int) -> Int { (1024...65535).contains(v) ? v : 18790 }
     let label = "com.haifeng.vibegauge.proxy"
     private let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -91,7 +100,7 @@ final class ProxyManager {
             <key>ProgramArguments</key>
             <array><string>/usr/bin/python3</string><string>\(scriptPath)</string></array>
             <key>EnvironmentVariables</key>
-            <dict><key>VIBEGAUGE_PROXY_PORT</key><string>\(port)</string><key>PYTHONUNBUFFERED</key><string>1</string></dict>
+            <dict><key>VIBEGAUGE_PROXY_PORT</key><string>\(configuredPort)</string><key>PYTHONUNBUFFERED</key><string>1</string></dict>
             <key>RunAtLoad</key><true/>
             <key>KeepAlive</key><true/>
             <key>StandardOutPath</key><string>\(logPath)</string>

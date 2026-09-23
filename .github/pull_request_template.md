@@ -4,7 +4,7 @@
 
 ## Checklist
 
-- [ ] `./build.sh` succeeds and `--selftest` passes (both `-AppleLanguages '(en)'` and `'(zh-Hans)'`)
+- [ ] `./build.sh` succeeds and `--selftest` passes (both `-uiLanguage en` and `-uiLanguage zh`)
 - [ ] `python3 Resources/vibegauge-proxy.py --selftest` passes (if the proxy changed)
 - [ ] New user-visible text uses `L("中文", "English")`
 - [ ] No new dependencies; new source files added to `build.sh`

@@ -118,7 +118,9 @@ extension ProcessScanner {
         var extraName = ""
         var extra5h: QuotaWindow? = nil
         var extraW: QuotaWindow? = nil
-        for (k, v) in json where !["five_hour", "seven_day", "_captured_at"].contains(k) {
+        // 只认 five_hour_* / seven_day_* 前缀；目前只展示一个副池，按键名排序取第一个（结果不随字典遍历顺序变）
+        for k in json.keys.sorted() where (k.hasPrefix("five_hour_") || k.hasPrefix("seven_day_")) {
+            let v = json[k]
             guard let w = win(v, k.hasPrefix("five_hour") ? 5 * 3600 : 7 * 86400) else { continue }
             let base = k.replacingOccurrences(of: "seven_day_", with: "").replacingOccurrences(of: "five_hour_", with: "")
             let name = base.prefix(1).uppercased() + base.dropFirst()

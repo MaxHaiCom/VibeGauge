@@ -157,7 +157,7 @@ open VibeGauge.app
    ```bash
    ./VibeGauge.app/Contents/MacOS/VibeGauge --install-proxy
    ```
-   代理常驻监听在 `127.0.0.1:18790`。
+   代理常驻监听在 `127.0.0.1:18790`（可用 `proxyPort` 改，见配置）。
 
 2. **零配置路由注入**：
    只需在目标服务的 `BASE_URL` 前追加代理前缀即可，例如：
@@ -216,7 +216,7 @@ python3 ~/.config/vibegauge/vibegauge-statusline.py --uninstall claude   # 连�
 rm -rf /Applications/VibeGauge.app ~/.config/vibegauge
 defaults delete com.haifeng.vibegauge
 ```
-若开启过「开机自启」，先在菜单里关掉（或到 系统设置 → 通用 → 登录项 移除）。别忘了把 `*_BASE_URL` 里的 `http://127.0.0.1:18790/` 前缀删掉。
+若开启过「开机自启」，先在菜单里关掉（或到 系统设置 → 通用 → 登录项 移除）。别忘了把 `*_BASE_URL` 里的 `http://127.0.0.1:18790/` 前缀（改过端口就是你的端口）删掉。
 
 ---
 

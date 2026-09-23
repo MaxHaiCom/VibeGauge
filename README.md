@@ -176,7 +176,7 @@ When routing terminal tools or scripts directly to AI provider endpoints, route 
    ```bash
    ./VibeGauge.app/Contents/MacOS/VibeGauge --install-proxy
    ```
-   The proxy listens on `127.0.0.1:18790`.
+   The proxy listens on `127.0.0.1:18790` (change it with `proxyPort`, see Configuration).
 
 2. **Zero-Config Routing**:
    Simply prefix your existing endpoint URL:
@@ -235,7 +235,7 @@ python3 ~/.config/vibegauge/vibegauge-statusline.py --uninstall claude   # only 
 rm -rf /Applications/VibeGauge.app ~/.config/vibegauge
 defaults delete com.haifeng.vibegauge
 ```
-If you enabled *Launch at Login*, turn it off in the menu first (or remove it in System Settings → General → Login Items). Remember to strip the `http://127.0.0.1:18790/` prefix from any `*_BASE_URL` you pointed at the proxy.
+If you enabled *Launch at Login*, turn it off in the menu first (or remove it in System Settings → General → Login Items). Remember to strip the `http://127.0.0.1:18790/` prefix (or your `proxyPort`) from any `*_BASE_URL` you pointed at the proxy.
 
 ---
 
