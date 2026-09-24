@@ -22,6 +22,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 MARK = "vibegauge-statusline.py"
@@ -637,11 +638,23 @@ def selftest() -> None:
         assert _num(waiting()["w2"]["input"]) and not waiting()["w2"]["calls"]
         hook({"session_id": "w2", "hook_event_name": "UserPromptSubmit", "prompt": "私密"})
         assert "w2" not in waiting()
-        # 锁：并发的 PermissionRequest / 清除事件不丢更新
+        # 锁：并发的 PermissionRequest / 清除事件不丢更新。
+        # 12 个子进程已经起来、卡在读 stdin；用 barrier 让 12 条线程在同一时刻各自 communicate()，
+        # 逼真正的并发写入 sessions 文件去抢那把 flock，而不是像顺序 for 循环那样一个写完退出锁
+        # 下一个才收到数据、退化成串行、测不出丢更新。
         procs = [subprocess.Popen([sys.executable, script_path(), HOOK_FLAG, "claude"], stdin=subprocess.PIPE, env=dict(os.environ, HOME=tmp))
                  for _ in range(12)]
-        for i, pr in enumerate(procs):
-            pr.communicate(json.dumps({"session_id": "c", "hook_event_name": "PermissionRequest", "tool_use_id": "P%d" % i}).encode())
+        barrier = threading.Barrier(len(procs))
+
+        def send(i: int, pr: "subprocess.Popen") -> None:
+            payload = json.dumps({"session_id": "c", "hook_event_name": "PermissionRequest", "tool_use_id": "P%d" % i}).encode()
+            barrier.wait()
+            pr.communicate(payload)
+        senders = [threading.Thread(target=send, args=(i, pr)) for i, pr in enumerate(procs)]
+        for t in senders:
+            t.start()
+        for t in senders:
+            t.join()
         assert len(waiting()["c"]["calls"]) == 12
         hook({"session_id": "c", "hook_event_name": "Stop"})
         hook("not a dict")                                   # 坏输入也零输出、不报错
